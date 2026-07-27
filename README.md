@@ -433,6 +433,10 @@ BRAVO_TASKS_DIAGNOSE.cmd -ConfigPath ".\BRAVO.config" -TestAccess -SendTestNotif
 BRAVO_CREDENTIALS_SETUP.cmd -Action Ensure -Component Required -StoreFor Both
 ```
 
+На локалізованій Windows Task Scheduler може показувати `SYSTEM` як `СИСТЕМА`
+або іншу перекладену назву. Інсталятор порівнює вбудовані облікові записи за
+мовно-незалежним SID, тому це не є помилкою.
+
 ## 12. Логи та результати
 
 Основні журнали знаходяться у `ArchiveRoot\LOGS`, за замовчуванням:

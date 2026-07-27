@@ -67,6 +67,87 @@ function Test-BRAVOCommandAvailable {
     return $null -ne (Get-Command -Name $Name -ErrorAction SilentlyContinue)
 }
 
+function ConvertTo-BRAVOAccountSidValue {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$AccountName
+    )
+
+    $trimmedAccount = $AccountName.Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmedAccount)) {
+        return $null
+    }
+
+    $canonicalAccount = $trimmedAccount.Replace(" ", "").ToUpperInvariant()
+    switch ($canonicalAccount) {
+        "SYSTEM" { return "S-1-5-18" }
+        "NTAUTHORITY\SYSTEM" { return "S-1-5-18" }
+        "LOCALSERVICE" { return "S-1-5-19" }
+        "NTAUTHORITY\LOCALSERVICE" { return "S-1-5-19" }
+        "NETWORKSERVICE" { return "S-1-5-20" }
+        "NTAUTHORITY\NETWORKSERVICE" { return "S-1-5-20" }
+    }
+
+    if ($trimmedAccount -match "^(?i)S-\d+(?:-\d+)+$") {
+        try {
+            return (
+                New-Object Security.Principal.SecurityIdentifier($trimmedAccount)
+            ).Value
+        } catch {
+            return $null
+        }
+    }
+
+    try {
+        # Task Scheduler повертає локалізовані назви вбудованих облікових
+        # записів (наприклад, "СИСТЕМА"). SID залишається мовно-незалежним.
+        $ntAccount = New-Object Security.Principal.NTAccount($trimmedAccount)
+        $sid = $ntAccount.Translate(
+            [Security.Principal.SecurityIdentifier]
+        )
+        return [string]$sid.Value
+    } catch {
+        return $null
+    }
+}
+
+function Test-BRAVOAccountIdentityEquivalent {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedAccount,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ActualAccount
+    )
+
+    $expectedSid = ConvertTo-BRAVOAccountSidValue -AccountName $ExpectedAccount
+    $actualSid = ConvertTo-BRAVOAccountSidValue -AccountName $ActualAccount
+    if (-not [string]::IsNullOrWhiteSpace($expectedSid) -and
+        -not [string]::IsNullOrWhiteSpace($actualSid)) {
+        return [string]::Equals(
+            $expectedSid,
+            $actualSid,
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    }
+
+    $expectedName = $ExpectedAccount.Trim().Replace(
+        "NT AUTHORITY\",
+        ""
+    )
+    $actualName = $ActualAccount.Trim().Replace(
+        "NT AUTHORITY\",
+        ""
+    )
+    return [string]::Equals(
+        $expectedName,
+        $actualName,
+        [StringComparison]::OrdinalIgnoreCase
+    )
+}
+
 function Get-BRAVOCompatibilityInfo {
     $windowsVersion = [Environment]::OSVersion.Version
     $hasCim = Test-BRAVOCommandAvailable -Name "Get-CimInstance"

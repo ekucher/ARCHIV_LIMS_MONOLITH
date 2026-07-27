@@ -2,6 +2,9 @@
 
 ## 4.9.0 — 2026-07-27
 
+- Перевірка principal Планувальника тепер порівнює вбудовані service accounts
+  за SID, тому локалізовані назви на кшталт `СИСТЕМА` коректно розпізнаються
+  як `SYSTEM` (`S-1-5-18`) і не спричиняють помилковий rollback.
 - Допоміжні setup, dry-run, credentials, scheduler і self-test скрипти
   отримали окремі transcript-журнали у `LOGS\HELPERS`, фінальний exit code,
   31-денний retention і fallback до `%TEMP%`, якщо runtime недоступний.

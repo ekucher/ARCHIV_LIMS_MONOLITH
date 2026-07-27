@@ -607,19 +607,18 @@ try {
         if ($null -eq $registeredTask -or -not $registeredTask.Enabled) {
             throw "Task Scheduler не підтвердив активну реєстрацію '$taskPath$taskName'"
         }
-        $expectedTaskUser = ([string]$schedulerSettings.RunAsUser).Replace(
-            "NT AUTHORITY\",
-            ""
-        )
-        $actualTaskUser = ([string]$registeredTask.Definition.Principal.UserId).Replace(
-            "NT AUTHORITY\",
-            ""
-        )
-        if ($actualTaskUser -ine $expectedTaskUser) {
+        $actualTaskUser = [string]$registeredTask.Definition.Principal.UserId
+        if (-not (Test-BRAVOAccountIdentityEquivalent `
+                -ExpectedAccount ([string]$schedulerSettings.RunAsUser) `
+                -ActualAccount $actualTaskUser)) {
+            $expectedTaskSid = ConvertTo-BRAVOAccountSidValue `
+                -AccountName ([string]$schedulerSettings.RunAsUser)
+            $actualTaskSid = ConvertTo-BRAVOAccountSidValue `
+                -AccountName $actualTaskUser
             throw (
                 "Завдання '$taskPath$taskName' зареєстровано для " +
-                "'$($registeredTask.Definition.Principal.UserId)' замість " +
-                "'$($schedulerSettings.RunAsUser)'"
+                "'$actualTaskUser' (SID='$actualTaskSid') замість " +
+                "'$($schedulerSettings.RunAsUser)' (SID='$expectedTaskSid')"
             )
         }
         Write-Host "Завдання встановлено: $($registeredTask.Path)" -ForegroundColor Green

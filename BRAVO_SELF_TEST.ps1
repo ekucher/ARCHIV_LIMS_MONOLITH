@@ -72,6 +72,29 @@ try {
             -Failure "допоміжний скрипт не підключає повний цикл журналювання"
     }
 
+    . (Join-Path $root "BRAVO_COMPATIBILITY.ps1")
+    Test-BRAVOCondition `
+        -Condition (Test-BRAVOAccountIdentityEquivalent `
+            -ExpectedAccount "SYSTEM" `
+            -ActualAccount "S-1-5-18") `
+        -Name "Scheduler/SystemSidEquivalent" `
+        -Failure "SYSTEM повинен відповідати мовно-незалежному SID S-1-5-18"
+    $localizedSystemAccount = (
+        New-Object Security.Principal.SecurityIdentifier("S-1-5-18")
+    ).Translate([Security.Principal.NTAccount]).Value
+    Test-BRAVOCondition `
+        -Condition (Test-BRAVOAccountIdentityEquivalent `
+            -ExpectedAccount "SYSTEM" `
+            -ActualAccount $localizedSystemAccount) `
+        -Name "Scheduler/LocalizedSystemEquivalent" `
+        -Failure "SYSTEM не розпізнано через локалізоване ім'я '$localizedSystemAccount'"
+    Test-BRAVOCondition `
+        -Condition (-not (Test-BRAVOAccountIdentityEquivalent `
+            -ExpectedAccount "SYSTEM" `
+            -ActualAccount "S-1-5-20")) `
+        -Name "Scheduler/SystemSidMismatch" `
+        -Failure "SYSTEM не повинен збігатися з NETWORK SERVICE"
+
     $resolvedConfig = (Resolve-Path -LiteralPath $ConfigPath).Path
     $configRoot = Split-Path -Path $resolvedConfig -Parent
     $configText = [IO.File]::ReadAllText($resolvedConfig, [Text.Encoding]::UTF8)
