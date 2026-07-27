@@ -114,17 +114,13 @@ try {
     & ([scriptblock]::Create($configText)) -ConfigRoot $configRoot
 
     Test-BRAVOCondition `
-        -Condition ([string]$ScriptVersion -eq "4.0.1") `
+        -Condition ([string]$ScriptVersion -eq "4.0.2") `
         -Name "Version/BRAVO_ARCHIV" `
-        -Failure "очікується 4.0.1, отримано '$ScriptVersion'"
+        -Failure "очікується 4.0.2, отримано '$ScriptVersion'"
     Test-BRAVOCondition `
         -Condition (-not ([string]$archiveParams -match '(?i)(^|\s)-ssw(\s|$)')) `
         -Name "BackupConsistency/NoSSW" `
         -Failure "щоденний backup не повинен дозволяти читання відкритих файлів"
-    Test-BRAVOCondition `
-        -Condition ([bool]$maintenanceSettings.Services.QuiesceForBackup) `
-        -Name "BackupConsistency/QuiesceServices" `
-        -Failure "QuiesceForBackup має бути увімкнено"
     $archiveScriptText = [IO.File]::ReadAllText(
         (Join-Path $root "BRAVO_ARCHIV.ps1"),
         [Text.Encoding]::UTF8
@@ -143,6 +139,15 @@ try {
         ) `
         -Name "Notifications/ArchiveInactiveServices" `
         -Failure "архівація має негайно сповіщати про початково зупинені служби"
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveScriptText -notmatch '(?m)^\s*Stop-Service\b' -and
+            $archiveScriptText -notmatch '(?m)^\s*Start-Service\b' -and
+            -not $archiveScriptText.Contains("Stop-BRAVOArchiveSourceServices") -and
+            -not $archiveScriptText.Contains("Start-BRAVOArchiveSourceServices")
+        ) `
+        -Name "Services/ArchiveReadOnly" `
+        -Failure "BRAVO_ARCHIV не повинен зупиняти або запускати Windows-служби"
     $maintenanceScriptText = [IO.File]::ReadAllText(
         (Join-Path $root "BRAVO_MAINTENANCE.ps1"),
         [Text.Encoding]::UTF8

@@ -2402,23 +2402,7 @@ function Get-BRAVOArchiveServiceCandidates {
     return $services.ToArray()
 }
 
-function Stop-BRAVOArchiveSourceServices {
-    $quiesceEnabled = (
-        $null -ne $maintenanceSettings -and
-        $null -ne $maintenanceSettings.Services -and
-        $maintenanceSettings.Services.Contains("QuiesceForBackup") -and
-        [System.Convert]::ToBoolean($maintenanceSettings.Services.QuiesceForBackup)
-    )
-    if (-not $quiesceEnabled) {
-        Write-Log "Узгоджений backup: зупинку служб вимкнено в config" -Level "WARNING"
-        return [pscustomobject]@{ Success = $true; StoppedServices = @() }
-    }
-
-    $stopTimeoutSeconds = [math]::Max(
-        1,
-        [int]$maintenanceSettings.Services.StopTimeoutSeconds
-    )
-    $stoppedServices = New-Object System.Collections.ArrayList
+function Test-BRAVOArchiveSourceServiceStates {
     try {
         $serviceCandidates = @(Get-BRAVOArchiveServiceCandidates)
         $inactiveServices = @(
@@ -2434,30 +2418,15 @@ function Stop-BRAVOArchiveSourceServices {
         foreach ($service in $serviceCandidates) {
             $service.Refresh()
             if ($service.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Running) {
-                Write-Log "Служба $($service.Name) не працювала; стан не змінюється" -Level "WARNING"
-                continue
+                Write-Log "Служба $($service.Name) не працює; BRAVO_ARCHIV не змінює її стан" -Level "WARNING"
+            } else {
+                Write-Log "Служба $($service.Name) працює; BRAVO_ARCHIV не змінює її стан" -Level "INFO"
             }
-
-            Write-Log "Зупинка служби $($service.Name) для узгодженого backup..." -Level "INFO"
-            [void]$stoppedServices.Add($service.Name)
-            Stop-Service -Name $service.Name -Force -ErrorAction Stop
-            $service.WaitForStatus(
-                [System.ServiceProcess.ServiceControllerStatus]::Stopped,
-                [timespan]::FromSeconds($stopTimeoutSeconds)
-            )
-            Write-Log "Службу $($service.Name) зупинено" -Level "SUCCESS"
         }
-        return [pscustomobject]@{
-            Success = $true
-            StoppedServices = $stoppedServices.ToArray()
-        }
+        return $true
     } catch {
-        Write-Log "Не вдалося зупинити служби для узгодженого backup: $($_.Exception.Message)" -Level "ERROR"
-        [void](Start-BRAVOArchiveSourceServices -ServiceNames $stoppedServices.ToArray())
-        return [pscustomobject]@{
-            Success = $false
-            StoppedServices = @()
-        }
+        Write-Log "Не вдалося перевірити стан служб перед backup: $($_.Exception.Message)" -Level "ERROR"
+        return $false
     }
 }
 
@@ -2492,7 +2461,7 @@ function Send-BRAVOArchiveInactiveServiceWarning {
         "Установа: $institutionName [$institutionCode]",
         "Сервер: $env:COMPUTERNAME",
         "Служби: $serviceList",
-        "Скрипт збереже початковий стан і не запускатиме ці служби автоматично.",
+        "BRAVO_ARCHIV лише перевіряє стан і ніколи не зупиняє та не запускає служби.",
         "Час: $((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))"
     ) -join [Environment]::NewLine
 
@@ -2506,37 +2475,6 @@ function Send-BRAVOArchiveInactiveServiceWarning {
     } catch {
         Write-Log "Не вдалося відправити сповіщення про зупинені служби: $($_.Exception.Message)" -Level "ERROR"
     }
-}
-
-function Start-BRAVOArchiveSourceServices {
-    param([string[]]$ServiceNames)
-
-    $startTimeoutSeconds = [math]::Max(
-        1,
-        [int]$maintenanceSettings.Services.StartTimeoutSeconds
-    )
-    $success = $true
-    $servicesToStart = @($ServiceNames)
-    [array]::Reverse($servicesToStart)
-    foreach ($serviceName in $servicesToStart) {
-        try {
-            $service = Get-Service -Name $serviceName -ErrorAction Stop
-            $service.Refresh()
-            if ($service.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Running) {
-                Write-Log "Відновлення служби $serviceName після локальної архівації..." -Level "INFO"
-                Start-Service -Name $serviceName -ErrorAction Stop
-                $service.WaitForStatus(
-                    [System.ServiceProcess.ServiceControllerStatus]::Running,
-                    [timespan]::FromSeconds($startTimeoutSeconds)
-                )
-            }
-            Write-Log "Служба $serviceName працює" -Level "SUCCESS"
-        } catch {
-            Write-Log "Не вдалося відновити службу ${serviceName}: $($_.Exception.Message)" -Level "ERROR"
-            $success = $false
-        }
-    }
-    return $success
 }
 
 # =============================================
@@ -2800,58 +2738,46 @@ function Main {
     # Створення архівів
     $archiveIndex = 0
 
-    $archiveServiceState = [pscustomobject]@{ Success = $true; StoppedServices = @() }
     if ($readyArchives.Count -gt 0) {
         Write-Log "==="
-        Write-Log "=== ПІДГОТОВКА УЗГОДЖЕНОГО BACKUP ==="
-        $archiveServiceState = Stop-BRAVOArchiveSourceServices
+        Write-Log "=== ПЕРЕВІРКА СТАНУ СЛУЖБ ==="
+        [void](Test-BRAVOArchiveSourceServiceStates)
     }
-    try {
-        if (-not $archiveServiceState.Success) {
-            Write-Log "Локальну архівацію скасовано: джерела не вдалося перевести в узгоджений стан" -Level "ERROR"
-            $operationFailed = $true
-        } else {
-            foreach ($archive in $readyArchives) {
-                $archiveIndex++
-                $archiveProgress = 30 + [Math]::Floor((($archiveIndex - 1) / [Math]::Max(1, $readyArchives.Count)) * 40)
-                Show-ScriptProgress -Status "Архiвацiя $($archive.Type) ($archiveIndex з $($readyArchives.Count))" -PercentComplete $archiveProgress
-                Show-ItemProgress `
-                    -Id 10 `
-                    -Activity "BRAVO_ARCHIV — архiвацiя компонентiв" `
-                    -Item $archive.Type `
-                    -Current $archiveIndex `
-                    -Total $readyArchives.Count
-                $archiveName = $archive.NameTemplate -f $archivePrefix, $now
-                Write-Log "==="
-                Write-Log "=== АРХIВАЦIЯ $($archive.Type) ==="
-                $success = New-Archive -SourcePath $archive.Source -ArchivePath $archive.Destination -ArchiveName $archiveName -ArcPath $arcPath -ArcParams $archiveParams
+    foreach ($archive in $readyArchives) {
+        $archiveIndex++
+        $archiveProgress = 30 + [Math]::Floor((($archiveIndex - 1) / [Math]::Max(1, $readyArchives.Count)) * 40)
+        Show-ScriptProgress -Status "Архiвацiя $($archive.Type) ($archiveIndex з $($readyArchives.Count))" -PercentComplete $archiveProgress
+        Show-ItemProgress `
+            -Id 10 `
+            -Activity "BRAVO_ARCHIV — архiвацiя компонентiв" `
+            -Item $archive.Type `
+            -Current $archiveIndex `
+            -Total $readyArchives.Count
+        $archiveName = $archive.NameTemplate -f $archivePrefix, $now
+        Write-Log "==="
+        Write-Log "=== АРХIВАЦIЯ $($archive.Type) ==="
+        $success = New-Archive -SourcePath $archive.Source -ArchivePath $archive.Destination -ArchiveName $archiveName -ArcPath $arcPath -ArcParams $archiveParams
 
-                if ($success) {
-                    Write-Log "==="
-                    Write-Log "=== СТВОРЕННЯ ХЕШУ $($archive.Type) ==="
-                    $hashProgress = [Math]::Min(69, $archiveProgress + 8)
-                    Show-ScriptProgress -Status "Створення SHA512 для $($archive.Type)" -PercentComplete $hashProgress
-                    $archivePath = Join-Path $archive.Destination $archiveName
-                    $hashPath = "$archivePath$hashFileExtension"
-                    $hashSuccess = New-SHA512Hash -FilePath $archivePath -HashFilePath $hashPath
+        if ($success) {
+            Write-Log "==="
+            Write-Log "=== СТВОРЕННЯ ХЕШУ $($archive.Type) ==="
+            $hashProgress = [Math]::Min(69, $archiveProgress + 8)
+            Show-ScriptProgress -Status "Створення SHA512 для $($archive.Type)" -PercentComplete $hashProgress
+            $archivePath = Join-Path $archive.Destination $archiveName
+            $hashPath = "$archivePath$hashFileExtension"
+            $hashSuccess = New-SHA512Hash -FilePath $archivePath -HashFilePath $hashPath
 
-                    $results[$archive.Type] = @{
-                        ArchivePath = $archivePath
-                        HashPath = $hashPath
-                        ArchiveSuccess = $success
-                        HashSuccess = $hashSuccess
-                    }
-                } else {
-                    $results[$archive.Type] = @{
-                        ArchiveSuccess = $false
-                        HashSuccess = $false
-                    }
-                }
+            $results[$archive.Type] = @{
+                ArchivePath = $archivePath
+                HashPath = $hashPath
+                ArchiveSuccess = $success
+                HashSuccess = $hashSuccess
             }
-        }
-    } finally {
-        if (-not (Start-BRAVOArchiveSourceServices -ServiceNames $archiveServiceState.StoppedServices)) {
-            $operationFailed = $true
+        } else {
+            $results[$archive.Type] = @{
+                ArchiveSuccess = $false
+                HashSuccess = $false
+            }
         }
     }
     Show-ItemProgress -Id 10 -Activity "BRAVO_ARCHIV — архiвацiя компонентiв" -Completed
