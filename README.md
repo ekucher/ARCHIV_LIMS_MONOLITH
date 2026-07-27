@@ -426,6 +426,11 @@ BRAVO_TASKS_DIAGNOSE.cmd -ConfigPath ".\BRAVO.config" -TestAccess -SendTestNotif
 | `0x8007010B` | некоректний робочий каталог |
 | `0x8007052E` | помилка входу облікового запису |
 
+Якщо 7-Zip повертає code `1` або іншу помилку, у тому самому журналі
+`BRAVO_ARCHIV_*.log` після загального повідомлення записуються останні рядки
+stdout/stderr. Зазвичай вони містять точний недоступний, заблокований або
+пропущений файл.
+
 Якщо tasks відсутні, запустіть `BRAVO_SETUP.cmd -Action Scheduler`. Якщо
 діагностика не читає credentials від `SYSTEM`, повторіть:
 

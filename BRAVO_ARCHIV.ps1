@@ -849,6 +849,45 @@ function Sync-Folders {
 # ФУНКЦІЇ АРХІВАЦІЇ
 # =============================================
 
+function Write-SevenZipFailureDiagnostics {
+    param(
+        [string]$Operation,
+        [string]$StandardOutput,
+        [string]$StandardError,
+        [int]$MaximumLines = 30
+    )
+
+    $diagnosticLines = @(
+        @($StandardError, $StandardOutput) |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+            ForEach-Object { [string]$_ -split '\r?\n' } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            ForEach-Object {
+                $line = ([string]$_).TrimEnd()
+                if ($line.Length -gt 1000) {
+                    $line.Substring(0, 1000) + "... [обрізано]"
+                } else {
+                    $line
+                }
+            } |
+            Select-Object -Last ([math]::Max(1, $MaximumLines))
+    )
+
+    if ($diagnosticLines.Count -eq 0) {
+        Write-Log "$Operation не повернув діагностичного тексту" -Level "WARNING"
+        return
+    }
+
+    $diagnosticText = $diagnosticLines -join [Environment]::NewLine
+    if (-not [string]::IsNullOrWhiteSpace([string]$script:archivePassword)) {
+        $diagnosticText = $diagnosticText.Replace(
+            [string]$script:archivePassword,
+            "********"
+        )
+    }
+    Write-Log "${Operation}: $diagnosticText" -Level "ERROR"
+}
+
 function Test-SevenZipArchiveIntegrity {
     param(
         [string]$SevenZipPath,
@@ -875,16 +914,10 @@ function Test-SevenZipArchiveIntegrity {
     }
 
     Write-Log "Перевiрка цiлiсностi 7-Zip не пройдена (код: $exitCodeText — $($testResult.Description)): $ArchivePath" -Level "ERROR"
-    $diagnosticLines = @(
-        @($testResult.StandardError, $testResult.StandardOutput) |
-            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
-            ForEach-Object { [string]$_ -split '\r?\n' } |
-            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-            Select-Object -Last 20
-    )
-    if ($diagnosticLines.Count -gt 0) {
-        Write-Log "Дiагностика 7-Zip test: $($diagnosticLines -join [Environment]::NewLine)" -Level "DEBUG"
-    }
+    Write-SevenZipFailureDiagnostics `
+        -Operation "Дiагностика 7-Zip test" `
+        -StandardOutput ([string]$testResult.StandardOutput) `
+        -StandardError ([string]$testResult.StandardError)
     return $false
 }
 
@@ -1008,12 +1041,12 @@ function New-Archive {
         if ($showSevenZipProgress) {
             Show-RunningProgress -Id $sevenZipProgressId -Activity $progressActivity -Completed
         }
-        $lastSevenZipOutput = @($standardOutput -split "\r?\n" | Where-Object {
-            -not [string]::IsNullOrWhiteSpace($_)
-        } | Select-Object -Last 1)
-
         if ($archiveTimedOut) {
             Write-Log "Архiвацiю перервано: перевищено таймаут $archiveTimeoutSeconds сек.: $ArchiveName" -Level "ERROR"
+            Write-SevenZipFailureDiagnostics `
+                -Operation "Дiагностика 7-Zip create" `
+                -StandardOutput ([string]$standardOutput) `
+                -StandardError ([string]$errorOutput)
             if (Test-Path -LiteralPath $fullArchivePath -PathType Leaf) {
                 Remove-Item -LiteralPath $fullArchivePath -Force -ErrorAction SilentlyContinue
                 Write-Log "Неповний архiв видалено: $fullArchivePath" -Level "WARNING"
@@ -1036,16 +1069,10 @@ function New-Archive {
         } else {
             $exitDescription = Get-BRAVOSevenZipExitCodeDescription -ExitCode $process.ExitCode
             Write-Log "Помилка архiвацiї 7-Zip (код: $($process.ExitCode) — $exitDescription): $fullArchivePath" -Level "ERROR"
-            if ($showSevenZipProgress) {
-                if (-not [string]::IsNullOrWhiteSpace($lastSevenZipOutput)) {
-                    Write-Log "Останнiй вивiд 7-Zip: $lastSevenZipOutput" -Level "DEBUG"
-                }
-                if (-not [string]::IsNullOrWhiteSpace($errorOutput)) {
-                    Write-Log "Помилка 7-Zip: $errorOutput" -Level "DEBUG"
-                }
-            } else {
-                Write-Log "Деталi: $errorOutput" -Level "DEBUG"
-            }
+            Write-SevenZipFailureDiagnostics `
+                -Operation "Дiагностика 7-Zip create" `
+                -StandardOutput ([string]$standardOutput) `
+                -StandardError ([string]$errorOutput)
             return $false
         }
     } catch {

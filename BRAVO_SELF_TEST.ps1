@@ -112,6 +112,17 @@ try {
         -Condition ([bool]$maintenanceSettings.Services.QuiesceForBackup) `
         -Name "BackupConsistency/QuiesceServices" `
         -Failure "QuiesceForBackup має бути увімкнено"
+    $archiveScriptText = [IO.File]::ReadAllText(
+        (Join-Path $root "BRAVO_ARCHIV.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveScriptText.Contains("Write-SevenZipFailureDiagnostics") -and
+            $archiveScriptText.Contains('Operation "Дiагностика 7-Zip create"')
+        ) `
+        -Name "BackupDiagnostics/SevenZipFailureOutput" `
+        -Failure "помилка створення 7-Zip має записувати діагностичний вивід у лог"
     Test-BRAVOCondition `
         -Condition ([int]$schedulerSettings.OperationLockWaitMinutes -gt 0) `
         -Name "Scheduler/OperationLockWait" `
