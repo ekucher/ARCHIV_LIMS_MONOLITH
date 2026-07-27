@@ -1,7 +1,7 @@
 ﻿##########
 # BravoSoft
 # Author: Evgeniy Kucher
-# Version: 1.7.0, 2026-07-27 - спільний lock backup/maintenance
+# Version: 1.7.1, 2026-07-27 - сповіщення про початково зупинені служби
 ##########
 
 param (
@@ -1333,6 +1333,40 @@ function Send-SlackAlert {
         }
         
         $global:SlackMessageBuffer.Add($Message)
+    }
+}
+
+function Send-InactiveServiceWarning {
+    param([string[]]$ServiceDescriptions)
+
+    $inactiveServices = @($ServiceDescriptions | Where-Object {
+        -not [string]::IsNullOrWhiteSpace([string]$_)
+    } | Select-Object -Unique)
+    if ($inactiveServices.Count -eq 0) {
+        return
+    }
+
+    $serviceList = $inactiveServices -join ", "
+    Write-Log -Message "До початку maintenance не запущені служби: $serviceList" -Level "WARNING"
+    if ($script:SlackMode -eq "none") {
+        Write-Log -Message "Сповіщення про зупинені служби вимкнено режимом none" -Level "INFO"
+        return
+    }
+
+    try {
+        $notificationMessage = New-MaintenanceNotificationMessage `
+            -Title "СЛУЖБИ НЕ ЗАПУЩЕНІ ПЕРЕД MAINTENANCE" `
+            -TitleEmoji ":warning:" `
+            -Duration ((Get-Date) - $global:ScriptStartTime) `
+            -Details @(
+                "Служби: $serviceList",
+                "Скрипт збереже початковий стан і не запускатиме ці служби автоматично."
+            ) `
+            -LogPath $LOG_FILE
+        Invoke-NotificationWebhook -Message $notificationMessage
+        Write-Log -Message "Сповіщення про зупинені служби відправлено в $NotificationProviderDisplayName" -Level "SUCCESS"
+    } catch {
+        Write-Log -Message "Не вдалося відправити сповіщення про зупинені служби: $($_.Exception.Message)" -Level "ERROR"
     }
 }
 
@@ -2722,6 +2756,20 @@ $serviceWasRunning = @{
     BravoWeb = $BravoWebMaintenanceEnabled -and
         (Get-Service -Name $BravoWebServiceName -ErrorAction SilentlyContinue).Status -eq 'Running'
 }
+$inactiveServicesAtStart = @()
+if ($BravoMaintenanceEnabled -and -not $serviceWasRunning.Bravo) {
+    $bravoInitialService = Get-Service -Name $BravoServiceName -ErrorAction SilentlyContinue
+    $inactiveServicesAtStart += "$BravoServiceName ($($bravoInitialService.Status))"
+}
+if ($exchangAPIServiceEnabled -and -not $serviceWasRunning.ExchangeApi) {
+    $exchangeInitialService = Get-Service -Name $ExchangAPIServiceName -ErrorAction SilentlyContinue
+    $inactiveServicesAtStart += "$ExchangAPIServiceName ($($exchangeInitialService.Status))"
+}
+if ($BravoWebMaintenanceEnabled -and -not $serviceWasRunning.BravoWeb) {
+    $bravoWebInitialService = Get-Service -Name $BravoWebServiceName -ErrorAction SilentlyContinue
+    $inactiveServicesAtStart += "$BravoWebServiceName ($($bravoWebInitialService.Status))"
+}
+Send-InactiveServiceWarning -ServiceDescriptions $inactiveServicesAtStart
 
 # Усі операції зі зупиненими службами захищені finally. Навіть необроблена
 # помилка повинна повернути до роботи лише ті служби, які працювали на початку.

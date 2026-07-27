@@ -2760,6 +2760,14 @@ function Get-SMBHealthIssues {
 
 function Get-HealthComponentNames {
     $componentNames = @()
+    $checkManagedServices = if ($backupMonitoring.Contains("CheckManagedServices")) {
+        Test-BRAVOSettingEnabled -Value $backupMonitoring.CheckManagedServices
+    } else {
+        $true
+    }
+    if ($checkManagedServices) {
+        $componentNames += "служби BRAVO"
+    }
     if ($bazaLocalHealthEnabled -or $bazaSFTPHealthEnabled) {
         $componentNames += "BAZA"
     }
@@ -2772,6 +2780,93 @@ function Get-HealthComponentNames {
             ForEach-Object { $_.Type }
     )
     return @($componentNames)
+}
+
+function Get-ManagedServiceHealthIssues {
+    $checkManagedServices = if ($backupMonitoring.Contains("CheckManagedServices")) {
+        Test-BRAVOSettingEnabled -Value $backupMonitoring.CheckManagedServices
+    } else {
+        $true
+    }
+    if (-not $checkManagedServices -or
+        $null -eq $maintenanceSettings -or
+        $null -eq $maintenanceSettings.Services) {
+        return @()
+    }
+
+    $services = New-Object System.Collections.ArrayList
+    $addService = {
+        param([object]$Service)
+
+        if ($null -ne $Service -and
+            @($services | Where-Object { $_.Name -ieq $Service.Name }).Count -eq 0) {
+            [void]$services.Add($Service)
+        }
+    }
+
+    foreach ($serviceName in @(
+            [string]$maintenanceSettings.Services.BravoName,
+            [string]$maintenanceSettings.Services.ExchangeApiName
+        )) {
+        if (-not [string]::IsNullOrWhiteSpace($serviceName)) {
+            & $addService (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)
+        }
+    }
+
+    if (Test-BRAVOSettingEnabled -Value $maintenanceSettings.Services.BravoWebEnabled) {
+        foreach ($candidate in @($maintenanceSettings.Services.BravoWebCandidates)) {
+            if ([string]::IsNullOrWhiteSpace([string]$candidate)) {
+                continue
+            }
+            $webService = Get-Service -Name ([string]$candidate) -ErrorAction SilentlyContinue
+            if ($null -eq $webService) {
+                $webService = Get-Service -DisplayName ([string]$candidate) -ErrorAction SilentlyContinue
+            }
+            if ($null -ne $webService) {
+                & $addService $webService
+                break
+            }
+        }
+    }
+
+    $startModeByName = @{}
+    try {
+        foreach ($serviceInfo in @(Get-BRAVOWmiInstance -ClassName Win32_Service)) {
+            $startModeByName[[string]$serviceInfo.Name] = [string]$serviceInfo.StartMode
+        }
+    } catch {
+        Write-HealthLog "Не вдалося прочитати типи запуску служб: $($_.Exception.Message)" -Level "WARNING"
+    }
+
+    $issues = @()
+    foreach ($service in @($services)) {
+        $startMode = [string]$service.StartType
+        if ([string]::IsNullOrWhiteSpace($startMode) -and
+            $startModeByName.ContainsKey([string]$service.Name)) {
+            $startMode = [string]$startModeByName[[string]$service.Name]
+        }
+        if ($startMode -ieq "Disabled") {
+            Write-HealthLog "Перевірку служби $($service.Name) пропущено: тип запуску Disabled" -Level "INFO"
+            continue
+        }
+
+        $service.Refresh()
+        if ($service.Status -eq [System.ServiceProcess.ServiceControllerStatus]::Running) {
+            Write-HealthLog "Служба $($service.Name) працює" -Level "SUCCESS"
+            continue
+        }
+        $issues += [pscustomobject]@{
+            Kind = "Service"
+            Component = "Служба $($service.Name)"
+            Reason = "не запущена (стан: $($service.Status))"
+            FileName = ""
+            LastWriteTime = $null
+            Location = [string]$service.Name
+            SizeBytes = $null
+            Details = @()
+        }
+    }
+    return @($issues)
 }
 
 function Get-HealthIssueComponentName {
@@ -2942,6 +3037,7 @@ function New-SlackAlertMessage {
     $localIssues = @($Issues | Where-Object {
         $_.Kind -in @("LocalBackup", "LocalSynchronization")
     })
+    $serviceIssues = @($Issues | Where-Object { $_.Kind -eq "Service" })
     $sftpIssues = @($Issues | Where-Object {
         $_.Kind -in @("SFTPArchive", "SFTPSynchronization", "SFTPConnection")
     })
@@ -2951,6 +3047,7 @@ function New-SlackAlertMessage {
     $knownKinds = @(
         "LocalBackup",
         "LocalSynchronization",
+        "Service",
         "SFTPArchive",
         "SFTPSynchronization",
         "SFTPConnection",
@@ -2959,8 +3056,13 @@ function New-SlackAlertMessage {
     )
     $otherIssues = @($Issues | Where-Object { $_.Kind -notin $knownKinds })
 
+    $alertTitle = if ($serviceIssues.Count -gt 0 -and $serviceIssues.Count -eq $Issues.Count) {
+        "СЛУЖБИ BRAVO ПОТРЕБУЮТЬ УВАГИ"
+    } else {
+        "BRAVO ПОТРЕБУЄ УВАГИ"
+    }
     $lines = @(
-        ":rotating_light: *РЕЗЕРВНЕ КОПІЮВАННЯ ПОТРЕБУЄ УВАГИ*",
+        ":rotating_light: *$alertTitle*",
         ":derelict_house_building: $($backupMonitoring.InstitutionName) [$($backupMonitoring.InstitutionCode)]",
         ":desktop_computer: $($hostInformation.MachineName) • $($hostInformation.LocalIP) | $($hostInformation.PublicIP)",
         ":clock3: $dateText, $($healthCheckStarted.ToString('HH:mm:ss')) • $durationSeconds сек.",
@@ -2968,6 +3070,14 @@ function New-SlackAlertMessage {
         "",
         ":package: $($problemComponentNames -join ', ')"
     )
+
+    if ($serviceIssues.Count -gt 0) {
+        $lines += ""
+        $lines += ":gear: *СЛУЖБИ*"
+        foreach ($issue in $serviceIssues) {
+            $lines += ":x: $($issue.Component) — $($issue.Reason)"
+        }
+    }
 
     if ($localIssues.Count -gt 0) {
         $lines += ""
@@ -3377,6 +3487,7 @@ if ($bazaWWWSFTPHealthEnabled) {
     }
 }
 Write-HealthLog "Початок перевірки резервних копій за останні $($backupMonitoring.MaxBackupAgeHours) год."
+$serviceHealthIssues = @(Get-ManagedServiceHealthIssues)
 $localHealthIssues = @(Get-BackupHealthIssues)
 $bazaLocalHealthIssues = if ($bazaLocalHealthEnabled) {
     @(Get-BAZALocalHealthIssues)
@@ -3386,10 +3497,10 @@ $bazaLocalHealthIssues = if ($bazaLocalHealthEnabled) {
 }
 $sftpHealthIssues = @(Get-SFTPHealthIssues)
 $smbHealthIssues = @(Get-SMBHealthIssues)
-$healthIssues = @($localHealthIssues) + @($bazaLocalHealthIssues) + @($sftpHealthIssues) + @($smbHealthIssues)
+$healthIssues = @($serviceHealthIssues) + @($localHealthIssues) + @($bazaLocalHealthIssues) + @($sftpHealthIssues) + @($smbHealthIssues)
 
 if ($healthIssues.Count -eq 0) {
-    Write-HealthLog "Усі увімкнені локальні, SFTP та NAS/SMB-компоненти мають актуальні резервні копії" -Level "SUCCESS"
+    Write-HealthLog "Усі керовані служби працюють, а локальні, SFTP та NAS/SMB-компоненти мають актуальні резервні копії" -Level "SUCCESS"
     Clear-AlertState
 
     $sendSuccessNotification = (
@@ -3431,6 +3542,9 @@ if ($healthIssues.Count -eq 0) {
 
 foreach ($healthIssue in $healthIssues) {
     switch ($healthIssue.Kind) {
+        "Service" {
+            Write-HealthLog "Проблема $($healthIssue.Component): $($healthIssue.Reason)" -Level "ERROR"
+        }
         "SFTPArchive" {
             Write-HealthLog "Проблема $($healthIssue.Component): $($healthIssue.Reason); каталог: $($healthIssue.Location); файл: $($healthIssue.FileName); фактичний розмір: $(Format-FileSize $healthIssue.ActualSizeBytes)" -Level "ERROR"
         }

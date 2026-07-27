@@ -1048,6 +1048,61 @@ function Invoke-BRAVOSevenZipIntegrityTest {
     }
 }
 
+function Send-BRAVOWebhookNotification {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("slack", "discord")]
+        [string]$Provider,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WebhookUrl,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Message,
+
+        [int]$TimeoutSeconds = 30
+    )
+
+    $webhookUri = $null
+    if (-not [Uri]::TryCreate($WebhookUrl, [UriKind]::Absolute, [ref]$webhookUri) -or
+        $webhookUri.Scheme -ne [Uri]::UriSchemeHttps) {
+        throw "Webhook для $Provider не налаштовано або він не використовує HTTPS"
+    }
+    if ([string]::IsNullOrWhiteSpace($Message)) {
+        throw "Текст webhook-повідомлення порожній"
+    }
+
+    Enable-BRAVOTls12
+    $normalizedProvider = $Provider.ToLowerInvariant()
+    $payload = if ($normalizedProvider -eq "discord") {
+        @{
+            content = $Message
+            allowed_mentions = @{parse = @()}
+        }
+    } else {
+        @{text = $Message}
+    }
+    $payloadJson = $payload | ConvertTo-Json -Compress -Depth 4
+    $requestParameters = @{
+        Uri = $webhookUri.AbsoluteUri
+        Method = "Post"
+        ContentType = "application/json; charset=utf-8"
+        Body = [System.Text.Encoding]::UTF8.GetBytes($payloadJson)
+        TimeoutSec = [math]::Max(1, $TimeoutSeconds)
+        UseBasicParsing = $true
+        ErrorAction = "Stop"
+    }
+    $response = Invoke-WebRequest @requestParameters
+
+    if ($normalizedProvider -eq "slack") {
+        $responseText = ([string]$response.Content).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($responseText) -and $responseText -ne "ok") {
+            throw "Slack повернув неочікувану відповідь: $responseText"
+        }
+    }
+}
+
 Assert-BRAVOPowerShellCompatibility
 [void](Initialize-BRAVOConsoleEncoding -CodePage 65001)
 $script:BRAVOCompatibility = Get-BRAVOCompatibilityInfo

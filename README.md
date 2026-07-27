@@ -1,4 +1,4 @@
-# BRAVO 4.9.0 — архівація, обслуговування та контроль резервних копій
+# BRAVO 4.9.1 — архівація, обслуговування та контроль резервних копій
 
 Цей комплект автоматизує:
 
@@ -99,7 +99,7 @@ C:\LIMS\
 | `componentSettings` | які архіви, BAZA, SFTP і SMB потрібно виконувати |
 | SFTP | `sftpHostTemplate`, порт, fingerprint `sftpHostKey`, віддалені каталоги |
 | `smbSettings` | реальний UNC-шлях і підкаталоги, якщо `ArchiveCopy = $true` |
-| `backupMonitoring` | допустимий вік копій, SHA512-перевірки і частота повторних alert |
+| `backupMonitoring` | `CheckManagedServices`, допустимий вік копій, SHA512-перевірки і частота повторних alert |
 | `schedulerSettings` | час запуску, імена завдань, таймаути і task account |
 
 Початково ввімкнено:
@@ -306,12 +306,19 @@ BRAVO_CREDENTIALS_SETUP.cmd -Action Set -Component Institution -StoreFor Both
 |---|---|---|
 | `BRAVO_ARCHIV` | щодня `23:00` | архівація та передача копій |
 | `BRAVO_MAINTENANCE` | щодня `23:55` | обслуговування BRAVO |
-| `BRAVO_ARCHIV_HEALTH` | щогодини від `00:15` | контроль локальних/SFTP/SMB копій |
+| `BRAVO_ARCHIV_HEALTH` | щогодини від `00:15` | контроль служб і локальних/SFTP/SMB копій |
 
 Архівація, maintenance і health-check використовують спільний
 `BRAVO_OPERATION.lock`. Якщо інша операція вже працює, наступна не накладається
 на неї. Backup і maintenance можуть очікувати звільнення lock до 360 хвилин;
 health-check пропускає перевірку під час активного backup.
+
+Якщо перед архівацією або maintenance встановлена керована служба не має стану
+`Running`, Slack/Discord одразу отримує одне зведене попередження. Початково
+зупинена служба не запускається автоматично після завершення. Погодинний
+health-check повторно контролює встановлені служби, крім служб із типом запуску
+`Disabled`; однакові health-alert пригнічуються на інтервал
+`RepeatAlertAfterHours`.
 
 Встановити або оновити лише завдання:
 

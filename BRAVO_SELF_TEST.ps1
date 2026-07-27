@@ -73,6 +73,19 @@ try {
     }
 
     . (Join-Path $root "BRAVO_COMPATIBILITY.ps1")
+    $insecureWebhookRejected = $false
+    try {
+        Send-BRAVOWebhookNotification `
+            -Provider "slack" `
+            -WebhookUrl "http://127.0.0.1/test" `
+            -Message "test"
+    } catch {
+        $insecureWebhookRejected = $_.Exception.Message -match "HTTPS"
+    }
+    Test-BRAVOCondition `
+        -Condition $insecureWebhookRejected `
+        -Name "Notifications/RejectInsecureWebhook" `
+        -Failure "спільний webhook-клієнт повинен відхиляти HTTP до мережевого запиту"
     Test-BRAVOCondition `
         -Condition (Test-BRAVOAccountIdentityEquivalent `
             -ExpectedAccount "SYSTEM" `
@@ -101,9 +114,9 @@ try {
     & ([scriptblock]::Create($configText)) -ConfigRoot $configRoot
 
     Test-BRAVOCondition `
-        -Condition ([string]$ScriptVersion -eq "4.0.0") `
+        -Condition ([string]$ScriptVersion -eq "4.0.1") `
         -Name "Version/BRAVO_ARCHIV" `
-        -Failure "очікується 4.0.0, отримано '$ScriptVersion'"
+        -Failure "очікується 4.0.1, отримано '$ScriptVersion'"
     Test-BRAVOCondition `
         -Condition (-not ([string]$archiveParams -match '(?i)(^|\s)-ssw(\s|$)')) `
         -Name "BackupConsistency/NoSSW" `
@@ -123,6 +136,13 @@ try {
         ) `
         -Name "BackupDiagnostics/SevenZipFailureOutput" `
         -Failure "помилка створення 7-Zip має записувати діагностичний вивід у лог"
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveScriptText.Contains("Send-BRAVOArchiveInactiveServiceWarning") -and
+            $archiveScriptText.Contains("Send-BRAVOWebhookNotification")
+        ) `
+        -Name "Notifications/ArchiveInactiveServices" `
+        -Failure "архівація має негайно сповіщати про початково зупинені служби"
     $maintenanceScriptText = [IO.File]::ReadAllText(
         (Join-Path $root "BRAVO_MAINTENANCE.ps1"),
         [Text.Encoding]::UTF8
@@ -135,6 +155,25 @@ try {
         ) `
         -Name "Maintenance/AtomicUtf8RestoreMarker" `
         -Failure "маркер успішної реставрації має атомарно записуватися у UTF-8"
+    Test-BRAVOCondition `
+        -Condition (
+            $maintenanceScriptText.Contains("Send-InactiveServiceWarning") -and
+            $maintenanceScriptText.Contains("СЛУЖБИ НЕ ЗАПУЩЕНІ ПЕРЕД MAINTENANCE")
+        ) `
+        -Name "Notifications/MaintenanceInactiveServices" `
+        -Failure "maintenance має негайно сповіщати про початково зупинені служби"
+    $healthScriptText = [IO.File]::ReadAllText(
+        (Join-Path $root "BRAVO_ARCHIV_HEALTH.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    Test-BRAVOCondition `
+        -Condition (
+            [bool]$backupMonitoring.CheckManagedServices -and
+            $healthScriptText.Contains("Get-ManagedServiceHealthIssues") -and
+            $healthScriptText.Contains('Kind = "Service"')
+        ) `
+        -Name "Notifications/HealthInactiveServices" `
+        -Failure "health-check має виявляти встановлені не-Disabled служби поза operation lock"
     Test-BRAVOCondition `
         -Condition ([int]$schedulerSettings.OperationLockWaitMinutes -gt 0) `
         -Name "Scheduler/OperationLockWait" `

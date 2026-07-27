@@ -107,6 +107,25 @@ $script:credentialInitializationError = $null
 $script:archiveCredentialInitializationError = $null
 $script:smbCredentialInitializationError = $null
 $script:institutionSettingsInitializationError = $null
+$script:notificationWebhookUrl = $null
+$script:notificationCredentialInitializationError = $null
+$script:notificationProvider = ([string]$bravoSettings.NotificationProvider).ToLowerInvariant()
+if ([string]::IsNullOrWhiteSpace($script:notificationProvider)) {
+    $script:notificationProvider = "discord"
+}
+$script:notificationMode = [string]$bravoSettings.NotificationMode
+if ([string]::IsNullOrWhiteSpace($script:notificationMode)) {
+    $script:notificationMode = [string]$bravoSettings.SlackMode
+}
+if ([string]::IsNullOrWhiteSpace($script:notificationMode)) {
+    $script:notificationMode = "none"
+}
+$script:notificationMode = $script:notificationMode.ToLowerInvariant()
+$script:notificationRequestTimeoutSeconds = if ($null -ne $bravoSettings.NotificationRequestTimeoutSeconds) {
+    [math]::Max(1, [int]$bravoSettings.NotificationRequestTimeoutSeconds)
+} else {
+    30
+}
 $sftpCredentialRequired = $SyncBAZA -or
     [bool]$componentSettings.SFTP.ArchiveUpload -or
     [bool]$componentSettings.Synchronization.BAZASFTP -or
@@ -123,12 +142,15 @@ $institutionSettingsRequired = (
     $null -ne $bravoSettings.InstitutionCode -and
     $null -ne $bravoSettings.ArchivePrefix
 )
+$notificationCredentialRequired = -not $SyncBAZA -and
+    $script:notificationMode -ne "none"
 $credentialHelperLoaded = $false
 
 if ($institutionSettingsRequired -or
     $sftpCredentialRequired -or
     $smbCredentialRequired -or
-    $archiveCredentialRequired) {
+    $archiveCredentialRequired -or
+    $notificationCredentialRequired) {
     try {
         if ([string]::IsNullOrWhiteSpace([string]$credentialSettings.HelperPath) -or
             -not (Test-Path -LiteralPath $credentialSettings.HelperPath -PathType Leaf)) {
@@ -149,6 +171,9 @@ if ($institutionSettingsRequired -or
         }
         if ($institutionSettingsRequired) {
             $script:institutionSettingsInitializationError = $_.Exception.Message
+        }
+        if ($notificationCredentialRequired) {
+            $script:notificationCredentialInitializationError = $_.Exception.Message
         }
     }
 }
@@ -255,6 +280,32 @@ if ($credentialHelperLoaded -and $smbCredentialRequired) {
         $secureSmbPassword = $null
     } catch {
         $script:smbCredentialInitializationError = $_.Exception.Message
+    }
+}
+
+if ($credentialHelperLoaded -and $notificationCredentialRequired) {
+    try {
+        if ($script:notificationProvider -notin @("slack", "discord")) {
+            throw "невідомий канал повідомлень: $($script:notificationProvider)"
+        }
+        $notificationCredentialTarget = if ($script:notificationProvider -eq "discord") {
+            [string]$credentialSettings.Targets.DiscordWebhook
+        } else {
+            [string]$credentialSettings.Targets.SlackWebhook
+        }
+        if ([string]::IsNullOrWhiteSpace($notificationCredentialTarget)) {
+            $notificationCredentialTarget = if ($script:notificationProvider -eq "discord") {
+                "BRAVO_DISCORD_URL"
+            } else {
+                "BRAVO_SLACK_URL"
+            }
+        }
+        $script:notificationWebhookUrl = Get-BRAVOCredentialSecret -Target $notificationCredentialTarget
+        if ([string]::IsNullOrWhiteSpace($script:notificationWebhookUrl)) {
+            throw "запис Credential Manager '$notificationCredentialTarget' не знайдено або він порожній для $([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+        }
+    } catch {
+        $script:notificationCredentialInitializationError = $_.Exception.Message
     }
 }
 
@@ -2369,10 +2420,21 @@ function Stop-BRAVOArchiveSourceServices {
     )
     $stoppedServices = New-Object System.Collections.ArrayList
     try {
-        foreach ($service in @(Get-BRAVOArchiveServiceCandidates)) {
+        $serviceCandidates = @(Get-BRAVOArchiveServiceCandidates)
+        $inactiveServices = @(
+            foreach ($service in $serviceCandidates) {
+                $service.Refresh()
+                if ($service.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Running) {
+                    "$($service.Name) ($($service.Status))"
+                }
+            }
+        )
+        Send-BRAVOArchiveInactiveServiceWarning -ServiceDescriptions $inactiveServices
+
+        foreach ($service in $serviceCandidates) {
             $service.Refresh()
             if ($service.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Running) {
-                Write-Log "Служба $($service.Name) не працювала; стан не змінюється" -Level "INFO"
+                Write-Log "Служба $($service.Name) не працювала; стан не змінюється" -Level "WARNING"
                 continue
             }
 
@@ -2396,6 +2458,53 @@ function Stop-BRAVOArchiveSourceServices {
             Success = $false
             StoppedServices = @()
         }
+    }
+}
+
+function Send-BRAVOArchiveInactiveServiceWarning {
+    param([string[]]$ServiceDescriptions)
+
+    $inactiveServices = @($ServiceDescriptions | Where-Object {
+        -not [string]::IsNullOrWhiteSpace([string]$_)
+    } | Select-Object -Unique)
+    if ($inactiveServices.Count -eq 0) {
+        return
+    }
+
+    $serviceList = $inactiveServices -join ", "
+    Write-Log "До початку backup не запущені служби: $serviceList" -Level "WARNING"
+    if ($script:notificationMode -eq "none") {
+        Write-Log "Сповіщення про зупинені служби вимкнено режимом none" -Level "INFO"
+        return
+    }
+    if (-not [string]::IsNullOrWhiteSpace($script:notificationCredentialInitializationError)) {
+        Write-Log (
+            "Не вдалося відправити сповіщення про зупинені служби: " +
+            $script:notificationCredentialInitializationError
+        ) -Level "ERROR"
+        return
+    }
+
+    $institutionName = [string]$bravoSettings.InstitutionName
+    $institutionCode = [string]$bravoSettings.InstitutionCode
+    $message = @(
+        "⚠️ СЛУЖБИ НЕ ЗАПУЩЕНІ ПЕРЕД BACKUP",
+        "Установа: $institutionName [$institutionCode]",
+        "Сервер: $env:COMPUTERNAME",
+        "Служби: $serviceList",
+        "Скрипт збереже початковий стан і не запускатиме ці служби автоматично.",
+        "Час: $((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))"
+    ) -join [Environment]::NewLine
+
+    try {
+        Send-BRAVOWebhookNotification `
+            -Provider $script:notificationProvider `
+            -WebhookUrl $script:notificationWebhookUrl `
+            -Message $message `
+            -TimeoutSeconds $script:notificationRequestTimeoutSeconds
+        Write-Log "Сповіщення про зупинені служби відправлено у $($script:notificationProvider)" -Level "SUCCESS"
+    } catch {
+        Write-Log "Не вдалося відправити сповіщення про зупинені служби: $($_.Exception.Message)" -Level "ERROR"
     }
 }
 
