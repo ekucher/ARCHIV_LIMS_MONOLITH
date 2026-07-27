@@ -1,0 +1,7 @@
+*.log
+*.mdz
+*.sha512
+*.tmp
+*.bak
+BRAVO_OPERATION.lock
+WinSCP.ini
