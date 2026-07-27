@@ -26,6 +26,10 @@ param(
     [switch]$NoElevation
 )
 
+$helperLoggingPath = Join-Path $PSScriptRoot "BRAVO_HELPER_LOGGING.ps1"
+. $helperLoggingPath
+$null = Start-BRAVOHelperLog -ScriptPath $PSCommandPath -ConfigPath $ConfigPath
+
 # Єдина точка налаштування BRAVO:
 # 1. fail-closed preflight без production-операцій;
 # 2. додавання/оновлення параметрів установи та секретів у Credential Manager;
@@ -154,7 +158,7 @@ function Restart-SetupElevated {
         -Wait `
         -PassThru `
         -WindowStyle Normal
-    exit $process.ExitCode
+    Complete-BRAVOHelperLog -ExitCode $process.ExitCode
 }
 
 try {
@@ -295,10 +299,10 @@ try {
         Write-Host "Production-операції архівації/копіювання/видалення не запускалися." `
             -ForegroundColor Green
     }
-    exit 0
+    Complete-BRAVOHelperLog -ExitCode 0
 } catch {
     Write-Host ""
     Write-Host "ПОМИЛКА НАЛАШТУВАННЯ: $($_.Exception.Message)" -ForegroundColor Red
     Write-Host "Подальші етапи зупинено (fail-closed)." -ForegroundColor Yellow
-    exit 1
+    Complete-BRAVOHelperLog -ExitCode 1
 }

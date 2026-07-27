@@ -441,6 +441,24 @@ BRAVO_CREDENTIALS_SETUP.cmd -Action Ensure -Component Required -StoreFor Both
 C:\LIMS\ARCHIV\LOGS
 ```
 
+Допоміжні скрипти `BRAVO_SETUP`, `BRAVO_DRY_RUN`,
+`BRAVO_CREDENTIALS_SETUP`, `BRAVO_TASKS_INSTALL`,
+`BRAVO_TASKS_UNINSTALL`, `BRAVO_TASKS_DIAGNOSE` і `BRAVO_SELF_TEST` створюють
+окремий transcript для кожного процесу:
+
+```text
+C:\LIMS\ARCHIV\LOGS\HELPERS\<SCRIPT>_yyyyMMdd_HHmmss_fff_PID<n>.log
+```
+
+У журналі є контекст запуску, консольний результат і фінальний process exit
+code. Це дозволяє окремо бачити батьківський setup, дочірні етапи та перевірки
+від `SYSTEM`. Helper-логи зберігаються 31 день. Якщо основний каталог
+недоступний для запису, скрипт попереджає про це і використовує резервний
+`%TEMP%\BRAVO\LOGS\HELPERS`.
+
+Значення паролів, які вводяться через захищений prompt, у лог не виводяться.
+Не передавайте секрети як довільні аргументи командного рядка.
+
 Додатково переглядайте:
 
 - Event Viewer → Applications and Services Logs → Microsoft → Windows →
@@ -510,6 +528,7 @@ ARCHIV_VETOFFICE.cmd
 | `BRAVO.config` | головна конфігурація BRAVO |
 | `BRAVO_CREDENTIALS_SETUP.cmd/.ps1` | керування записами Credential Manager |
 | `BRAVO_CREDENTIALS.ps1` | внутрішня бібліотека читання/запису credentials |
+| `BRAVO_HELPER_LOGGING.ps1` | спільне transcript-журналювання допоміжних скриптів |
 | `BRAVO_TASKS_INSTALL.cmd/.ps1` | встановлення завдань |
 | `BRAVO_TASKS_UNINSTALL.cmd/.ps1` | видалення завдань |
 | `BRAVO_COMPATIBILITY.ps1` | сумісність зі старими Windows/PowerShell |

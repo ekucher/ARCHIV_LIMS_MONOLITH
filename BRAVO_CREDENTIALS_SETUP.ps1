@@ -38,6 +38,10 @@ param(
     [string]$ResultPath
 )
 
+$helperLoggingPath = Join-Path $PSScriptRoot "BRAVO_HELPER_LOGGING.ps1"
+. $helperLoggingPath
+$null = Start-BRAVOHelperLog -ScriptPath $PSCommandPath -ConfigPath $ConfigPath
+
 $interactiveMenuRequested = (
     -not $PSBoundParameters.ContainsKey("Action") -and
     -not $PSBoundParameters.ContainsKey("Component") -and
@@ -56,13 +60,13 @@ $bravoScriptDirectory = if (-not [string]::IsNullOrWhiteSpace($PSCommandPath)) {
 $compatibilityModulePath = Join-Path $bravoScriptDirectory "BRAVO_COMPATIBILITY.ps1"
 if (-not (Test-Path -LiteralPath $compatibilityModulePath -PathType Leaf)) {
     Write-Error "Не знайдено модуль сумісності: $compatibilityModulePath"
-    exit 1
+    Complete-BRAVOHelperLog -ExitCode 1
 }
 try {
     . $compatibilityModulePath
 } catch {
     Write-Error "Помилка сумісності: $($_.Exception.Message)"
-    exit 1
+    Complete-BRAVOHelperLog -ExitCode 1
 }
 if ($BRAVOPowerShellUpdate.IsUpdateRecommended) {
     Write-Warning $BRAVOPowerShellUpdate.Message
@@ -1015,7 +1019,7 @@ try {
             throw "Для worker-режиму не вказано ResultPath"
         }
         Invoke-ProtectedPayloadWorker -PayloadPath $ProtectedPayloadPath -WorkerResultPath $ResultPath
-        exit 0
+        Complete-BRAVOHelperLog -ExitCode 0
     }
 
     if ($interactiveMenuRequested) {
@@ -1024,7 +1028,7 @@ try {
             -AskForStore (-not $storeForWasSpecified)
         if ($null -eq $menuSelection) {
             Write-Host "Роботу завершено без змін." -ForegroundColor Yellow
-            exit 0
+            Complete-BRAVOHelperLog -ExitCode 0
         }
         $Action = [string]$menuSelection.Action
         $Component = @([string]$menuSelection.Component)
@@ -1034,7 +1038,7 @@ try {
     $requestedComponents = @(Resolve-RequestedComponents)
     if ($requestedComponents.Count -eq 0) {
         Write-Host "Немає секретів, необхідних для увімкнених компонентів." -ForegroundColor Yellow
-        exit 0
+        Complete-BRAVOHelperLog -ExitCode 0
     }
 
     $scheduledAccount = [string]$schedulerSettings.RunAsUser
@@ -1080,7 +1084,7 @@ try {
             -PassThru `
             -WindowStyle Normal
         Write-Host "Налаштування Credential Manager завершено з кодом $($process.ExitCode)."
-        exit $process.ExitCode
+        Complete-BRAVOHelperLog -ExitCode $process.ExitCode
     }
 
     $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
@@ -1126,7 +1130,7 @@ try {
 
         Write-OperationResults -Results $availabilityResults
         if (@($availabilityResults | Where-Object { $_.Status -eq "Error" }).Count -gt 0) {
-            exit 1
+            Complete-BRAVOHelperLog -ExitCode 1
         }
         $missingComponents = @(
             $availabilityResults |
@@ -1135,7 +1139,7 @@ try {
         )
         if ($missingComponents.Count -eq 0) {
             Write-Host "Усі запитані записи вже наявні. Значення не змінювалися." -ForegroundColor Green
-            exit 0
+            Complete-BRAVOHelperLog -ExitCode 0
         }
 
         Write-Host (
@@ -1221,9 +1225,9 @@ try {
     Write-OperationResults -Results $operationResults
 
     if (@($operationResults | Where-Object { $_.Status -in @("Error", "Missing") }).Count -gt 0) {
-        exit 1
+        Complete-BRAVOHelperLog -ExitCode 1
     }
-    exit 0
+    Complete-BRAVOHelperLog -ExitCode 0
 } catch {
     if (-not [string]::IsNullOrWhiteSpace($ProtectedPayloadPath) -and
         -not [string]::IsNullOrWhiteSpace($ResultPath)) {
@@ -1241,5 +1245,5 @@ try {
         }
     }
     Write-Host "ПОМИЛКА: $($_.Exception.Message)" -ForegroundColor Red
-    exit 1
+    Complete-BRAVOHelperLog -ExitCode 1
 }

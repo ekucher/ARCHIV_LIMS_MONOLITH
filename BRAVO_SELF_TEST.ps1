@@ -3,6 +3,10 @@ param(
     [string]$ConfigPath
 )
 
+$helperLoggingPath = Join-Path $PSScriptRoot "BRAVO_HELPER_LOGGING.ps1"
+. $helperLoggingPath
+$null = Start-BRAVOHelperLog -ScriptPath $PSCommandPath -ConfigPath $ConfigPath
+
 $ErrorActionPreference = "Stop"
 $root = if ($PSCommandPath) {
     Split-Path -Path $PSCommandPath -Parent
@@ -43,6 +47,29 @@ try {
             -Condition ($errors.Count -eq 0) `
             -Name "Parser/$($file.Name)" `
             -Failure (($errors | ForEach-Object { $_.Message }) -join " | ")
+    }
+
+    $helperEntryPoints = @(
+        "BRAVO_SETUP.ps1",
+        "BRAVO_DRY_RUN.ps1",
+        "BRAVO_CREDENTIALS_SETUP.ps1",
+        "BRAVO_TASKS_INSTALL.ps1",
+        "BRAVO_TASKS_UNINSTALL.ps1",
+        "BRAVO_TASKS_DIAGNOSE.ps1",
+        "BRAVO_SELF_TEST.ps1"
+    )
+    foreach ($fileName in $helperEntryPoints) {
+        $helperText = [IO.File]::ReadAllText(
+            (Join-Path $root $fileName),
+            [Text.Encoding]::UTF8
+        )
+        Test-BRAVOCondition `
+            -Condition (
+                $helperText.Contains("Start-BRAVOHelperLog") -and
+                $helperText.Contains("Complete-BRAVOHelperLog")
+            ) `
+            -Name "HelperLogging/$fileName" `
+            -Failure "допоміжний скрипт не підключає повний цикл журналювання"
     }
 
     $resolvedConfig = (Resolve-Path -LiteralPath $ConfigPath).Path
@@ -106,7 +133,7 @@ try {
 
 if ($script:failures.Count -gt 0) {
     Write-Host "SELF-TEST FAILED: $($script:failures.Count)" -ForegroundColor Red
-    exit 1
+    Complete-BRAVOHelperLog -ExitCode 1
 }
 Write-Host "SELF-TEST PASSED" -ForegroundColor Green
-exit 0
+Complete-BRAVOHelperLog -ExitCode 0

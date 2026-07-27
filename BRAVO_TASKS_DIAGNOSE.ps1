@@ -7,6 +7,10 @@ param(
     [switch]$NoElevation
 )
 
+$helperLoggingPath = Join-Path $PSScriptRoot "BRAVO_HELPER_LOGGING.ps1"
+. $helperLoggingPath
+$null = Start-BRAVOHelperLog -ScriptPath $PSCommandPath -ConfigPath $ConfigPath
+
 $ErrorActionPreference = "Stop"
 $scriptRoot = if ($PSCommandPath) {
     Split-Path -Path $PSCommandPath -Parent
@@ -132,7 +136,7 @@ try {
             -Wait `
             -PassThru `
             -WindowStyle Normal
-        exit $process.ExitCode
+        Complete-BRAVOHelperLog -ExitCode $process.ExitCode
     }
 
     if ($null -eq $schedulerSettings) {
@@ -201,10 +205,10 @@ try {
 
     if ($InspectOnly) {
         if ($registrationFailed) {
-            exit 1
+            Complete-BRAVOHelperLog -ExitCode 1
         }
         Write-Host "Реєстрацію постійних завдань перевірено." -ForegroundColor Green
-        exit 0
+        Complete-BRAVOHelperLog -ExitCode 0
     }
 
     Write-Host ""
@@ -311,11 +315,11 @@ try {
     }
 
     if ($registrationFailed -or $dryRunFailed) {
-        exit 1
+        Complete-BRAVOHelperLog -ExitCode 1
     }
     Write-Host "Завдання і доступ від SYSTEM перевірено успішно." -ForegroundColor Green
-    exit 0
+    Complete-BRAVOHelperLog -ExitCode 0
 } catch {
     Write-Host "ПОМИЛКА ДІАГНОСТИКИ: $($_.Exception.Message)" -ForegroundColor Red
-    exit 1
+    Complete-BRAVOHelperLog -ExitCode 1
 }

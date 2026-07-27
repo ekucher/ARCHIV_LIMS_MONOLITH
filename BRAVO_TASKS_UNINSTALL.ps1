@@ -5,6 +5,10 @@ param(
     [switch]$StopRunningTasks
 )
 
+$helperLoggingPath = Join-Path $PSScriptRoot "BRAVO_HELPER_LOGGING.ps1"
+. $helperLoggingPath
+$null = Start-BRAVOHelperLog -ScriptPath $PSCommandPath -ConfigPath $ConfigPath
+
 $bravoScriptDirectory = if (-not [string]::IsNullOrWhiteSpace($PSCommandPath)) {
     Split-Path -Path $PSCommandPath -Parent
 } elseif (-not [string]::IsNullOrWhiteSpace($MyInvocation.MyCommand.Path)) {
@@ -16,13 +20,13 @@ $bravoScriptDirectory = if (-not [string]::IsNullOrWhiteSpace($PSCommandPath)) {
 $compatibilityModulePath = Join-Path $bravoScriptDirectory "BRAVO_COMPATIBILITY.ps1"
 if (-not (Test-Path -LiteralPath $compatibilityModulePath -PathType Leaf)) {
     Write-Error "Не знайдено модуль сумісності: $compatibilityModulePath"
-    exit 1
+    Complete-BRAVOHelperLog -ExitCode 1
 }
 try {
     . $compatibilityModulePath
 } catch {
     Write-Error "Помилка сумісності: $($_.Exception.Message)"
-    exit 1
+    Complete-BRAVOHelperLog -ExitCode 1
 }
 if ($BRAVOPowerShellUpdate.IsUpdateRecommended) {
     Write-Warning $BRAVOPowerShellUpdate.Message
@@ -106,7 +110,7 @@ function Get-BRAVOTaskStateName {
 
 if (-not (Test-Path -Path $ConfigPath -PathType Leaf)) {
     Write-Error "Файл конфігурації не знайдено: $ConfigPath"
-    exit 1
+    Complete-BRAVOHelperLog -ExitCode 1
 }
 
 $resolvedConfigPath = (Resolve-Path -Path $ConfigPath).Path
@@ -145,7 +149,7 @@ try {
     }
 } catch {
     Write-Error "Помилка конфігурації планувальника: $($_.Exception.Message)"
-    exit 1
+    Complete-BRAVOHelperLog -ExitCode 1
 }
 
 if (-not $ValidateOnly -and -not (Test-IsAdministrator)) {
@@ -163,10 +167,10 @@ if (-not $ValidateOnly -and -not (Test-IsAdministrator)) {
             -Wait `
             -PassThru `
             -WindowStyle Normal
-        exit $elevatedProcess.ExitCode
+        Complete-BRAVOHelperLog -ExitCode $elevatedProcess.ExitCode
     } catch {
         Write-Error "Не вдалося отримати права адміністратора: $($_.Exception.Message)"
-        exit 1
+        Complete-BRAVOHelperLog -ExitCode 1
     }
 }
 
@@ -209,7 +213,7 @@ try {
             Write-Host "Запущені завдання без -StopRunningTasks видалятися не будуть." -ForegroundColor Yellow
         }
         Write-Host "Системні зміни не виконувалися." -ForegroundColor Green
-        exit 0
+        Complete-BRAVOHelperLog -ExitCode 0
     }
 
     if ($runningTasks.Count -gt 0 -and -not $StopRunningTasks) {
@@ -236,8 +240,8 @@ try {
         Remove-TaskFolderIfEmpty -TaskPath $legacyTaskPath
     }
     Write-Host "Видалення завдань BRAVO завершено." -ForegroundColor Green
-    exit 0
+    Complete-BRAVOHelperLog -ExitCode 0
 } catch {
     Write-Error "Не вдалося видалити завдання: $($_.Exception.Message)"
-    exit 1
+    Complete-BRAVOHelperLog -ExitCode 1
 }

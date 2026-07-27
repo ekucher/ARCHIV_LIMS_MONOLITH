@@ -2,6 +2,9 @@
 
 ## 4.9.0 — 2026-07-27
 
+- Допоміжні setup, dry-run, credentials, scheduler і self-test скрипти
+  отримали окремі transcript-журнали у `LOGS\HELPERS`, фінальний exit code,
+  31-денний retention і fallback до `%TEMP%`, якщо runtime недоступний.
 - Додано кореневий `README.md` з єдиним маршрутом першої інсталяції,
   оновлення, dry-run, налаштування Credential Manager, Планувальника,
   діагностики запуску від `SYSTEM` і окремими командами VETOFFICE.

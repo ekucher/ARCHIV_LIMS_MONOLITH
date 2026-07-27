@@ -9,6 +9,13 @@ param(
     [string]$ResultPath
 )
 
+$helperLoggingPath = Join-Path $PSScriptRoot "BRAVO_HELPER_LOGGING.ps1"
+. $helperLoggingPath
+$null = Start-BRAVOHelperLog `
+    -ScriptPath $PSCommandPath `
+    -ConfigPath $ConfigPath `
+    -QuietConsole:$AsJson
+
 # Безпечна симуляція BRAVO/VETOFFICE:
 # - не створює архіви та каталоги;
 # - не копіює, не синхронізує і не видаляє файли;
@@ -914,6 +921,6 @@ try {
 Write-DryRunOutput
 $failureCount = @($script:dryRunResults | Where-Object { $_.Status -eq "FAIL" }).Count
 if ($failureCount -gt 0) {
-    exit 1
+    Complete-BRAVOHelperLog -ExitCode 1
 }
-exit 0
+Complete-BRAVOHelperLog -ExitCode 0
