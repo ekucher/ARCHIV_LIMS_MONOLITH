@@ -450,6 +450,10 @@ BRAVO_CREDENTIALS_SETUP.cmd -Action Ensure -Component Required -StoreFor Both
 C:\LIMS\ARCHIV\LOGS
 ```
 
+Marker `restore_done_yyyyMMdd.marker` створюється лише після успішної
+реставрації, перевіреного after-архіву та SHA512. Він записується атомарно у
+UTF-8 і не створюється після примусового `-ForceRestore`.
+
 Допоміжні скрипти `BRAVO_SETUP`, `BRAVO_DRY_RUN`,
 `BRAVO_CREDENTIALS_SETUP`, `BRAVO_TASKS_INSTALL`,
 `BRAVO_TASKS_UNINSTALL`, `BRAVO_TASKS_DIAGNOSE` і `BRAVO_SELF_TEST` створюють

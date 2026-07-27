@@ -123,6 +123,18 @@ try {
         ) `
         -Name "BackupDiagnostics/SevenZipFailureOutput" `
         -Failure "помилка створення 7-Zip має записувати діагностичний вивід у лог"
+    $maintenanceScriptText = [IO.File]::ReadAllText(
+        (Join-Path $root "BRAVO_MAINTENANCE.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    Test-BRAVOCondition `
+        -Condition (
+            $maintenanceScriptText.Contains('$temporaryMarkerFile') -and
+            $maintenanceScriptText.Contains('System.Text.UTF8Encoding($false)') -and
+            $maintenanceScriptText.Contains('Move-Item')
+        ) `
+        -Name "Maintenance/AtomicUtf8RestoreMarker" `
+        -Failure "маркер успішної реставрації має атомарно записуватися у UTF-8"
     Test-BRAVOCondition `
         -Condition ([int]$schedulerSettings.OperationLockWaitMinutes -gt 0) `
         -Name "Scheduler/OperationLockWait" `

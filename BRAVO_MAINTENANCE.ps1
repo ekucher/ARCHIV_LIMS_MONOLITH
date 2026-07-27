@@ -1618,7 +1618,7 @@ function Compare-FileSizes {
             
             return $true
         } else {
-            Write-Log "Змін в розмірах файлів не знайдено" -Level "INFO"
+            Write-Log "Відсутніх файлів або критичних зменшень розміру не знайдено" -Level "INFO"
             return $false
         }
     }
@@ -2963,7 +2963,18 @@ if ($BravoMaintenanceEnabled -and $bravoStatus -ne "Running") {
                         
                         # Створення маркера ЛИШЕ при успішній реставрації без критичних змін
                         if ($afterArchiveReady -and $createMarker -and -not $ForceRestore) {
-                            Set-Content -Path $MARKER_FILE -Value "Реставрація виконана $NOW"
+                            $temporaryMarkerFile = "$MARKER_FILE.tmp"
+                            $markerEncoding = New-Object System.Text.UTF8Encoding($false)
+                            [System.IO.File]::WriteAllText(
+                                $temporaryMarkerFile,
+                                "Реставрація виконана $NOW`r`n",
+                                $markerEncoding
+                            )
+                            Move-Item `
+                                -LiteralPath $temporaryMarkerFile `
+                                -Destination $MARKER_FILE `
+                                -Force `
+                                -ErrorAction Stop
                             Write-Log -Message "Створено маркерний файл: $MARKER_FILE" -Level "SUCCESS"
                         }
                     } else {
