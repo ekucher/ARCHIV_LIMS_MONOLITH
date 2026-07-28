@@ -900,45 +900,6 @@ function Sync-Folders {
 # ФУНКЦІЇ АРХІВАЦІЇ
 # =============================================
 
-function Write-SevenZipFailureDiagnostics {
-    param(
-        [string]$Operation,
-        [string]$StandardOutput,
-        [string]$StandardError,
-        [int]$MaximumLines = 30
-    )
-
-    $diagnosticLines = @(
-        @($StandardError, $StandardOutput) |
-            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
-            ForEach-Object { [string]$_ -split '\r?\n' } |
-            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-            ForEach-Object {
-                $line = ([string]$_).TrimEnd()
-                if ($line.Length -gt 1000) {
-                    $line.Substring(0, 1000) + "... [обрізано]"
-                } else {
-                    $line
-                }
-            } |
-            Select-Object -Last ([math]::Max(1, $MaximumLines))
-    )
-
-    if ($diagnosticLines.Count -eq 0) {
-        Write-Log "$Operation не повернув діагностичного тексту" -Level "WARNING"
-        return
-    }
-
-    $diagnosticText = $diagnosticLines -join [Environment]::NewLine
-    if (-not [string]::IsNullOrWhiteSpace([string]$script:archivePassword)) {
-        $diagnosticText = $diagnosticText.Replace(
-            [string]$script:archivePassword,
-            "********"
-        )
-    }
-    Write-Log "${Operation}: $diagnosticText" -Level "ERROR"
-}
-
 function Test-SevenZipArchiveIntegrity {
     param(
         [string]$SevenZipPath,
@@ -965,10 +926,16 @@ function Test-SevenZipArchiveIntegrity {
     }
 
     Write-Log "Перевiрка цiлiсностi 7-Zip не пройдена (код: $exitCodeText — $($testResult.Description)): $ArchivePath" -Level "ERROR"
-    Write-SevenZipFailureDiagnostics `
-        -Operation "Дiагностика 7-Zip test" `
-        -StandardOutput ([string]$testResult.StandardOutput) `
-        -StandardError ([string]$testResult.StandardError)
+    $diagnosticLines = @(
+        @($testResult.StandardError, $testResult.StandardOutput) |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+            ForEach-Object { [string]$_ -split '\r?\n' } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -Last 20
+    )
+    if ($diagnosticLines.Count -gt 0) {
+        Write-Log "Дiагностика 7-Zip test: $($diagnosticLines -join [Environment]::NewLine)" -Level "DEBUG"
+    }
     return $false
 }
 
@@ -1092,12 +1059,12 @@ function New-Archive {
         if ($showSevenZipProgress) {
             Show-RunningProgress -Id $sevenZipProgressId -Activity $progressActivity -Completed
         }
+        $lastSevenZipOutput = @($standardOutput -split "\r?\n" | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_)
+        } | Select-Object -Last 1)
+
         if ($archiveTimedOut) {
             Write-Log "Архiвацiю перервано: перевищено таймаут $archiveTimeoutSeconds сек.: $ArchiveName" -Level "ERROR"
-            Write-SevenZipFailureDiagnostics `
-                -Operation "Дiагностика 7-Zip create" `
-                -StandardOutput ([string]$standardOutput) `
-                -StandardError ([string]$errorOutput)
             if (Test-Path -LiteralPath $fullArchivePath -PathType Leaf) {
                 Remove-Item -LiteralPath $fullArchivePath -Force -ErrorAction SilentlyContinue
                 Write-Log "Неповний архiв видалено: $fullArchivePath" -Level "WARNING"
@@ -1120,10 +1087,16 @@ function New-Archive {
         } else {
             $exitDescription = Get-BRAVOSevenZipExitCodeDescription -ExitCode $process.ExitCode
             Write-Log "Помилка архiвацiї 7-Zip (код: $($process.ExitCode) — $exitDescription): $fullArchivePath" -Level "ERROR"
-            Write-SevenZipFailureDiagnostics `
-                -Operation "Дiагностика 7-Zip create" `
-                -StandardOutput ([string]$standardOutput) `
-                -StandardError ([string]$errorOutput)
+            if ($showSevenZipProgress) {
+                if (-not [string]::IsNullOrWhiteSpace($lastSevenZipOutput)) {
+                    Write-Log "Останнiй вивiд 7-Zip: $lastSevenZipOutput" -Level "DEBUG"
+                }
+                if (-not [string]::IsNullOrWhiteSpace($errorOutput)) {
+                    Write-Log "Помилка 7-Zip: $errorOutput" -Level "DEBUG"
+                }
+            } else {
+                Write-Log "Деталi: $errorOutput" -Level "DEBUG"
+            }
             return $false
         }
     } catch {
@@ -2367,116 +2340,6 @@ function Enter-BRAVOArchiveProcessLock {
     }
 }
 
-function Get-BRAVOArchiveServiceCandidates {
-    $services = New-Object System.Collections.ArrayList
-    if ($null -eq $maintenanceSettings -or $null -eq $maintenanceSettings.Services) {
-        return @()
-    }
-
-    if ([System.Convert]::ToBoolean($maintenanceSettings.Services.BravoWebEnabled)) {
-        foreach ($candidate in @($maintenanceSettings.Services.BravoWebCandidates)) {
-            $service = Get-Service -Name ([string]$candidate) -ErrorAction SilentlyContinue
-            if ($null -eq $service) {
-                $service = Get-Service -DisplayName ([string]$candidate) -ErrorAction SilentlyContinue
-            }
-            if ($null -ne $service) {
-                [void]$services.Add($service)
-                break
-            }
-        }
-    }
-
-    foreach ($serviceName in @(
-            [string]$maintenanceSettings.Services.ExchangeApiName,
-            [string]$maintenanceSettings.Services.BravoName
-        )) {
-        if ([string]::IsNullOrWhiteSpace($serviceName)) {
-            continue
-        }
-        $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-        if ($null -ne $service -and
-            @($services | Where-Object { $_.Name -ieq $service.Name }).Count -eq 0) {
-            [void]$services.Add($service)
-        }
-    }
-    return $services.ToArray()
-}
-
-function Test-BRAVOArchiveSourceServiceStates {
-    try {
-        $serviceCandidates = @(Get-BRAVOArchiveServiceCandidates)
-        $inactiveServices = @(
-            foreach ($service in $serviceCandidates) {
-                $service.Refresh()
-                if ($service.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Running) {
-                    "$($service.Name) ($($service.Status))"
-                }
-            }
-        )
-        Send-BRAVOArchiveInactiveServiceWarning -ServiceDescriptions $inactiveServices
-
-        foreach ($service in $serviceCandidates) {
-            $service.Refresh()
-            if ($service.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Running) {
-                Write-Log "Служба $($service.Name) не працює; BRAVO_ARCHIV не змінює її стан" -Level "WARNING"
-            } else {
-                Write-Log "Служба $($service.Name) працює; BRAVO_ARCHIV не змінює її стан" -Level "INFO"
-            }
-        }
-        return $true
-    } catch {
-        Write-Log "Не вдалося перевірити стан служб перед backup: $($_.Exception.Message)" -Level "ERROR"
-        return $false
-    }
-}
-
-function Send-BRAVOArchiveInactiveServiceWarning {
-    param([string[]]$ServiceDescriptions)
-
-    $inactiveServices = @($ServiceDescriptions | Where-Object {
-        -not [string]::IsNullOrWhiteSpace([string]$_)
-    } | Select-Object -Unique)
-    if ($inactiveServices.Count -eq 0) {
-        return
-    }
-
-    $serviceList = $inactiveServices -join ", "
-    Write-Log "До початку backup не запущені служби: $serviceList" -Level "WARNING"
-    if ($script:notificationMode -eq "none") {
-        Write-Log "Сповіщення про зупинені служби вимкнено режимом none" -Level "INFO"
-        return
-    }
-    if (-not [string]::IsNullOrWhiteSpace($script:notificationCredentialInitializationError)) {
-        Write-Log (
-            "Не вдалося відправити сповіщення про зупинені служби: " +
-            $script:notificationCredentialInitializationError
-        ) -Level "ERROR"
-        return
-    }
-
-    $institutionName = [string]$bravoSettings.InstitutionName
-    $institutionCode = [string]$bravoSettings.InstitutionCode
-    $message = @(
-        "⚠️ СЛУЖБИ НЕ ЗАПУЩЕНІ ПЕРЕД BACKUP",
-        "Установа: $institutionName [$institutionCode]",
-        "Сервер: $env:COMPUTERNAME",
-        "Служби: $serviceList",
-        "BRAVO_ARCHIV лише перевіряє стан і ніколи не зупиняє та не запускає служби.",
-        "Час: $((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))"
-    ) -join [Environment]::NewLine
-
-    try {
-        Send-BRAVOWebhookNotification `
-            -Provider $script:notificationProvider `
-            -WebhookUrl $script:notificationWebhookUrl `
-            -Message $message `
-            -TimeoutSeconds $script:notificationRequestTimeoutSeconds
-        Write-Log "Сповіщення про зупинені служби відправлено у $($script:notificationProvider)" -Level "SUCCESS"
-    } catch {
-        Write-Log "Не вдалося відправити сповіщення про зупинені служби: $($_.Exception.Message)" -Level "ERROR"
-    }
-}
-
 # =============================================
 # ОСНОВНА ЛОГІКА
 # =============================================
@@ -2738,11 +2601,6 @@ function Main {
     # Створення архівів
     $archiveIndex = 0
 
-    if ($readyArchives.Count -gt 0) {
-        Write-Log "==="
-        Write-Log "=== ПЕРЕВІРКА СТАНУ СЛУЖБ ==="
-        [void](Test-BRAVOArchiveSourceServiceStates)
-    }
     foreach ($archive in $readyArchives) {
         $archiveIndex++
         $archiveProgress = 30 + [Math]::Floor((($archiveIndex - 1) / [Math]::Max(1, $readyArchives.Count)) * 40)
@@ -2757,7 +2615,7 @@ function Main {
         Write-Log "==="
         Write-Log "=== АРХIВАЦIЯ $($archive.Type) ==="
         $success = New-Archive -SourcePath $archive.Source -ArchivePath $archive.Destination -ArchiveName $archiveName -ArcPath $arcPath -ArcParams $archiveParams
-
+        
         if ($success) {
             Write-Log "==="
             Write-Log "=== СТВОРЕННЯ ХЕШУ $($archive.Type) ==="
@@ -2766,7 +2624,7 @@ function Main {
             $archivePath = Join-Path $archive.Destination $archiveName
             $hashPath = "$archivePath$hashFileExtension"
             $hashSuccess = New-SHA512Hash -FilePath $archivePath -HashFilePath $hashPath
-
+            
             $results[$archive.Type] = @{
                 ArchivePath = $archivePath
                 HashPath = $hashPath
