@@ -11,6 +11,6 @@ if errorlevel 1 (
     echo On Windows 7 install Windows Management Framework 3.0 or newer; WMF 5.1 is recommended.
     exit /b 3
 )
-"%BRAVO_POWERSHELL%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0BRAVO_ARCHIV_HEALTH.ps1" -SetProcessExitCode %*
+"%BRAVO_POWERSHELL%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0BRAVO_ARCHIV.ps1" -HealthCheckOnly %*
 set "BRAVO_EXIT_CODE=%ERRORLEVEL%"
 endlocal & exit /b %BRAVO_EXIT_CODE%

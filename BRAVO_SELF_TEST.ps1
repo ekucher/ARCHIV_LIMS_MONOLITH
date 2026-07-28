@@ -114,13 +114,13 @@ try {
     & ([scriptblock]::Create($configText)) -ConfigRoot $configRoot
 
     Test-BRAVOCondition `
-        -Condition ([string]$ScriptVersion -eq "4.0.2") `
+        -Condition ([string]$ScriptVersion -eq "4.1.0") `
         -Name "Version/BRAVO_ARCHIV" `
-        -Failure "очікується 4.0.2, отримано '$ScriptVersion'"
+        -Failure "очікується 4.1.0, отримано '$ScriptVersion'"
     Test-BRAVOCondition `
-        -Condition (-not ([string]$archiveParams -match '(?i)(^|\s)-ssw(\s|$)')) `
-        -Name "BackupConsistency/NoSSW" `
-        -Failure "щоденний backup не повинен дозволяти читання відкритих файлів"
+        -Condition ([string]$archiveParams -match '(?i)(^|\s)-ssw(\s|$)') `
+        -Name "BackupAvailability/AllowOpenFiles" `
+        -Failure "backup без зупинки служб має дозволяти читання відкритих файлів"
     $archiveScriptText = [IO.File]::ReadAllText(
         (Join-Path $root "BRAVO_ARCHIV.ps1"),
         [Text.Encoding]::UTF8
@@ -134,11 +134,10 @@ try {
         -Failure "помилка створення 7-Zip має записувати діагностичний вивід у лог"
     Test-BRAVOCondition `
         -Condition (
-            $archiveScriptText.Contains("Send-BRAVOArchiveInactiveServiceWarning") -and
-            $archiveScriptText.Contains("Send-BRAVOWebhookNotification")
+            -not $archiveScriptText.Contains("Send-BRAVOArchiveInactiveServiceWarning")
         ) `
-        -Name "Notifications/ArchiveInactiveServices" `
-        -Failure "архівація має негайно сповіщати про початково зупинені служби"
+        -Name "Services/ArchiveDoesNotRequireRunningServices" `
+        -Failure "архівація не повинна вважати штатно зупинені служби помилкою"
     Test-BRAVOCondition `
         -Condition (
             $archiveScriptText -notmatch '(?m)^\s*Stop-Service\b' -and
@@ -167,6 +166,25 @@ try {
         ) `
         -Name "Notifications/MaintenanceInactiveServices" `
         -Failure "maintenance має негайно сповіщати про початково зупинені служби"
+    Test-BRAVOCondition `
+        -Condition (
+            $maintenanceScriptText.Contains("RunMissedRestoreOnly") -and
+            $maintenanceScriptText.Contains("BRAVO_RESTORE_STATE.json") -and
+            $maintenanceScriptText.Contains("Get-BRAVORestoreScheduledOccurrence") -and
+            $maintenanceScriptText.Contains('$runningServices')
+        ) `
+        -Name "Maintenance/MissedRestoreRecoveryState" `
+        -Failure "recovery має зберігати state та перевіряти всі запущені служби до зупинки"
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveScriptText.Contains('Invoke-BRAVOEmbeddedHealth') -and
+            $archiveScriptText.Contains('[switch]$HealthCheckOnly') -and
+            $archiveScriptText.Contains('[switch]$SkipIfBackupTaskRunning') -and
+            $archiveScriptText.Contains('SkipIfBackupTaskRunning = $SkipIfBackupTaskRunning') -and
+            $schedulerSettings.Health.ScriptPath -eq (Join-Path $root 'BRAVO_ARCHIV.ps1')
+        ) `
+        -Name "Health/EmbeddedArchiveMode" `
+        -Failure "health-режим має бути вбудований у BRAVO_ARCHIV.ps1 і використовуватись планувальником"
     $healthScriptText = [IO.File]::ReadAllText(
         (Join-Path $root "BRAVO_ARCHIV_HEALTH.ps1"),
         [Text.Encoding]::UTF8
@@ -204,6 +222,15 @@ try {
     }
 
     $taskInstaller = Join-Path $root "BRAVO_TASKS_INSTALL.ps1"
+    $taskInstallerText = [IO.File]::ReadAllText($taskInstaller, [Text.Encoding]::UTF8)
+    Test-BRAVOCondition `
+        -Condition (
+            $taskInstallerText.Contains("TASK_TRIGGER_BOOT") -and
+            $taskInstallerText.Contains("schedulerSettings.Recovery") -and
+            $taskInstallerText.Contains("RetryEveryMinutes")
+        ) `
+        -Name "Scheduler/MissedRestoreStartupTask" `
+        -Failure "для пропущеної реставрації потрібне startup-завдання"
     & (Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe") `
         -NoLogo `
         -NoProfile `

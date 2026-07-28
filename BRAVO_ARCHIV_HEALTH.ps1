@@ -1932,6 +1932,31 @@ function Get-BAZACloudPendingDifferences {
     )
 }
 
+function Get-BAZAPendingAlertAfterHours {
+    $configuredValue = if (
+        $null -ne $backupMonitoring.SFTP -and
+        $backupMonitoring.SFTP.Contains("BAZAPendingAlertAfterHours")
+    ) {
+        [double]$backupMonitoring.SFTP.BAZAPendingAlertAfterHours
+    } else {
+        26
+    }
+    return [math]::Max(0, $configuredValue)
+}
+
+function Test-BAZAPendingSynchronizationOverdue {
+    param([object]$PreviewSummary)
+
+    $alertAfterHours = Get-BAZAPendingAlertAfterHours
+    if ($null -eq $PreviewSummary.OldestLastWriteTime) {
+        # Порівняння без часу (наприклад, лише каталог) не можна безпечно
+        # вважати новою штатною чергою.
+        return $true
+    }
+    $pendingAge = $healthCheckStarted - [datetime]$PreviewSummary.OldestLastWriteTime
+    return $pendingAge.TotalHours -ge $alertAfterHours
+}
+
 function Invoke-WinSCPBAZAComparisonViaCli {
     param(
         [string]$LocalPath,
@@ -2539,7 +2564,16 @@ function Get-SFTPHealthIssues {
                     Location = $folderCheck.RemotePath
                 }
             } elseif ($previewSummary.DifferenceCount -gt 0) {
-                $issues += [pscustomobject]@{
+                if (-not (Test-BAZAPendingSynchronizationOverdue -PreviewSummary $previewSummary)) {
+                    $pendingAge = $healthCheckStarted - [datetime]$previewSummary.OldestLastWriteTime
+                    Write-HealthLog (
+                        "SFTP $($folderCheck.Name): штатна черга передачі " +
+                        "$($previewSummary.DifferenceCount) об'єктів, найстаріший вік " +
+                        "$(Format-BackupAge $previewSummary.OldestLastWriteTime); " +
+                        "alert після $(Get-BAZAPendingAlertAfterHours) год."
+                    ) -Level "INFO"
+                } else {
+                    $issues += [pscustomobject]@{
                     Kind = "SFTPSynchronization"
                     Component = $folderCheck.Component
                     Reason = "у хмарі відсутні або потребують оновлення локальні файли/папки"
@@ -2550,6 +2584,7 @@ function Get-SFTPHealthIssues {
                     ActionCounts = $previewSummary.ActionCounts
                     Details = @($previewSummary.Details)
                     Location = $folderCheck.RemotePath
+                }
                 }
             } else {
                 $ignoredRemoteExtraCount = if ($null -ne $previewSummary.IgnoredActionCounts) {
@@ -3202,8 +3237,15 @@ function New-SlackSuccessMessage {
 function Get-AlertFingerprint {
     param([array]$Issues)
 
-    $source = "compact-alert-v2`n" + (($Issues | ForEach-Object {
-        "$($_.Kind)|$($_.Component)|$($_.Reason)|$($_.FileName)|$($_.LastWriteTime)|$($_.Location)|$($_.DifferenceCount)|$($_.ExpectedSizeBytes)|$($_.ActualSizeBytes)|$($_.ActionCounts.New)|$($_.ActionCounts.Updated)|$($_.ActionCounts.RemoteExtra)|$($_.ActionCounts.Other)"
+    $source = "compact-alert-v3`n" + (($Issues | ForEach-Object {
+        if ($_.Kind -eq "SFTPSynchronization" -and
+            $_.Reason -eq "у хмарі відсутні або потребують оновлення локальні файли/папки") {
+            # Розмір черги BAZA природно змінюється щогодини. Він не має
+            # створювати новий fingerprint та обходити RepeatAlertAfterHours.
+            "$($_.Kind)|$($_.Component)|$($_.Reason)|$($_.Location)"
+        } else {
+            "$($_.Kind)|$($_.Component)|$($_.Reason)|$($_.FileName)|$($_.LastWriteTime)|$($_.Location)|$($_.DifferenceCount)|$($_.ExpectedSizeBytes)|$($_.ActualSizeBytes)|$($_.ActionCounts.New)|$($_.ActionCounts.Updated)|$($_.ActionCounts.RemoteExtra)|$($_.ActionCounts.Other)"
+        }
     }) -join "`n")
 
     $hasher = [System.Security.Cryptography.SHA256]::Create()

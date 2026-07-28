@@ -125,9 +125,10 @@ try {
     $taskNames = @(
         [string]$schedulerSettings.Backup.TaskName,
         [string]$schedulerSettings.Maintenance.TaskName,
-        [string]$schedulerSettings.Health.TaskName
+        [string]$schedulerSettings.Health.TaskName,
+        [string]$schedulerSettings.Recovery.TaskName
     )
-    if ($taskNames.Count -ne 3 -or
+    if ($taskNames.Count -ne 4 -or
         @($taskNames | Where-Object { [string]::IsNullOrWhiteSpace($_) -or $_ -match '[\\/]' }).Count -gt 0) {
         throw "У конфігурації вказано некоректні імена завдань"
     }

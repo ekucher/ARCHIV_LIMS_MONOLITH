@@ -250,7 +250,7 @@ function New-BRAVOTaskDefinition {
     param(
         $TaskService,
         [hashtable]$TaskSettings,
-        [ValidateSet("Backup", "Maintenance", "Health")]
+        [ValidateSet("Backup", "Maintenance", "Health", "Recovery")]
         [string]$TaskType,
         [string]$ResolvedConfigPath
     )
@@ -287,19 +287,41 @@ function New-BRAVOTaskDefinition {
 
     $triggerTime = if ($TaskType -eq "Health") {
         ConvertTo-ScheduleTime -Value $TaskSettings.StartAt -SettingName "Health.StartAt"
+    } elseif ($TaskType -eq "Recovery") {
+        $null
     } else {
         ConvertTo-ScheduleTime -Value $TaskSettings.DailyAt -SettingName "$TaskType.DailyAt"
     }
-    $trigger = $definition.Triggers.Create(2) # TASK_TRIGGER_DAILY
-    $trigger.StartBoundary = $triggerTime.ToString("yyyy-MM-dd'T'HH:mm:ss")
-    $trigger.Enabled = $true
-    $trigger.DaysInterval = 1
+    if ($TaskType -eq "Recovery") {
+        $trigger = $definition.Triggers.Create(8) # TASK_TRIGGER_BOOT
+        $delayMinutes = [math]::Max(0, [int]$TaskSettings.StartupDelayMinutes)
+        if ($delayMinutes -gt 0) {
+            $trigger.Delay = [System.Xml.XmlConvert]::ToString(
+                [timespan]::FromMinutes($delayMinutes)
+            )
+        }
+        $trigger.Enabled = $true
+    } else {
+        $trigger = $definition.Triggers.Create(2) # TASK_TRIGGER_DAILY
+        $trigger.StartBoundary = $triggerTime.ToString("yyyy-MM-dd'T'HH:mm:ss")
+        $trigger.Enabled = $true
+        $trigger.DaysInterval = 1
+    }
 
     if ($TaskType -eq "Health") {
         $trigger.Repetition.Interval = [System.Xml.XmlConvert]::ToString(
             [timespan]::FromMinutes([int]$TaskSettings.RepeatEveryMinutes)
         )
         $trigger.Repetition.Duration = "P1D"
+        $trigger.Repetition.StopAtDurationEnd = $false
+    }
+    if ($TaskType -eq "Recovery") {
+        $trigger.Repetition.Interval = [System.Xml.XmlConvert]::ToString(
+            [timespan]::FromMinutes([int]$TaskSettings.RetryEveryMinutes)
+        )
+        $trigger.Repetition.Duration = [System.Xml.XmlConvert]::ToString(
+            [timespan]::FromHours([double]$TaskSettings.RetryDurationHours)
+        )
         $trigger.Repetition.StopAtDurationEnd = $false
     }
 
@@ -318,14 +340,14 @@ function New-BRAVOTaskDefinition {
         } else {
             ""
         }
-        $healthCommand = (
-            "`$result = & '$escapedScriptPath' -ConfigPath '$escapedConfigPath'$skipArgument; " +
-            "if (`$result.Status -notin @('Healthy','Skipped','Deferred','Disabled')) { exit 1 }"
-        )
+        $healthCommand = "& '$escapedScriptPath' -HealthCheckOnly -ConfigPath '$escapedConfigPath'$skipArgument"
         $actionArguments += " -Command `"& { $healthCommand }`""
     } else {
         $actionArguments += " -File `"$scriptPath`""
         $actionArguments += " -ConfigPath `"$ResolvedConfigPath`""
+    }
+    if ($TaskType -eq "Recovery") {
+        $actionArguments += " -RunMissedRestoreOnly"
     }
     if ($TaskType -eq "Backup") {
         $actionArguments += " -NoPause"
@@ -410,10 +432,12 @@ function Test-SchedulerConfiguration {
     Test-TaskName -TaskName $schedulerSettings.Backup.TaskName -SettingName "Backup.TaskName"
     Test-TaskName -TaskName $schedulerSettings.Maintenance.TaskName -SettingName "Maintenance.TaskName"
     Test-TaskName -TaskName $schedulerSettings.Health.TaskName -SettingName "Health.TaskName"
+    Test-TaskName -TaskName $schedulerSettings.Recovery.TaskName -SettingName "Recovery.TaskName"
     $taskNames = @(
         [string]$schedulerSettings.Backup.TaskName,
         [string]$schedulerSettings.Maintenance.TaskName,
-        [string]$schedulerSettings.Health.TaskName
+        [string]$schedulerSettings.Health.TaskName,
+        [string]$schedulerSettings.Recovery.TaskName
     )
     if (@($taskNames | Select-Object -Unique).Count -ne $taskNames.Count) {
         throw "Імена Backup, Maintenance і Health завдань повинні відрізнятися"
@@ -422,7 +446,8 @@ function Test-SchedulerConfiguration {
     foreach ($taskSettings in @(
         $schedulerSettings.Backup,
         $schedulerSettings.Maintenance,
-        $schedulerSettings.Health
+        $schedulerSettings.Health,
+        $schedulerSettings.Recovery
     )) {
         if ($taskSettings.Enabled -and -not (Test-Path -Path $taskSettings.ScriptPath -PathType Leaf)) {
             throw "Скрипт завдання не знайдено: $($taskSettings.ScriptPath)"
@@ -443,6 +468,15 @@ function Test-SchedulerConfiguration {
             [int]$schedulerSettings.Health.RepeatEveryMinutes -gt 1440) {
             throw "Health.RepeatEveryMinutes повинен бути в межах від 1 до 1440"
         }
+    }
+    if ($schedulerSettings.Recovery.Enabled -and
+        [int]$schedulerSettings.Recovery.StartupDelayMinutes -lt 0) {
+        throw "Recovery.StartupDelayMinutes не може бути від'ємним"
+    }
+    if ($schedulerSettings.Recovery.Enabled -and
+        ([int]$schedulerSettings.Recovery.RetryEveryMinutes -lt 1 -or
+         [int]$schedulerSettings.Recovery.RetryDurationHours -lt 1)) {
+        throw "Recovery retry має мати інтервал і тривалість не менше 1"
     }
     if (-not (Test-Path -Path $ResolvedConfigPath -PathType Leaf)) {
         throw "Файл конфігурації не знайдено"
@@ -492,7 +526,8 @@ try {
     $taskPlans = @(
         [pscustomobject]@{ Type = "Backup"; Settings = $schedulerSettings.Backup },
         [pscustomobject]@{ Type = "Maintenance"; Settings = $schedulerSettings.Maintenance },
-        [pscustomobject]@{ Type = "Health"; Settings = $schedulerSettings.Health }
+        [pscustomobject]@{ Type = "Health"; Settings = $schedulerSettings.Health },
+        [pscustomobject]@{ Type = "Recovery"; Settings = $schedulerSettings.Recovery }
     )
 
     $requireProtectedRuntime = (
@@ -585,6 +620,8 @@ try {
         if ($ValidateOnly) {
             $scheduleText = if ($taskPlan.Type -eq "Backup" -or $taskPlan.Type -eq "Maintenance") {
                 "щодня о $($taskSettings.DailyAt)"
+            } elseif ($taskPlan.Type -eq "Recovery") {
+                "після старту сервера; затримка $($taskSettings.StartupDelayMinutes) хв."
             } else {
                 "кожні $($taskSettings.RepeatEveryMinutes) хв., починаючи з $($taskSettings.StartAt)"
             }

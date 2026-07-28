@@ -156,7 +156,7 @@ try {
     Write-Host ""
     Write-Host "=== ДІАГНОСТИКА ПОСТІЙНИХ ЗАВДАНЬ ===" -ForegroundColor Cyan
     $registrationFailed = $false
-    foreach ($taskType in @("Backup", "Maintenance", "Health")) {
+    foreach ($taskType in @("Backup", "Maintenance", "Health", "Recovery")) {
         $settings = $schedulerSettings[$taskType]
         if ($null -eq $settings -or -not [bool]$settings.Enabled) {
             continue
