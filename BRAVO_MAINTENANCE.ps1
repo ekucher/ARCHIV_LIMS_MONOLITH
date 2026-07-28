@@ -4188,11 +4188,15 @@ function Test-BRAVOTaskWasMissed {
     param([string]$TaskName, [string]$ScheduledTime)
     $expected = $currentDate.Date.Add([TimeSpan]::Parse($ScheduledTime))
     if ($expected -gt $currentDate) { $expected = $expected.AddDays(-1) }
-    $lastSuccess = $null
+    [datetime]$lastSuccess = [datetime]::MinValue
+    $hasLastSuccess = $false
     if ($taskExecutionState.ContainsKey($TaskName)) {
-        [void][datetime]::TryParse([string]$taskExecutionState[$TaskName], [ref]$lastSuccess)
+        $hasLastSuccess = [datetime]::TryParse(
+            [string]$taskExecutionState[$TaskName],
+            [ref]$lastSuccess
+        )
     }
-    return ($null -eq $lastSuccess -or $lastSuccess -lt $expected)
+    return (-not $hasLastSuccess -or $lastSuccess -lt $expected)
 }
 $missedMaintenanceTask = Test-BRAVOTaskWasMissed -TaskName 'Maintenance' -ScheduledTime ([string]$schedulerSettings.Maintenance.DailyAt)
 $missedBackupTask = Test-BRAVOTaskWasMissed -TaskName 'Backup' -ScheduledTime ([string]$schedulerSettings.Backup.DailyAt)
