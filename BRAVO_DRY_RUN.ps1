@@ -519,8 +519,7 @@ try {
     } else {
         @(
             "BRAVO_ARCHIV.ps1",
-            "BRAVO_MAINTENANCE.ps1",
-            "BRAVO_ARCHIV_HEALTH.ps1"
+            "BRAVO_MAINTENANCE.ps1"
         )
     }
     foreach ($scriptName in $requiredScriptNames) {
@@ -694,7 +693,7 @@ try {
     if ($null -ne $backupMonitoring -and
         (Test-SettingEnabled $backupMonitoring.Enabled)) {
         Add-DryRunResult PLAN "Health" "Перевірка резервних копій" (
-            "локальна/SFTP/SMB перевірка описана config; BRAVO_ARCHIV_HEALTH.ps1 не запускався"
+            "локальна/SFTP/SMB перевірка описана config; вбудований HealthCheckOnly не запускався"
         )
     }
 

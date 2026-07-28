@@ -185,15 +185,11 @@ try {
         ) `
         -Name "Health/EmbeddedArchiveMode" `
         -Failure "health-режим має бути вбудований у BRAVO_ARCHIV.ps1 і використовуватись планувальником"
-    $healthScriptText = [IO.File]::ReadAllText(
-        (Join-Path $root "BRAVO_ARCHIV_HEALTH.ps1"),
-        [Text.Encoding]::UTF8
-    )
     Test-BRAVOCondition `
         -Condition (
             [bool]$backupMonitoring.CheckManagedServices -and
-            $healthScriptText.Contains("Get-ManagedServiceHealthIssues") -and
-            $healthScriptText.Contains('Kind = "Service"')
+            $archiveScriptText.Contains("Get-ManagedServiceHealthIssues") -and
+            $archiveScriptText.Contains('Kind = "Service"')
         ) `
         -Name "Notifications/HealthInactiveServices" `
         -Failure "health-check має виявляти встановлені не-Disabled служби поза operation lock"
@@ -208,8 +204,7 @@ try {
 
     foreach ($fileName in @(
             "BRAVO_ARCHIV.ps1",
-            "BRAVO_MAINTENANCE.ps1",
-            "BRAVO_ARCHIV_HEALTH.ps1"
+            "BRAVO_MAINTENANCE.ps1"
         )) {
         $text = [IO.File]::ReadAllText(
             (Join-Path $root $fileName),

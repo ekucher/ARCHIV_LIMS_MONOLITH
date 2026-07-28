@@ -30,7 +30,7 @@
 | Оновити лише параметри установи | `BRAVO_SETUP.cmd -Action Credentials -CredentialComponent Institution` |
 | Запустити архівацію вручну | `BRAVO_ARCHIV.cmd -NoPause` |
 | Запустити обслуговування вручну | `BRAVO_MAINTENANCE.cmd` |
-| Запустити health-check вручну | `BRAVO_ARCHIV_HEALTH.cmd` |
+| Запустити health-check вручну | `BRAVO_ARCHIV.cmd -HealthCheckOnly` |
 | Виконати тести коду | `BRAVO_SELF_TEST.cmd` |
 
 Усі команди в цій інструкції потрібно виконувати з каталогу `ARCHIV`. Для
@@ -363,7 +363,7 @@ BRAVO_MAINTENANCE.cmd
 Health-check:
 
 ```bat
-BRAVO_ARCHIV_HEALTH.cmd
+BRAVO_ARCHIV.cmd -HealthCheckOnly
 ```
 
 Ці команди виконують **фактичні операції**. Перед першим production-запуском
@@ -538,7 +538,7 @@ ARCHIV_VETOFFICE.cmd
 | `BRAVO_DRY_RUN.cmd/.ps1` | симуляція без production-операцій |
 | `BRAVO_ARCHIV.cmd/.ps1` | production-архівація |
 | `BRAVO_MAINTENANCE.cmd/.ps1` | production-обслуговування |
-| `BRAVO_ARCHIV_HEALTH.cmd/.ps1` | контроль резервних копій |
+| `BRAVO_ARCHIV.cmd -HealthCheckOnly` | контроль резервних копій |
 | `BRAVO_TASKS_DIAGNOSE.cmd/.ps1` | діагностика Планувальника і запуск від `SYSTEM` |
 
 ### Службові файли
