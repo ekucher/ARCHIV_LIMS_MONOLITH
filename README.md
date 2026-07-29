@@ -306,7 +306,7 @@ BRAVO_CREDENTIALS_SETUP.cmd -Action Set -Component Institution -StoreFor Both
 |---|---|---|
 | `BRAVO_ARCHIV` | щодня `23:00` | архівація та передача копій |
 | `BRAVO_MAINTENANCE` | щодня `23:55` | обслуговування BRAVO |
-| `BRAVO_ARCHIV_HEALTH` | щогодини від `00:15` | контроль служб і локальних/SFTP/SMB копій |
+| `BRAVO_ARCHIV_HEALTH` | кожні 720 хв. від `00:15` | контроль служб і локальних/SFTP/SMB копій |
 
 Архівація, maintenance і health-check використовують спільний
 `BRAVO_OPERATION.lock`. Якщо інша операція вже працює, наступна не накладається

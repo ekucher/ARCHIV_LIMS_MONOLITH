@@ -1074,14 +1074,20 @@ function Send-BRAVOWebhookNotification {
     }
 
     Enable-BRAVOTls12
+    $notificationSeparator = (("━" * 36) -join "")
+    $messageForWebhook = if ($Message.TrimStart().StartsWith($notificationSeparator)) {
+        $Message
+    } else {
+        "$notificationSeparator`n$Message"
+    }
     $normalizedProvider = $Provider.ToLowerInvariant()
     $payload = if ($normalizedProvider -eq "discord") {
         @{
-            content = $Message
+            content = $messageForWebhook
             allowed_mentions = @{parse = @()}
         }
     } else {
-        @{text = $Message}
+        @{text = $messageForWebhook}
     }
     $payloadJson = $payload | ConvertTo-Json -Compress -Depth 4
     $requestParameters = @{

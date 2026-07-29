@@ -771,12 +771,39 @@ function ConvertFrom-BRAVOJson {
     }
 }
 
+function Enter-BRAVOWinSCPProcessLock {
+    $lockPath = Join-Path $logPath "BRAVO_WINSCP.lock"
+    try {
+        if (-not (Test-Path -LiteralPath $logPath -PathType Container)) {
+            New-Item -ItemType Directory -Path $logPath -Force -ErrorAction Stop | Out-Null
+        }
+        $stream = [System.IO.File]::Open(
+            $lockPath,
+            [System.IO.FileMode]::OpenOrCreate,
+            [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::None
+        )
+        return [pscustomobject]@{ Success = $true; Stream = $stream; Path = $lockPath; Error = $null }
+    } catch {
+        return [pscustomobject]@{ Success = $false; Stream = $null; Path = $lockPath; Error = $_.Exception.Message }
+    }
+}
+
 function Start-BRAVOProcessOutputCapture {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
         [System.Diagnostics.Process]$Process
     )
+
+    $winSCPProcessLock = $null
+    if ([System.IO.Path]::GetFileName([string]$Process.StartInfo.FileName) -ieq "WinSCP.com") {
+        $lockResult = Enter-BRAVOWinSCPProcessLock
+        if (-not $lockResult.Success) {
+            throw "Запуск WinSCP заблоковано атомарним lock ($($lockResult.Path)): $($lockResult.Error)"
+        }
+        $winSCPProcessLock = $lockResult.Stream
+    }
 
     $readToEndAsyncMethod = [System.IO.StreamReader].GetMethod(
         "ReadToEndAsync",
@@ -788,12 +815,13 @@ function Start-BRAVOProcessOutputCapture {
     )
 
     if ($useModernApi) {
-        $Process.Start() | Out-Null
+        try { $Process.Start() | Out-Null } catch { if ($winSCPProcessLock) { $winSCPProcessLock.Dispose() }; throw }
         return New-Object PSObject -Property @{
             Mode = "Task"
             Process = $Process
             OutputTask = $Process.StandardOutput.ReadToEndAsync()
             ErrorTask = $Process.StandardError.ReadToEndAsync()
+            WinSCPProcessLock = $winSCPProcessLock
         }
     }
 
@@ -840,6 +868,7 @@ function Start-BRAVOProcessOutputCapture {
         foreach ($job in @($outputJob, $errorJob)) {
             Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
         }
+        if ($winSCPProcessLock) { $winSCPProcessLock.Dispose() }
         throw
     }
 
@@ -852,7 +881,69 @@ function Start-BRAVOProcessOutputCapture {
         ErrorSource = $errorSource
         OutputJob = $outputJob
         ErrorJob = $errorJob
+        WinSCPProcessLock = $winSCPProcessLock
     }
+}
+
+function Test-BRAVOWinSCPAvailable {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$WinSCPPath
+    )
+
+    # BRAVO запускає консольний клієнт WinSCP.com. Відкритий графічний
+    # WinSCP.exe не блокує задачу, а інший WinSCP.com може одночасно змінювати
+    # той самий SFTP-каталог, тому запуск у такому разі забороняємо.
+    $processName = [System.IO.Path]::GetFileName($WinSCPPath)
+    if ([string]::IsNullOrWhiteSpace($processName)) {
+        return [pscustomobject]@{
+            Available = $false
+            Processes = @()
+            Error = "не вдалося визначити ім'я процесу WinSCP"
+        }
+    }
+
+    try {
+        $activeProcesses = @(
+            Get-CimInstance -ClassName Win32_Process -Filter "Name = '$processName'" -ErrorAction Stop |
+                ForEach-Object {
+                    [pscustomobject]@{
+                        ProcessId = [int]$_.ProcessId
+                        Started = [string]$_.CreationDate
+                    }
+                }
+        )
+        return [pscustomobject]@{
+            Available = ($activeProcesses.Count -eq 0)
+            Processes = $activeProcesses
+            Error = $null
+        }
+    } catch {
+        # Без достовірної перевірки не запускаємо передачу паралельно.
+        return [pscustomobject]@{
+            Available = $false
+            Processes = @()
+            Error = "не вдалося перевірити активні процеси ${processName}: $($_.Exception.Message)"
+        }
+    }
+}
+
+function Get-BRAVOWinSCPBusyMessage {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Availability,
+        [string]$Operation = "операція SFTP"
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$Availability.Error)) {
+        return "Запуск WinSCP для ${Operation} заблоковано: $($Availability.Error)"
+    }
+
+    $processDetails = @($Availability.Processes | ForEach-Object {
+        "PID=$($_.ProcessId)"
+    }) -join ", "
+    return "Запуск WinSCP для ${Operation} заблоковано: виявлено активний WinSCP.com ($processDetails)"
 }
 
 function Complete-BRAVOProcessOutputCapture {
@@ -878,7 +969,7 @@ function Complete-BRAVOProcessOutputCapture {
                 StandardError = [string]$Capture.ErrorTask.Result
             }
         } finally {
-            # Task-based capture не реєструє PowerShell event jobs.
+            if ($Capture.WinSCPProcessLock) { $Capture.WinSCPProcessLock.Dispose() }
         }
     }
 
@@ -902,6 +993,7 @@ function Complete-BRAVOProcessOutputCapture {
         foreach ($job in @($Capture.OutputJob, $Capture.ErrorJob)) {
             Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
         }
+        if ($Capture.WinSCPProcessLock) { $Capture.WinSCPProcessLock.Dispose() }
     }
 }
 
@@ -1106,31 +1198,33 @@ function Send-BRAVOWebhookNotification {
     }
 
     Enable-BRAVOTls12
-    $normalizedProvider = $Provider.ToLowerInvariant()
-    $payload = if ($normalizedProvider -eq "discord") {
-        @{
-            content = $Message
-            allowed_mentions = @{parse = @()}
-        }
+    $notificationSeparator = (("━" * 36) -join "")
+    $messageForWebhook = if ($Message.TrimStart().StartsWith($notificationSeparator)) {
+        $Message
     } else {
-        @{text = $Message}
+        "$notificationSeparator`n$Message"
     }
-    $payloadJson = $payload | ConvertTo-Json -Compress -Depth 4
-    $requestParameters = @{
-        Uri = $webhookUri.AbsoluteUri
-        Method = "Post"
-        ContentType = "application/json; charset=utf-8"
-        Body = [System.Text.Encoding]::UTF8.GetBytes($payloadJson)
-        TimeoutSec = [math]::Max(1, $TimeoutSeconds)
-        UseBasicParsing = $true
-        ErrorAction = "Stop"
-    }
-    $response = Invoke-WebRequest @requestParameters
-
-    if ($normalizedProvider -eq "slack") {
-        $responseText = ([string]$response.Content).Trim()
-        if (-not [string]::IsNullOrWhiteSpace($responseText) -and $responseText -ne "ok") {
-            throw "Slack повернув неочікувану відповідь: $responseText"
+    $normalizedProvider = $Provider.ToLowerInvariant()
+    $outboundMessages = if ($normalizedProvider -eq "discord" -and $messageForWebhook.Length -gt 1900) {
+        $chunks = New-Object System.Collections.Generic.List[string]
+        $current = New-Object System.Text.StringBuilder
+        foreach ($line in ($messageForWebhook -split "`r?`n")) {
+            if ($current.Length -gt 0 -and ($current.Length + $line.Length + 1) -gt 1900) {
+                $chunks.Add($current.ToString()); [void]$current.Clear()
+            }
+            if ($current.Length -gt 0) { [void]$current.AppendLine() }
+            [void]$current.Append($line)
+        }
+        if ($current.Length -gt 0) { $chunks.Add($current.ToString()) }
+        @($chunks)
+    } else { @($messageForWebhook) }
+    foreach ($outboundMessage in $outboundMessages) {
+        $payload = if ($normalizedProvider -eq "discord") { @{ content = $outboundMessage; allowed_mentions = @{parse = @()} } } else { @{text = $outboundMessage} }
+        $requestParameters = @{ Uri = $webhookUri.AbsoluteUri; Method = "Post"; ContentType = "application/json; charset=utf-8"; Body = [System.Text.Encoding]::UTF8.GetBytes(($payload | ConvertTo-Json -Compress -Depth 4)); TimeoutSec = [math]::Max(1, $TimeoutSeconds); UseBasicParsing = $true; ErrorAction = "Stop" }
+        $response = Invoke-WebRequest @requestParameters
+        if ($normalizedProvider -eq "slack") {
+            $responseText = ([string]$response.Content).Trim()
+            if (-not [string]::IsNullOrWhiteSpace($responseText) -and $responseText -ne "ok") { throw "Slack повернув неочікувану відповідь: $responseText" }
         }
     }
 }
@@ -1595,6 +1689,7 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
 }
 
 $healthCheckStarted = Get-Date
+$script:healthLatestArchives = @{}
 
 if (-not (Test-Path -Path $ConfigPath -PathType Leaf)) {
     Write-Error "Файл конфігурації не знайдено: $ConfigPath"
@@ -2270,6 +2365,10 @@ function Get-BackupHealthIssues {
                 SizeBytes = $newestValidArchive.Length
             }
         } else {
+            $script:healthLatestArchives[$archiveDefinition.Type] = [pscustomobject]@{
+                Name = $newestValidArchive.Name
+                SizeBytes = [long]$newestValidArchive.Length
+            }
             Write-HealthLog "Бекап $($archiveDefinition.Type) справний: $($newestValidArchive.Name), вік $(Format-BackupAge $newestValidArchive.LastWriteTime), розмір $(Format-FileSize $newestValidArchive.Length)" -Level "SUCCESS"
         }
     }
@@ -2848,6 +2947,10 @@ function Invoke-WinSCPHealthSession {
 
         $process = New-Object System.Diagnostics.Process
         $process.StartInfo = $processInfo
+        $winSCPAvailability = Test-BRAVOWinSCPAvailable -WinSCPPath $winSCPPath
+        if (-not $winSCPAvailability.Available) {
+            throw (Get-BRAVOWinSCPBusyMessage -Availability $winSCPAvailability -Operation "SFTP health-check")
+        }
         $outputCapture = Start-BRAVOProcessOutputCapture -Process $process
 
         $timeoutSeconds = [math]::Max(1, [int]$backupMonitoring.SFTP.OperationTimeoutSeconds)
@@ -4331,28 +4434,26 @@ function Get-SMBHealthIssues {
     return @($issues)
 }
 
-function Get-HealthComponentNames {
+function Get-EnabledBackupComponentNames {
     $componentNames = @()
-    $checkManagedServices = if ($backupMonitoring.Contains("CheckManagedServices")) {
-        Test-BRAVOSettingEnabled -Value $backupMonitoring.CheckManagedServices
-    } else {
-        $true
-    }
-    if ($checkManagedServices) {
-        $componentNames += "служби BRAVO"
-    }
     if ($bazaLocalHealthEnabled -or $bazaSFTPHealthEnabled) {
-        $componentNames += "BAZA"
+        $componentNames += "BAZA_APP"
     }
     if ($bazaWWWSFTPHealthEnabled) {
-        $componentNames += "BAZA WWW"
+        $componentNames += "BAZA_WWW"
     }
     $componentNames += @(
         $archiveDefinitions |
             Where-Object { $_.Enabled } |
             ForEach-Object { $_.Type }
     )
-    return @($componentNames)
+
+    # Порядок у повідомленні не залежить від порядку archiveDefinitions.
+    # Невідомі майбутні компоненти додаються наприкінці, а не губляться.
+    $preferredOrder = @("BAZA_APP", "BAZA_WWW", "BLOG", "BRAVOEXCH", "MODEL")
+    $orderedNames = @($preferredOrder | Where-Object { $componentNames -contains $_ })
+    $orderedNames += @($componentNames | Where-Object { $_ -notin $preferredOrder })
+    return @($orderedNames | Select-Object -Unique)
 }
 
 function Get-ManagedServiceHealthIssues {
@@ -4600,6 +4701,8 @@ function New-SlackAlertMessage {
     $dateText = $healthCheckStarted.ToString("dd MMMM yyyy", $ukrainianCulture).Replace(" р.", "")
     $durationSeconds = [math]::Max(0, [math]::Round($Duration.TotalSeconds))
     $hostInformation = Get-HostInformation
+    $archiveVersionText = [string]$global:ScriptVersion
+    $archiveScriptDateText = [string]$global:ScriptDate
     $problemComponentNames = @()
     foreach ($issue in $Issues) {
         $componentName = Get-HealthIssueComponentName -Issue $issue
@@ -4639,6 +4742,7 @@ function New-SlackAlertMessage {
         ":derelict_house_building: $($backupMonitoring.InstitutionName) [$($backupMonitoring.InstitutionCode)]",
         ":desktop_computer: $($hostInformation.MachineName) • $($hostInformation.LocalIP) | $($hostInformation.PublicIP)",
         ":clock3: $dateText, $($healthCheckStarted.ToString('HH:mm:ss')) • $durationSeconds сек.",
+        "🏷️ Версія BRAVO_ARCHIV: $archiveVersionText від $archiveScriptDateText",
         ":pushpin: Проблемних компонентів: $($problemComponentNames.Count) • перевірок: $($Issues.Count)",
         "",
         ":package: $($problemComponentNames -join ', ')"
@@ -4697,11 +4801,11 @@ function New-SlackAlertMessage {
     if ($bazaLocalHealthy -or $bazaSFTPHealthy) {
         $lines += ""
         if ($bazaLocalHealthy -and $bazaSFTPHealthy) {
-            $lines += ":white_check_mark: *BAZA* — локальна копія та SFTP актуальні"
+            $lines += ":white_check_mark: *BAZA_APP* — локальна копія та SFTP актуальні"
         } elseif ($bazaLocalHealthy) {
-            $lines += ":white_check_mark: *BAZA* — локальна копія актуальна"
+            $lines += ":white_check_mark: *BAZA_APP* — локальна копія актуальна"
         } else {
-            $lines += ":white_check_mark: *BAZA* — SFTP актуальна"
+            $lines += ":white_check_mark: *BAZA_APP* — SFTP актуальна"
         }
     }
     $bazaWWWSFTPHealthy = [bool]$backupMonitoring.SFTP.Enabled -and
@@ -4713,7 +4817,7 @@ function New-SlackAlertMessage {
         }).Count -eq 0
     if ($bazaWWWSFTPHealthy) {
         $lines += ""
-        $lines += ":white_check_mark: *BAZA WWW* — SFTP актуальна"
+        $lines += ":white_check_mark: *BAZA_WWW* — SFTP актуальна"
     }
 
     $lines += ""
@@ -4727,8 +4831,15 @@ function New-SlackSuccessMessage {
     $ukrainianCulture = [System.Globalization.CultureInfo]::GetCultureInfo("uk-UA")
     $dateText = $healthCheckStarted.ToString("dd MMMM yyyy", $ukrainianCulture).Replace(" р.", "")
     $durationSeconds = [math]::Max(0, [math]::Round($Duration.TotalSeconds))
-    $enabledNames = @(Get-HealthComponentNames)
+    $enabledNames = @(Get-EnabledBackupComponentNames)
+    $enabledComponentsText = if ($enabledNames.Count -gt 0) {
+        $enabledNames -join ', '
+    } else {
+        'немає'
+    }
     $hostInformation = Get-HostInformation
+    $archiveVersionText = [string]$global:ScriptVersion
+    $archiveScriptDateText = [string]$global:ScriptDate
 
     $lines = @(
         ":white_check_mark: *РЕЗЕРВНІ КОПІЇ АКТУАЛЬНІ*",
@@ -4738,10 +4849,28 @@ function New-SlackSuccessMessage {
         ":spiral_calendar_pad: Дата: $dateText",
         ":alarm_clock: Час: $($healthCheckStarted.ToString('HH:mm:ss'))",
         ":hourglass_flowing_sand: Тривалість перевірки: $durationSeconds сек.",
-        ":package: Компоненти: $($enabledNames -join ', ')",
+        "🏷️ Версія BRAVO_ARCHIV: $archiveVersionText від $archiveScriptDateText",
+        ":package: Увімкнені компоненти для бекапу: $enabledComponentsText",
         "",
         ":floppy_disk: Локальні архіви та hash-файли актуальні"
     )
+
+    $latestArchiveLines = @(
+        $archiveDefinitions |
+            Where-Object { $_.Enabled } |
+            ForEach-Object {
+                $archiveInfo = $script:healthLatestArchives[$_.Type]
+                $archiveName = if ($null -ne $archiveInfo) { [string]$archiveInfo.Name } else { "" }
+                if (-not [string]::IsNullOrWhiteSpace($archiveName)) {
+                    $archiveSizeText = Format-FileSize -Bytes ([long]$archiveInfo.SizeBytes)
+                    "• $($_.Type): $archiveName ($archiveSizeText)"
+                }
+            }
+    )
+    if ($latestArchiveLines.Count -gt 0) {
+        $lines += ":package: Останні локальні архіви:"
+        $lines += $latestArchiveLines
+    }
 
     if ($backupMonitoring.SFTP.Enabled -and
         $backupMonitoring.SFTP.CheckArchiveUploads -and
@@ -4751,15 +4880,15 @@ function New-SlackSuccessMessage {
     if ($backupMonitoring.SFTP.Enabled -and
         $backupMonitoring.SFTP.CheckBAZASynchronization -and
         $bazaSFTPHealthEnabled) {
-        $lines += ":arrows_counterclockwise: Синхронізація BAZA з хмарою актуальна"
+        $lines += ":arrows_counterclockwise: Синхронізація BAZA_APP з хмарою актуальна"
     }
     if ($backupMonitoring.SFTP.Enabled -and
         $backupMonitoring.SFTP.CheckBAZASynchronization -and
         $bazaWWWSFTPHealthEnabled) {
-        $lines += ":arrows_counterclockwise: Синхронізація BAZA WWW з хмарою актуальна"
+        $lines += ":arrows_counterclockwise: Синхронізація BAZA_WWW з хмарою актуальна"
     }
     if ($bazaLocalHealthEnabled) {
-        $lines += ":arrows_counterclockwise: Локальна копія BAZA актуальна"
+        $lines += ":arrows_counterclockwise: Локальна копія BAZA_APP актуальна"
     }
     if ($backupMonitoring.SMB.Enabled -and
         $backupMonitoring.SMB.CheckArchiveCopies -and
@@ -4878,11 +5007,17 @@ function Send-SlackAlert {
         Write-HealthLog "Не вдалося примусово увімкнути TLS 1.2: $($_.Exception.Message)" -Level "DEBUG"
     }
 
+    $notificationSeparator = (("━" * 36) -join "")
+    $messageForWebhook = if ($Message.TrimStart().StartsWith($notificationSeparator)) {
+        $Message
+    } else {
+        "$notificationSeparator`n$Message"
+    }
     $outboundMessages = if ($NotificationProvider -eq "discord") {
-        $discordMessage = ConvertTo-DiscordNotificationText -Message $Message
+        $discordMessage = ConvertTo-DiscordNotificationText -Message $messageForWebhook
         @(Split-DiscordNotificationText -Message $discordMessage)
     } else {
-        @($Message)
+        @($messageForWebhook)
     }
 
     foreach ($outboundMessage in $outboundMessages) {
@@ -5890,11 +6025,23 @@ function Show-PathCheckSummary {
     }
 }
 
+function Show-ArchiveCleanupSection {
+    param([ref]$SectionShown)
+
+    if (-not $SectionShown.Value) {
+        Write-Log "==="
+        Write-Log "=== ОЧИЩЕННЯ СТАРИХ АРХIВIВ ==="
+        Show-ScriptProgress -Status "Очищення старих архiвiв" -PercentComplete 72
+        $SectionShown.Value = $true
+    }
+}
+
 function Remove-OldBackupSets {
     param(
         [string]$Path,
-        [int]$KeepCount,
-        [string]$Component
+        [int]$RetentionDays,
+        [string]$Component,
+        [ref]$CleanupSectionShown
     )
 
     $failedArchiveDeletionEnabled = ($null -eq $enableFailedArchiveDeletion) -or [bool]$enableFailedArchiveDeletion
@@ -5913,6 +6060,14 @@ function Remove-OldBackupSets {
             30
         }
         $invalidCutoff = (Get-Date).AddDays(-$invalidRetentionDays)
+        # Захист для старих конфігів без archiveRetentionDays: ніколи не
+        # зменшуємо строк зберігання до одного дня через значення $null/0.
+        $validRetentionDays = if ($RetentionDays -gt 0) {
+            [int]$RetentionDays
+        } else {
+            183
+        }
+        $validCutoff = (Get-Date).AddDays(-$validRetentionDays)
         $validSets = @()
         foreach ($archive in @(Get-BRAVOFiles -Path $Path -Filter $archiveFileFilter)) {
             $hashPath = "$($archive.FullName)$hashFileExtension"
@@ -5945,6 +6100,7 @@ function Remove-OldBackupSets {
                     HashPath = $hashPath
                 }
             } elseif ($failedArchiveDeletionEnabled -and $archive.LastWriteTime -lt $invalidCutoff) {
+                Show-ArchiveCleanupSection -SectionShown $CleanupSectionShown
                 Write-Log "Видалення непридатного комплекту ${Component}, старшого за $invalidRetentionDays днів: $($archive.Name) — $invalidReason" -Level "WARNING"
                 Remove-Item -LiteralPath $archive.FullName -Force -ErrorAction Stop
                 if (Test-Path -LiteralPath $hashPath -PathType Leaf) {
@@ -5961,6 +6117,7 @@ function Remove-OldBackupSets {
             if ($failedArchiveDeletionEnabled -and
                 -not (Test-Path -LiteralPath $archivePath -PathType Leaf) -and
                 $orphanHash.LastWriteTime -lt $invalidCutoff) {
+                Show-ArchiveCleanupSection -SectionShown $CleanupSectionShown
                 Remove-Item -LiteralPath $orphanHash.FullName -Force -ErrorAction Stop
                 Write-Log "Видалено застарілий hash-файл без архіву: $($orphanHash.Name)" -Level "WARNING"
             }
@@ -5970,8 +6127,13 @@ function Remove-OldBackupSets {
             return $true
         }
 
-        $setsToDelete = @($validSets | Select-Object -Skip $KeepCount)
+        # Зберігання коректних комплектів визначається календарним віком, а не
+        # кількістю запусків: додатковий ручний бекап не скорочує строк зберігання.
+        $setsToDelete = @($validSets | Where-Object {
+            $_.Archive.LastWriteTime -lt $validCutoff
+        })
         foreach ($set in $setsToDelete) {
+            Show-ArchiveCleanupSection -SectionShown $CleanupSectionShown
             # Спочатку видаляється великий архів. Якщо видалення hash-файлу
             # не вдасться, залишиться лише безпечний сирота, а не архів без hash.
             Remove-Item -LiteralPath $set.Archive.FullName -Force -ErrorAction Stop
@@ -5980,7 +6142,7 @@ function Remove-OldBackupSets {
             } catch {
                 Write-Log "Архів видалено, але не вдалося видалити його hash-файл $($set.HashPath): $($_.Exception.Message)" -Level "WARNING"
             }
-            Write-Log "Видалено комплект ${Component}: $($set.Archive.Name)" -Level "SUCCESS"
+            Write-Log "Видалено комплект ${Component}, старший за $validRetentionDays днів: $($set.Archive.Name)" -Level "SUCCESS"
         }
         return $true
     } catch {
@@ -6690,6 +6852,11 @@ exit
         
         $process = New-Object System.Diagnostics.Process
         $process.StartInfo = $processInfo
+        $winSCPAvailability = Test-BRAVOWinSCPAvailable -WinSCPPath $WinSCPPath
+        if (-not $winSCPAvailability.Available) {
+            Write-Log (Get-BRAVOWinSCPBusyMessage -Availability $winSCPAvailability -Operation "перевірка SFTP-з'єднання") -Level "ERROR"
+            return $false
+        }
         $outputCapture = Start-BRAVOProcessOutputCapture -Process $process
         $completed = $process.WaitForExit(
             [math]::Max(1, [int]$sftpConnectionTimeoutSeconds + 30) * 1000
@@ -7020,6 +7187,7 @@ function Get-BAZARemoteNameCompatibilityIssues {
                 Path = $localItem.FullName
                 Name = $localItem.Name
                 IsDirectory = [bool]$localItem.PSIsContainer
+                CharacterCount = $localItem.Name.Length
                 Utf8ByteCount = $utf8ByteCount
                 MaximumUtf8Bytes = $maximumUtf8Bytes
                 Reason = "ім'я довше за допустимі $maximumUtf8Bytes байт у UTF-8"
@@ -7060,7 +7228,91 @@ function Write-BAZARemoteNameCompatibilityAudit {
     Write-Log "Перевiрка iмен ${ComponentName}: знайдено несумiсних iмен: $($issues.Count). Цi об'єкти буде пропущено; потрiбне скорочення локальних iмен" -Level "ERROR"
     foreach ($issue in $issues) {
         $itemType = if ($issue.IsDirectory) { "КАТАЛОГ" } else { "ФАЙЛ" }
-        Write-Log "AUDIT $ComponentName НЕСУМIСНЕ IМ'Я [$itemType] [$($issue.Utf8ByteCount)/$($issue.MaximumUtf8Bytes) UTF-8 байт] $($issue.Path)" -Level "ERROR" -FileOnly
+        Write-Log "AUDIT $ComponentName НЕСУМIСНЕ IМ'Я [$itemType] [довжина: $($issue.CharacterCount) символів; $($issue.Utf8ByteCount)/$($issue.MaximumUtf8Bytes) UTF-8 байт] $($issue.Path)" -Level "ERROR" -FileOnly
+    }
+
+    Send-BAZAIncompatibleNameAlert -Issues $issues -ComponentName $ComponentName
+}
+
+function Send-BAZAIncompatibleNameAlert {
+    param(
+        [object[]]$Issues,
+        [string]$ComponentName = "BAZA"
+    )
+
+    if ($NoSlack -or $NotificationMode -eq "none") {
+        Write-Log "Сповіщення про несумісні імена $ComponentName вимкнено параметрами запуску або конфігурацією" -Level "INFO"
+        return
+    }
+
+    $examples = @(
+        $Issues |
+            Select-Object -First 5 |
+            ForEach-Object {
+                $itemType = if ($_.IsDirectory) { "каталог" } else { "файл" }
+                $displayName = [string]$_.Name
+                if ($displayName.Length -gt 180) {
+                    $displayName = $displayName.Substring(0, 177) + "..."
+                }
+                (
+                    "• $itemType [довжина: $($_.CharacterCount) символів; " +
+                    "$($_.Utf8ByteCount)/$($_.MaximumUtf8Bytes) UTF-8 байт]:`n  " +
+                    ([char]96) + $displayName + ([char]96)
+                )
+            }
+    )
+    $examplesText = $examples -join "`n"
+    $machineName = [Environment]::MachineName
+    $localIpAddresses = @()
+    try {
+        $localIpAddresses = @(
+            [System.Net.Dns]::GetHostAddresses($machineName) |
+                Where-Object {
+                    $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork -and
+                    -not [System.Net.IPAddress]::IsLoopback($_) -and
+                    -not $_.ToString().StartsWith("169.254.")
+                } |
+                ForEach-Object { $_.ToString() } |
+                Sort-Object -Unique
+        )
+    } catch {}
+    $localIpText = if ($localIpAddresses.Count -gt 0) {
+        $localIpAddresses -join " | "
+    } else {
+        "недоступні"
+    }
+    $notificationTime = (Get-Date).ToString("dd.MM.yyyy HH:mm:ss")
+    $archiveVersionText = [string]$global:ScriptVersion
+    $archiveScriptDateText = [string]$global:ScriptDate
+    $logFilePath = if (-not [string]::IsNullOrWhiteSpace([string]$global:logFile)) {
+        [string]$global:logFile
+    } else {
+        "журнал BRAVO_ARCHIV"
+    }
+    $message = @"
+🚨 SFTP-СИНХРОНІЗАЦІЯ $ComponentName ПОТРЕБУЄ УВАГИ
+🏚️ Установа: $($backupMonitoring.InstitutionName) [$($backupMonitoring.InstitutionCode)]
+🖥️ Машина: $machineName
+🌐 IP-адреси: $localIpText
+🕒 Час: $notificationTime
+🏷️ Версія BRAVO_ARCHIV: $archiveVersionText від $archiveScriptDateText
+
+Знайдено несумісних імен: $($Issues.Count). Ці об'єкти не буде передано у хмару, доки локальні імена не буде скорочено.
+Довжину показано в символах; технічний ліміт WinSCP — $($Issues[0].MaximumUtf8Bytes) UTF-8 байт.
+Приклади:
+$examplesText
+📝 Повний перелік: $logFilePath
+"@
+
+    try {
+        Send-BRAVOWebhookNotification `
+            -Provider $NotificationProvider `
+            -WebhookUrl $NotificationWebhookUrl `
+            -Message $message `
+            -TimeoutSeconds $NotificationRequestTimeoutSeconds
+        Write-Log "Сповіщення про $($Issues.Count) несумісних імен $ComponentName відправлено у $NotificationProviderDisplayName" -Level "SUCCESS"
+    } catch {
+        Write-Log "Не вдалося відправити сповіщення про несумісні імена $ComponentName у ${NotificationProviderDisplayName}: $($_.Exception.Message)" -Level "ERROR"
     }
 }
 
@@ -7116,6 +7368,11 @@ exit
         $process = New-Object System.Diagnostics.Process
         $process.StartInfo = $processInfo
         Write-Log "Запуск WinSCP..." -Level "DEBUG"
+        $winSCPAvailability = Test-BRAVOWinSCPAvailable -WinSCPPath $WinSCPPath
+        if (-not $winSCPAvailability.Available) {
+            Write-Log (Get-BRAVOWinSCPBusyMessage -Availability $winSCPAvailability -Operation "передача $transferFileName") -Level "ERROR"
+            return $false
+        }
         $outputCapture = Start-BRAVOProcessOutputCapture -Process $process
         $transferStarted = Get-Date
         $operationTimeoutSeconds = [math]::Max(
@@ -7298,6 +7555,11 @@ exit
 
         $process = New-Object System.Diagnostics.Process
         $process.StartInfo = $processInfo
+        $winSCPAvailability = Test-BRAVOWinSCPAvailable -WinSCPPath $WinSCPPath
+        if (-not $winSCPAvailability.Available) {
+            Write-Log (Get-BRAVOWinSCPBusyMessage -Availability $winSCPAvailability -Operation "синхронізація $ComponentName") -Level "ERROR"
+            return $false
+        }
         $outputCapture = Start-BRAVOProcessOutputCapture -Process $process
         $syncStarted = Get-Date
         $configuredSynchronizationTimeout = [int](
@@ -7641,7 +7903,8 @@ function Main {
     Write-Log "Каталог резервних копiй: $backupRootPath" -NoTimestamp
     Write-Log "Режим логування: $LogLevel" -NoTimestamp
     Write-Log "Режим сумiсностi: $(if ($compatibilityMode) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
-    Write-Log "Видалення старих архiвiв: $(if ($enableArchiveDeletion) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
+    Write-Log "Видалення коректних архiвiв за строком зберігання: $(if ($enableArchiveDeletion) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
+    Write-Log "Очищення неповних/пошкоджених комплектів після $failedArchiveRetentionDays днів: $(if ($enableFailedArchiveDeletion) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
     foreach ($archive in $archiveDefinitions) {
         Write-Log "Архiвацiя $($archive.Type): $(if ($archive.Enabled) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
     }
@@ -7716,11 +7979,23 @@ function Main {
         Write-Log "Перевірка NAS/SMB не потрібна: компонент вимкнено" -Level "INFO"
     }
     
-    Write-Log "==="
-    Write-Log "=== ОЧИЩЕННЯ СТАРИХ ЛОГIВ ==="
-    Show-ScriptProgress -Status "Очищення старих логiв" -PercentComplete 12
-    if (-not (Remove-OldLogsByAge -Path $logPath -Filter $logFileFilter -RetentionDays $logRetentionDays)) {
+    $oldLogsToRemove = @()
+    if (Test-Path -LiteralPath $logPath -PathType Container) {
+        $logRetentionCutoff = (Get-Date).AddDays(-$logRetentionDays)
+        $oldLogsToRemove = @(Get-BRAVOFiles -Path $logPath -Filter $logFileFilter |
+            Where-Object { $_.LastWriteTime -lt $logRetentionCutoff })
+    } else {
+        Write-Log "Шлях журналів не знайдено: $logPath" -Level "ERROR"
         $operationFailed = $true
+    }
+
+    if ($oldLogsToRemove.Count -gt 0) {
+        Write-Log "==="
+        Write-Log "=== ОЧИЩЕННЯ СТАРИХ ЛОГIВ ==="
+        Show-ScriptProgress -Status "Очищення старих логiв" -PercentComplete 12
+        if (-not (Remove-OldLogsByAge -Path $logPath -Filter $logFileFilter -RetentionDays $logRetentionDays)) {
+            $operationFailed = $true
+        }
     }
     
     # Перевірка шляхів
@@ -7868,15 +8143,26 @@ function Main {
     }
     Show-ItemProgress -Id 10 -Activity "BRAVO_ARCHIV — архiвацiя компонентiв" -Completed
     
-    # Видалення старих архівів
-    Show-ScriptProgress -Status "Очищення старих архiвiв" -PercentComplete 72
-    Write-Log "==="
-    Write-Log "=== ОЧИЩЕННЯ СТАРИХ АРХIВIВ ==="
-    if (-not $enableArchiveDeletion) {
-        Write-Log "Видалення старих архiвiв вимкнено в налаштуваннях" -Level "INFO"
-    } else {
+    # Видалення старих архівів: розділ логу з'являється лише перед фактичним видаленням.
+    if ($enableArchiveDeletion) {
+        $effectiveArchiveRetentionDays = 183
+        try {
+            if ($null -ne $archiveRetentionDays -and [int]$archiveRetentionDays -gt 0) {
+                $effectiveArchiveRetentionDays = [int]$archiveRetentionDays
+            } elseif ($null -ne $archiveVersions -and [int]$archiveVersions -gt 0) {
+                # Сумісність із конфігами до archiveRetentionDays. Значення
+                # archiveVersions використовуємо як строк у днях лише під час міграції.
+                $effectiveArchiveRetentionDays = [int]$archiveVersions
+                Write-Log "Застарілий archiveVersions=$effectiveArchiveRetentionDays застосовано як строк зберігання у днях; перенесіть значення до archiveRetentionDays" -Level "WARNING"
+            } else {
+                Write-Log "archiveRetentionDays відсутній або некоректний; для безпеки застосовано $effectiveArchiveRetentionDays днів" -Level "WARNING"
+            }
+        } catch {
+            Write-Log "archiveRetentionDays не вдалося прочитати; для безпеки застосовано $effectiveArchiveRetentionDays днів" -Level "WARNING"
+        }
+        $archiveCleanupSectionShown = $false
         foreach ($archive in $enabledArchives) {
-            if (-not (Remove-OldBackupSets -Path $archive.Destination -KeepCount $archiveVersions -Component $archive.Type)) {
+            if (-not (Remove-OldBackupSets -Path $archive.Destination -RetentionDays $effectiveArchiveRetentionDays -Component $archive.Type -CleanupSectionShown ([ref]$archiveCleanupSectionShown))) {
                 $operationFailed = $true
             }
         }
@@ -7896,9 +8182,6 @@ function Main {
             $operationFailed = $true
         } else {
             if ($sftpArchiveUploadEnabled) {
-                Show-ScriptProgress -Status "Завантаження архiвiв на SFTP" -PercentComplete 82
-                Write-Log "==="
-                Write-Log "=== ЗАВАНТАЖЕННЯ АРХIВIВ НА SFTP ==="
                 $uploadSuccess = 0
                 $uploadQueue = @()
 
@@ -7921,6 +8204,11 @@ function Main {
                 }
 
                 $uploadTotal = $uploadQueue.Count
+                if ($uploadTotal -gt 0) {
+                    Show-ScriptProgress -Status "Завантаження архiвiв на SFTP" -PercentComplete 82
+                    Write-Log "==="
+                    Write-Log "=== ЗАВАНТАЖЕННЯ АРХIВIВ НА SFTP ==="
+                }
                 $uploadIndex = 0
                 foreach ($uploadItem in $uploadQueue) {
                     $uploadIndex++

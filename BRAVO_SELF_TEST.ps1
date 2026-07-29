@@ -114,9 +114,12 @@ try {
     & ([scriptblock]::Create($configText)) -ConfigRoot $configRoot
 
     Test-BRAVOCondition `
-        -Condition ([string]$ScriptVersion -eq "4.1.0") `
+        -Condition (
+            -not [string]::IsNullOrWhiteSpace([string]$ScriptVersion) -and
+            [string]$ScriptDate -match '^\d{4}-\d{2}-\d{2}$'
+        ) `
         -Name "Version/BRAVO_ARCHIV" `
-        -Failure "очікується 4.1.0, отримано '$ScriptVersion'"
+        -Failure "у BRAVO.config мають бути задані ScriptVersion і ScriptDate у форматі YYYY-MM-DD"
     Test-BRAVOCondition `
         -Condition ([string]$archiveParams -match '(?i)(^|\s)-ssw(\s|$)') `
         -Name "BackupAvailability/AllowOpenFiles" `
@@ -193,6 +196,14 @@ try {
         ) `
         -Name "Notifications/HealthInactiveServices" `
         -Failure "health-check має виявляти встановлені не-Disabled служби поза operation lock"
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveScriptText.Contains("Send-BAZAIncompatibleNameAlert") -and
+            $archiveScriptText.Contains("несумісних імен") -and
+            $archiveScriptText.Contains("Select-Object -First 5")
+        ) `
+        -Name "Notifications/BAZAIncompatibleNames" `
+        -Failure "несумісні з SFTP імена BAZA мають створювати одне стислий сповіщення"
     Test-BRAVOCondition `
         -Condition ([int]$schedulerSettings.OperationLockWaitMinutes -gt 0) `
         -Name "Scheduler/OperationLockWait" `

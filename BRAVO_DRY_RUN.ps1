@@ -233,6 +233,7 @@ function Send-TestWebhookNotification {
         "Комп'ютер: $env:COMPUTERNAME"
         "Config: $ConfigFileName"
         "Час: $((Get-Date).ToString('yyyy-MM-dd HH:mm:ss zzz'))"
+        "🏷️ Версія BRAVO_DRY_RUN: $ScriptVersion від $ScriptDate"
         "Credential Manager і надсилання webhook працюють."
         "Production-операції архівації, копіювання та видалення не запускалися."
     ) -join "`n"
@@ -682,7 +683,7 @@ try {
         )
     } else {
         Add-DryRunResult PLAN "Retention" "Архіви" (
-            "enableArchiveDeletion=$enableArchiveDeletion; keep=$archiveVersions; " +
+            "enableArchiveDeletion=$enableArchiveDeletion; retentionDays=$archiveRetentionDays; " +
             "failedRetentionDays=$failedArchiveRetentionDays; нічого не видалено"
         )
         Add-DryRunResult PLAN "Retention" "Логи" (

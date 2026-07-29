@@ -1,7 +1,7 @@
 ﻿##########
 # BravoSoft
 # Author: Evgeniy Kucher
-# Version: 1.7.1, 2026-07-27 - сповіщення про початково зупинені служби
+# Version: 4.2.0, 2026-07-30 - єдина версія та дата з BRAVO.config
 ##########
 
 param (
@@ -1105,14 +1105,20 @@ function Send-BRAVOWebhookNotification {
     }
 
     Enable-BRAVOTls12
+    $notificationSeparator = (("━" * 36) -join "")
+    $messageForWebhook = if ($Message.TrimStart().StartsWith($notificationSeparator)) {
+        $Message
+    } else {
+        "$notificationSeparator`n$Message"
+    }
     $normalizedProvider = $Provider.ToLowerInvariant()
     $payload = if ($normalizedProvider -eq "discord") {
         @{
-            content = $Message
+            content = $messageForWebhook
             allowed_mentions = @{parse = @()}
         }
     } else {
-        @{text = $Message}
+        @{text = $messageForWebhook}
     }
     $payloadJson = $payload | ConvertTo-Json -Compress -Depth 4
     $requestParameters = @{
@@ -2634,9 +2640,8 @@ function New-MaintenanceNotificationMessage {
         ":derelict_house_building: Установа: $($global:ObjectName)",
         ":desktop_computer: Машина: $($hostInformation.MachineName)",
         ":globe_with_meridians: IP-адреси: $($hostInformation.LocalIP) | $($hostInformation.PublicIP)",
-        ":spiral_calendar_pad: Дата: $dateText",
-        ":alarm_clock: Час: $($currentTime.ToString('HH:mm:ss'))",
-        ":hourglass_flowing_sand: ${DurationLabel}: $(Format-Duration $Duration)"
+        ":spiral_calendar_pad: $dateText • $($currentTime.ToString('HH:mm:ss')) • :hourglass_flowing_sand: $(Format-Duration $Duration)",
+        "🏷️ Версія BRAVO_MAINTENANCE: $($global:ScriptVersion) від $($global:ScriptDate)"
     )
 
     $nonEmptyStatusLines = @($StatusLines | Where-Object {
@@ -2765,11 +2770,17 @@ function Split-DiscordNotificationText {
 function Invoke-NotificationWebhook {
     param([string]$Message)
 
+    $notificationSeparator = (("━" * 36) -join "")
+    $messageForWebhook = if ($Message.TrimStart().StartsWith($notificationSeparator)) {
+        $Message
+    } else {
+        "$notificationSeparator`n$Message"
+    }
     $outboundMessages = if ($NotificationProvider -eq "discord") {
-        $discordMessage = ConvertTo-DiscordNotificationText -Message $Message
+        $discordMessage = ConvertTo-DiscordNotificationText -Message $messageForWebhook
         @(Split-DiscordNotificationText -Message $discordMessage)
     } else {
-        @($Message)
+        @($messageForWebhook)
     }
 
     foreach ($outboundMessage in $outboundMessages) {
@@ -2938,7 +2949,11 @@ function Test-RangeIdUsage {
     )
 
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        Write-Log "Файл контролю діапазонів ID не знайдено: $Path" -Level "WARNING"
+        $errorMessage = "Файл контролю діапазонів ID не знайдено: $Path"
+        Write-Log $errorMessage -Level "WARNING"
+        # Без вихідного файла неможливо підтвердити стан ID-інтервалів.
+        # Критичний статус забезпечує сповіщення і в режимі errors_only.
+        Send-SlackAlert -Message $errorMessage -IsCritical
         return
     }
 
@@ -3423,7 +3438,7 @@ function Process-Logs {
     New-Item -Path $DestDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
     
     foreach ($file in $logFiles) {
-        Move-WithSequence -sourcePath $file.FullName -destDir $DestDir -SkipIfEmpty
+        [void](Move-WithSequence -sourcePath $file.FullName -destDir $DestDir -SkipIfEmpty)
     }
     Write-Log "Оброблено $($logFiles.Count) $LogType файлів" -Level "SUCCESS"
 }
@@ -3826,6 +3841,7 @@ function Check-FreeSpace {
             return $false
         }
 
+        $script:freeSpaceSummary = @($driveStatus)
         if ($script:SlackMode -eq "all") {
             $infoMsg = "Достатньо вільного місця на локальних дисках: $($driveStatus -join '; ') (мінімум ${MIN_FREE_SPACE} GB на кожному)"
             Send-SlackAlert -Message $infoMsg
@@ -4019,14 +4035,90 @@ function Send-FinalReport {
     else {
         # Немає критичних помилок - відправляємо тільки в режимі "all"
         if ($script:SlackMode -eq "all") {
+            $completedCheckLines = [System.Collections.Generic.List[string]]::new()
+            $completedCheckLines.Add(":mag: Виконані перевірки та операції:")
+            $ukrainianCulture = [System.Globalization.CultureInfo]::GetCultureInfo("uk-UA")
+            $nextRestoreDate = $scheduledOccurrence.Date.AddDays(7)
+            $maintenanceStartTime = [TimeSpan]::Parse([string]$schedulerSettings.Maintenance.DailyAt)
+            $nextRestoreExecution = $nextRestoreDate.Add($maintenanceStartTime)
+            $restoreScheduleText = $nextRestoreExecution.ToString("dddd, dd.MM.yyyy HH:mm", $ukrainianCulture)
+            $lastRestoreTime = $restoreCompletedAt
+            if ($null -eq $lastRestoreTime) {
+                $lastRestoreMarker = @(Get-BRAVOFiles -Path $LOG_DIR -Filter "restore_done_*.marker" |
+                    Sort-Object LastWriteTime -Descending |
+                    Select-Object -First 1)
+                if ($lastRestoreMarker.Count -gt 0) {
+                    $lastRestoreTime = [datetime]$lastRestoreMarker[0].LastWriteTime
+                }
+            }
+            $lastRestoreText = if ($null -ne $lastRestoreTime) {
+                $lastRestoreTime.ToString("dd.MM.yyyy HH:mm:ss", $ukrainianCulture)
+            } elseif (-not $BravoMaintenanceEnabled) {
+                "немає даних (компонент BRAVO вимкнено)"
+            } else {
+                "ще не виконувалася"
+            }
+            $completedCheckLines.Add(":arrows_counterclockwise: Реставрація — наступна: $restoreScheduleText (після $RestoreTime) • остання: $lastRestoreText")
+
+            $mdLimitGb = [math]::Round(([double]$MAX_MD_FILE_SIZE / 1GB), 2)
+            $mdSelectionCriterion = "понад $mdLimitGb ГБ"
+            if ($MD_FILE_SIZE_EXCLUSIONS.Count -gt 0) {
+                $mdSelectionCriterion += "; виключень за конфігурацією: $($MD_FILE_SIZE_EXCLUSIONS.Count)"
+            }
+            $mdCheckStatus = if ($BravoMaintenanceEnabled -and $CheckSize) {
+                "пройдено (критерій: $mdSelectionCriterion)"
+            } elseif (-not $BravoMaintenanceEnabled) {
+                "вимкнено разом із компонентом BRAVO"
+            } else {
+                "вимкнено параметром запуску"
+            }
+            $completedCheckLines.Add(":page_facing_up: Перевірка розміру файлів .md — $mdCheckStatus")
+
+            $rangeCheckStatus = if ($BravoMaintenanceEnabled -and $RangeIdMonitoringEnabled) {
+                "пройдено"
+            } elseif (-not $RangeIdMonitoringEnabled) {
+                "вимкнено в конфігурації"
+            } else {
+                "вимкнено разом із компонентом BRAVO"
+            }
+            $completedCheckLines.Add(":bar_chart: Перевірка значень інтервалів ID — $rangeCheckStatus")
+
+            $traceOutputStatus = if (-not $BravoMaintenanceEnabled) {
+                "вимкнено разом із компонентом BRAVO"
+            } elseif ($traceOutputProcessed) {
+                "виконано: $traceOutputProcessedCount файл(ів) → $TRACE_ARCHIV_DIR"
+            } else {
+                "нових TraceSRV.out/.out файлів не знайдено"
+            }
+            $completedCheckLines.Add(":card_file_box: Архівування та обнулення трейс-файлів — $traceOutputStatus")
+            if ($exchangAPILogsProcessedCount -gt 0) {
+                $completedCheckLines.Add(":arrows_counterclockwise: Обробка логів exchangAPI — переміщено $exchangAPILogsProcessedCount з $exchangAPILogsFoundCount файл(ів) → $EXCHANGAPI_ARCHIV_DIR")
+            }
+            $webLogOperationDetails = [System.Collections.Generic.List[string]]::new()
+            if ($webApacheLogsProcessedCount -gt 0) {
+                $webLogOperationDetails.Add("Apache: $webApacheLogsProcessedCount файл(ів)")
+            }
+            if ($webWwwLogsProcessedCount -gt 0) {
+                $webLogOperationDetails.Add("WWW: $webWwwLogsProcessedCount файл(ів)")
+            }
+            if ($webLogOperationDetails.Count -gt 0) {
+                $completedCheckLines.Add(":globe_with_meridians: Обробка логів BRAVO Web — $($webLogOperationDetails -join '; ') → $BRAVO_WEB_DAILY_DIR")
+            }
+            $freeSpaceDetails = if ($script:freeSpaceSummary -and $script:freeSpaceSummary.Count -gt 0) {
+                "$($script:freeSpaceSummary -join '; ') (мінімум: $MIN_FREE_SPACE GB)"
+            } else {
+                "усі перевірені диски відповідають мінімуму $MIN_FREE_SPACE GB"
+            }
+            $completedCheckLines.Add(":floppy_disk: Контроль вільного місця на дисках — пройдено: $freeSpaceDetails")
+
             $notificationMessage = New-MaintenanceNotificationMessage `
                 -Title "ОБСЛУГОВУВАННЯ ЗАВЕРШЕНО УСПІШНО" `
                 -TitleEmoji ":white_check_mark:" `
                 -Duration $elapsedTime `
                 -StatusLines @(
-                    ":wrench: Регламентні операції завершено",
-                    ":floppy_disk: Перевірка локальних дисків пройдена"
+                    ":wrench: Регламентні операції завершено"
                 ) `
+                -Details @($completedCheckLines.ToArray()) `
                 -LogPath $LOG_FILE
             $shouldSend = $true
         } else {
@@ -4338,6 +4430,13 @@ if (-not $maintenanceLockResult.Success) {
 }
 $script:maintenanceOperationLock = $maintenanceLockResult.Stream
 $script:maintenanceOperationLockPath = $maintenanceLockResult.Path
+$traceOutputProcessed = $false
+$traceOutputProcessedCount = 0
+$exchangAPILogsFoundCount = 0
+$exchangAPILogsProcessedCount = 0
+$webApacheLogsProcessedCount = 0
+$webWwwLogsProcessedCount = 0
+$restoreCompletedAt = $null
 
 try {
 $serviceWasRunning = @{
@@ -4380,8 +4479,10 @@ Send-InactiveServiceWarning -ServiceDescriptions $inactiveServicesAtStart
 # помилка повинна повернути до роботи лише ті служби, які працювали на початку.
 try {
     # ===== ЗУПИНКА СЛУЖБ =====
-    Write-Log -Message "==="
-    Write-Log -Message "=== ЗУПИНКА СЛУЖБ ==="
+    if ($serviceWasRunning.Bravo -or $serviceWasRunning.ExchangeApi -or $serviceWasRunning.BravoWeb) {
+        Write-Log -Message "==="
+        Write-Log -Message "=== ЗУПИНКА СЛУЖБ ==="
+    }
 
 # 1. Зупинка BRAVO Web
 if ($BravoWebMaintenanceEnabled) {
@@ -4490,7 +4591,7 @@ if ($BravoMaintenanceEnabled) {
 }
 
 # ===== ПЕРЕВІРКА РОЗМІРІВ ФАЙЛІВ .md =====
-if ($BravoMaintenanceEnabled) {
+if ($BravoMaintenanceEnabled -and $CheckSize) {
     Check-MdFileSizes -MODEL_PATH $MODEL_PATH -MAX_MD_FILE_SIZE $MAX_MD_FILE_SIZE -ExcludePatterns $MD_FILE_SIZE_EXCLUSIONS
 }
 
@@ -4554,6 +4655,7 @@ if ($BravoMaintenanceEnabled -and $bravoStatus -ne "Running") {
                 $exitCode = Invoke-CommandWithLog -Command "$ROOT_LIMS\bravocmd.exe" -Arguments $restoreArgs -Description "Виконання реставрації моделі LIMS"
                 
                 if ($exitCode -eq 0) {
+                    $restoreCompletedAt = Get-Date
                     Write-Log -Message "Модель успішно відреставрована" -Level "SUCCESS"
                     
                     # Архівація після реставрації ВИКОНУЄТЬСЯ З УМОВАМИ
@@ -4652,10 +4754,10 @@ if ($BravoMaintenanceEnabled -and $bravoStatus -ne "Running") {
     
     # Обробка Trace належить лише до компонента основної служби BRAVO.
     try {
-        Write-Log -Message "==="
-        Write-Log -Message "=== ОБРОБКА TRACE-ФАЙЛІВ ===" -Level "INFO"
         $outFiles = Get-ChildItem -Path "$ROOT_LIMS" -Filter "*.out" -ErrorAction SilentlyContinue
         if ($outFiles) {
+            Write-Log -Message "==="
+            Write-Log -Message "=== ОБРОБКА TRACE-ФАЙЛІВ ===" -Level "INFO"
             $movedTraceCount = 0
             foreach ($file in $outFiles) {
                 if (Move-WithSequence -sourcePath $file.FullName -destDir $TRACE_ARCHIV_DIR -SkipIfEmpty) {
@@ -4663,13 +4765,13 @@ if ($BravoMaintenanceEnabled -and $bravoStatus -ne "Running") {
                 }
             }
             if ($movedTraceCount -gt 0) {
+                $traceOutputProcessed = $true
+                $traceOutputProcessedCount = $movedTraceCount
                 Write-Log -Message "Оброблено $movedTraceCount з $($outFiles.Count) trace-файлів" -Level "SUCCESS"
             }
             if ($movedTraceCount -lt $outFiles.Count) {
                 Write-Log -Message "Не переміщено $($outFiles.Count - $movedTraceCount) з $($outFiles.Count) trace-файлів" -Level "WARNING"
             }
-        } else {
-            Write-Log -Message "Немає trace-файлів для обробки" -Level "INFO"
         }
     }
     catch {
@@ -4690,24 +4792,22 @@ elseif ($BravoMaintenanceEnabled) {
 # встановленої та не відключеної служби.
 if ($exchangAPIServiceEnabled) {
     try {
-        Write-Log "==="
-        Write-Log -Message "=== ОБРОБКА ЛОГІВ EXCHANGAPI ===" -Level "INFO"
         $exchangAPILogs = Get-ChildItem -Path "$ROOT_LIMS" -Filter "exchangAPI_*.log" -ErrorAction SilentlyContinue
         if ($exchangAPILogs) {
-            $movedExchangeLogCount = 0
+            $exchangAPILogsFoundCount = @($exchangAPILogs).Count
+            Write-Log "==="
+            Write-Log -Message "=== ОБРОБКА ЛОГІВ EXCHANGAPI ===" -Level "INFO"
             foreach ($file in $exchangAPILogs) {
                 if (Move-ExchangAPILogs -sourcePath $file.FullName -destDir $EXCHANGAPI_ARCHIV_DIR) {
-                    $movedExchangeLogCount++
+                    $exchangAPILogsProcessedCount++
                 }
             }
-            if ($movedExchangeLogCount -gt 0) {
-                Write-Log -Message "Оброблено $movedExchangeLogCount з $($exchangAPILogs.Count) лог-файлів exchangAPI" -Level "SUCCESS"
+            if ($exchangAPILogsProcessedCount -gt 0) {
+                Write-Log -Message "Оброблено $exchangAPILogsProcessedCount з $exchangAPILogsFoundCount лог-файлів exchangAPI" -Level "SUCCESS"
             }
-            if ($movedExchangeLogCount -lt $exchangAPILogs.Count) {
-                Write-Log -Message "Не переміщено $($exchangAPILogs.Count - $movedExchangeLogCount) з $($exchangAPILogs.Count) лог-файлів exchangAPI" -Level "WARNING"
+            if ($exchangAPILogsProcessedCount -lt $exchangAPILogsFoundCount) {
+                Write-Log -Message "Не переміщено $($exchangAPILogsFoundCount - $exchangAPILogsProcessedCount) з $exchangAPILogsFoundCount лог-файлів exchangAPI" -Level "WARNING"
             }
-        } else {
-            Write-Log -Message "Немає лог-файлів exchangAPI для обробки" -Level "INFO"
         }
     } catch {
         $errorMsg = "Помилка при обробці логів exchangAPI: $($_.Exception.Message)"
@@ -4721,29 +4821,30 @@ if ($exchangAPIServiceEnabled) {
 # та необхідних каталогів.
 if ($BravoWebMaintenanceEnabled -and $ApacheEnabled) {
     try {
-        Write-Log "==="
-        Write-Log -Message "=== ОБРОБКА ЛОГІВ APACHE ===" -Level "INFO"
         $apacheLogFiles = Get-BRAVOFiles -Path $APACHE_LOGS_DIR |
             Where-Object { $_.Length -gt 0 }
         if ($apacheLogFiles) {
+            Write-Log "==="
+            Write-Log -Message "=== ОБРОБКА ЛОГІВ APACHE ===" -Level "INFO"
             foreach ($file in $apacheLogFiles) {
-                Move-WithSequence -sourcePath $file.FullName -destDir $BRAVO_WEB_DAILY_DIR -SkipIfEmpty
+                if (Move-WithSequence -sourcePath $file.FullName -destDir $BRAVO_WEB_DAILY_DIR -SkipIfEmpty) {
+                    $webApacheLogsProcessedCount++
+                }
             }
-            Write-Log -Message "Оброблено $($apacheLogFiles.Count) Apache файлів" -Level "SUCCESS"
-        } else {
-            Write-Log -Message "Немає Apache файлів для обробки" -Level "INFO"
+            Write-Log -Message "Оброблено $webApacheLogsProcessedCount з $($apacheLogFiles.Count) Apache файлів" -Level "SUCCESS"
         }
 
-        Write-Log -Message "=== ОБРОБКА ЛОГІВ WWW ===" -Level "INFO"
         $wwwLogFiles = Get-BRAVOFiles -Path $WWW_LOGS_DIR |
             Where-Object { $_.Length -gt 0 }
         if ($wwwLogFiles) {
+            Write-Log -Message "==="
+            Write-Log -Message "=== ОБРОБКА ЛОГІВ WWW ===" -Level "INFO"
             foreach ($file in $wwwLogFiles) {
-                Move-WithSequence -sourcePath $file.FullName -destDir $BRAVO_WEB_DAILY_DIR -SkipIfEmpty
+                if (Move-WithSequence -sourcePath $file.FullName -destDir $BRAVO_WEB_DAILY_DIR -SkipIfEmpty) {
+                    $webWwwLogsProcessedCount++
+                }
             }
-            Write-Log -Message "Оброблено $($wwwLogFiles.Count) WWW файлів" -Level "SUCCESS"
-        } else {
-            Write-Log -Message "Немає WWW файлів для обробки" -Level "INFO"
+            Write-Log -Message "Оброблено $webWwwLogsProcessedCount з $($wwwLogFiles.Count) WWW файлів" -Level "SUCCESS"
         }
     } catch {
         $errorMsg = "Помилка при обробці логів BRAVO Web: $($_.Exception.Message)"
