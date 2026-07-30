@@ -7731,6 +7731,91 @@ function Write-BAZARemoteNameCompatibilityAudit {
     }
 }
 
+function global:Split-DiscordNotificationText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$Message,
+
+        [ValidateRange(100, 2000)]
+        [int]$MaximumLength = 1900
+    )
+
+    $chunks = New-Object 'System.Collections.Generic.List[string]'
+
+    if ($null -eq $Message) {
+        $Message = ""
+    }
+
+    if ($Message.Length -eq 0) {
+        $chunks.Add("")
+        return $chunks.ToArray()
+    }
+
+    $normalizedMessage = $Message -replace "`r`n", "`n"
+    $normalizedMessage = $normalizedMessage -replace "`r", "`n"
+
+    $currentChunk = New-Object System.Text.StringBuilder
+
+    foreach ($line in ($normalizedMessage -split "`n", 0, "SimpleMatch")) {
+        $remainingLine = [string]$line
+
+        do {
+            $newlineLength = if ($currentChunk.Length -gt 0) {
+                1
+            }
+            else {
+                0
+            }
+
+            $availableLength = (
+                $MaximumLength -
+                $currentChunk.Length -
+                $newlineLength
+            )
+
+            if ($availableLength -le 0) {
+                $chunks.Add($currentChunk.ToString())
+                $null = $currentChunk.Clear()
+                continue
+            }
+
+            if ($currentChunk.Length -gt 0) {
+                [void]$currentChunk.Append("`n")
+            }
+
+            $partLength = [Math]::Min(
+                $availableLength,
+                $remainingLine.Length
+            )
+
+            if ($partLength -gt 0) {
+                [void]$currentChunk.Append(
+                    $remainingLine.Substring(0, $partLength)
+                )
+
+                $remainingLine = $remainingLine.Substring($partLength)
+            }
+            else {
+                $remainingLine = ""
+            }
+
+            if ($remainingLine.Length -gt 0) {
+                $chunks.Add($currentChunk.ToString())
+                $null = $currentChunk.Clear()
+            }
+        }
+        while ($remainingLine.Length -gt 0)
+    }
+
+    if ($currentChunk.Length -gt 0 -or $chunks.Count -eq 0) {
+        $chunks.Add($currentChunk.ToString())
+    }
+
+    return $chunks.ToArray()
+}
+
 function Send-BAZAIncompatibleNameAlert {
     param(
         [object[]]$Issues,
