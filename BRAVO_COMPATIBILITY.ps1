@@ -963,15 +963,16 @@ function Invoke-BRAVOSevenZipIntegrityTest {
         if ([string]::IsNullOrWhiteSpace($Password)) {
             throw "пароль архіву не задано"
         }
-        if ($Password.Contains('"')) {
-            throw "пароль архіву містить непідтримуваний символ подвійних лапок"
+        if ($Password.IndexOfAny([char[]]"`r`n") -ge 0) {
+            throw "пароль архіву не може містити символи нового рядка"
         }
 
         $processInfo = New-Object System.Diagnostics.ProcessStartInfo
         $processInfo.FileName = $SevenZipPath
-        $processInfo.Arguments = (
-            "t -y -bb1 -p`"{0}`" `"{1}`"" -f $Password, $ArchivePath
-        )
+        # Без параметра -p 7-Zip запитує пароль зашифрованого архіву зі
+        # стандартного вводу. Так секрет не потрапляє до командного рядка.
+        $processInfo.Arguments = "t -y -bb1 `"$ArchivePath`""
+        $processInfo.RedirectStandardInput = $true
         $processInfo.RedirectStandardOutput = $true
         $processInfo.RedirectStandardError = $true
         $processInfo.UseShellExecute = $false
@@ -980,6 +981,8 @@ function Invoke-BRAVOSevenZipIntegrityTest {
         $process = New-Object System.Diagnostics.Process
         $process.StartInfo = $processInfo
         $capture = Start-BRAVOProcessOutputCapture -Process $process
+        $process.StandardInput.WriteLine($Password)
+        $process.StandardInput.Close()
 
         if ($TimeoutSeconds -gt 0) {
             $timeoutMilliseconds = [int][math]::Min(

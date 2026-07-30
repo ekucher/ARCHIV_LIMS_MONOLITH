@@ -125,10 +125,9 @@ try {
     if ([string]::IsNullOrWhiteSpace($script:vetArchivePassword)) {
         throw "не знайдено пароль 7-Zip у Credential Manager"
     }
-    if ($script:vetArchivePassword.Contains('"')) {
-        throw "пароль 7-Zip містить непідтримуваний символ подвійних лапок"
+    if ($script:vetArchivePassword.IndexOfAny([char[]]"`r`n") -ge 0) {
+        throw "пароль 7-Zip не може містити символи нового рядка"
     }
-    $archiveParams = "$archiveParams -p$($script:vetArchivePassword)"
 } catch {
     $script:vetArchiveCredentialError = $_.Exception.Message
 }
@@ -1214,11 +1213,13 @@ function New-Archive {
             Write-Log "Видалено попереднiй hash-файл перед повторним створенням архiву: $staleHashPath" -Level "WARNING"
         }
 
-        $arguments = "$ArcParams `"$fullArchivePath`" `"$SourcePath`""
+        # -p без значення вмикає шифрування і читає пароль зі stdin.
+        $arguments = "$ArcParams -p `"$fullArchivePath`" `"$SourcePath`""
         
         $processInfo = New-Object System.Diagnostics.ProcessStartInfo
         $processInfo.FileName = $ArcPath
         $processInfo.Arguments = $arguments
+        $processInfo.RedirectStandardInput = $true
         $processInfo.RedirectStandardOutput = $true
         $processInfo.RedirectStandardError = $true
         $processInfo.UseShellExecute = $false
@@ -1227,6 +1228,8 @@ function New-Archive {
         $process = New-Object System.Diagnostics.Process
         $process.StartInfo = $processInfo
         $outputCapture = Start-BRAVOProcessOutputCapture -Process $process
+        $process.StandardInput.WriteLine($script:vetArchivePassword)
+        $process.StandardInput.Close()
         $creationTimeout = if ($null -ne $archiveCreationTimeoutSeconds) {
             [math]::Max(1, [int]$archiveCreationTimeoutSeconds)
         } else {
@@ -1357,6 +1360,100 @@ function Test-NetworkConnection {
     }
 }
 
+function Remove-VetOfficeWinSCPSensitiveTemporaryScript {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return
+    }
+
+    $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([char[]]"\/")
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $expectedPrefix = $temporaryRoot + [IO.Path]::DirectorySeparatorChar
+    $fileName = [IO.Path]::GetFileName($fullPath)
+    if (-not $fullPath.StartsWith($expectedPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+        $fileName -notmatch '^VETOFFICE_WinSCP_[0-9a-f]{32}\.txt$') {
+        throw "відхилено небезпечний шлях тимчасового WinSCP-файла: $Path"
+    }
+
+    if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
+        [IO.File]::WriteAllText($fullPath, "", [Text.Encoding]::ASCII)
+        Remove-Item -LiteralPath $fullPath -Force -ErrorAction Stop
+    }
+}
+
+function Clear-VetOfficeStaleWinSCPSensitiveTemporaryScripts {
+    $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+    $staleBefore = (Get-Date).AddDays(-1)
+    foreach ($file in @(
+            Get-ChildItem `
+                -LiteralPath $temporaryRoot `
+                -Filter "VETOFFICE_WinSCP_*.txt" `
+                -ErrorAction SilentlyContinue |
+                Where-Object { -not $_.PSIsContainer -and $_.LastWriteTime -lt $staleBefore }
+        )) {
+        try {
+            Remove-VetOfficeWinSCPSensitiveTemporaryScript -Path $file.FullName
+        } catch {}
+    }
+}
+
+function New-VetOfficeWinSCPTemporaryScriptPath {
+    Clear-VetOfficeStaleWinSCPSensitiveTemporaryScripts
+    $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+    $temporaryPath = Join-Path `
+        -Path $temporaryRoot `
+        -ChildPath ("VETOFFICE_WinSCP_{0}.txt" -f [guid]::NewGuid().ToString("N"))
+    $stream = $null
+    try {
+        $stream = [IO.File]::Open(
+            $temporaryPath,
+            [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::Write,
+            [IO.FileShare]::None
+        )
+        $stream.Dispose()
+        $stream = $null
+
+        $acl = Get-Acl -LiteralPath $temporaryPath -ErrorAction Stop
+        $acl.SetAccessRuleProtection($true, $false)
+        foreach ($existingRule in @($acl.Access)) {
+            [void]$acl.RemoveAccessRuleAll($existingRule)
+        }
+        $uniqueSids = @{}
+        foreach ($sid in @(
+                [Security.Principal.WindowsIdentity]::GetCurrent().User,
+                (New-Object Security.Principal.SecurityIdentifier("S-1-5-18")),
+                (New-Object Security.Principal.SecurityIdentifier("S-1-5-32-544"))
+            )) {
+            if ($null -eq $sid -or $uniqueSids.ContainsKey($sid.Value)) {
+                continue
+            }
+            $uniqueSids[$sid.Value] = $true
+            $rule = New-Object `
+                -TypeName System.Security.AccessControl.FileSystemAccessRule `
+                -ArgumentList @(
+                    $sid,
+                    [Security.AccessControl.FileSystemRights]::FullControl,
+                    [Security.AccessControl.AccessControlType]::Allow
+                )
+            [void]$acl.AddAccessRule($rule)
+        }
+        Set-Acl -LiteralPath $temporaryPath -AclObject $acl -ErrorAction Stop
+        return $temporaryPath
+    } catch {
+        if ($null -ne $stream) {
+            $stream.Dispose()
+        }
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+            try {
+                Remove-VetOfficeWinSCPSensitiveTemporaryScript -Path $temporaryPath
+            } catch {}
+        }
+        throw
+    }
+}
+
 function Test-SFTPConnection {
     param(
         [string]$WinSCPPath,
@@ -1379,7 +1476,7 @@ ls
 exit
 "@
     
-    $tempScript = [System.IO.Path]::GetTempFileName() + ".txt"
+    $tempScript = New-VetOfficeWinSCPTemporaryScriptPath
     try {
         $testCommand | Out-File -FilePath $tempScript -Encoding ASCII -Force
         
@@ -1415,9 +1512,9 @@ exit
         }
 
     } finally {
-        if (Test-Path $tempScript) {
-            Remove-Item $tempScript -Force -ErrorAction SilentlyContinue
-        }
+        try {
+            Remove-VetOfficeWinSCPSensitiveTemporaryScript -Path $tempScript
+        } catch {}
     }
 }
 
@@ -1452,7 +1549,7 @@ put "$LocalFilePath"
 exit
 "@
     
-    $tempScript = [System.IO.Path]::GetTempFileName() + ".txt"
+    $tempScript = New-VetOfficeWinSCPTemporaryScriptPath
     try {
         $winscpCommand | Out-File -FilePath $tempScript -Encoding ASCII -Force
         
@@ -1504,10 +1601,10 @@ exit
         Write-Log "Помилка пiд час завантаження через WinSCP: $($_.Exception.Message)" -Level "ERROR"
         return $false
     } finally {
-        # Очищаємо тимчасовий файл
-        if (Test-Path $tempScript) {
-            Remove-Item $tempScript -Force -ErrorAction SilentlyContinue
-        }
+        # Очищаємо тимчасовий файл із конфіденційними даними.
+        try {
+            Remove-VetOfficeWinSCPSensitiveTemporaryScript -Path $tempScript
+        } catch {}
     }
 }
 

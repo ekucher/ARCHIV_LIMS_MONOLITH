@@ -23,7 +23,8 @@ param(
     [switch]$ValidateOnly,
     [switch]$SkipAccessTest,
     [switch]$SkipTestNotification,
-    [switch]$NoElevation
+    [switch]$NoElevation,
+    [switch]$NoPause
 )
 
 $helperLoggingPath = Join-Path $PSScriptRoot "BRAVO_HELPER_LOGGING.ps1"
@@ -43,6 +44,22 @@ function Test-IsAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Wait-BRAVOSetupCompletion {
+    if ($NoPause -or -not [Environment]::UserInteractive) {
+        return
+    }
+
+    try {
+        if ([Console]::IsInputRedirected) {
+            return
+        }
+        [void](Read-Host "Натисніть Enter для завершення")
+    } catch {
+        # Фонові, перенаправлені або non-interactive запуски не повинні
+        # завершуватися помилкою лише через відсутність консолі.
+    }
 }
 
 function Quote-ProcessArgument {
@@ -147,6 +164,9 @@ function Restart-SetupElevated {
     }
     if ($SkipTestNotification) {
         $argumentParts += "-SkipTestNotification"
+    }
+    if ($NoPause) {
+        $argumentParts += "-NoPause"
     }
     $argumentParts += "-NoElevation"
 
@@ -299,10 +319,12 @@ try {
         Write-Host "Production-операції архівації/копіювання/видалення не запускалися." `
             -ForegroundColor Green
     }
+    Wait-BRAVOSetupCompletion
     Complete-BRAVOHelperLog -ExitCode 0
 } catch {
     Write-Host ""
     Write-Host "ПОМИЛКА НАЛАШТУВАННЯ: $($_.Exception.Message)" -ForegroundColor Red
     Write-Host "Подальші етапи зупинено (fail-closed)." -ForegroundColor Yellow
+    Wait-BRAVOSetupCompletion
     Complete-BRAVOHelperLog -ExitCode 1
 }

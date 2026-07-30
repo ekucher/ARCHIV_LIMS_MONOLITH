@@ -654,7 +654,9 @@ try {
             "контрольована зупинка/запуск: $($serviceNames -join ', '); у dry-run стан не змінювався"
         )
         Add-DryRunResult PLAN "Backup" "Узгодженість джерел" (
-            "QuiesceForBackup=$($maintenanceSettings.Services.QuiesceForBackup); " +
+            "режим=$($backupConsistency.Mode); " +
+            "контекст=$($backupConsistency.SnapshotContext); " +
+            "окремий VSS-знімок для кожного архіву; " +
             "спільний BRAVO_OPERATION.lock; очікування до " +
             "$($schedulerSettings.OperationLockWaitMinutes) хв.; служби не змінювалися"
         )

@@ -1,7 +1,7 @@
 ﻿##########
 # BravoSoft
 # Author: Evgeniy Kucher
-# Version: 4.2.0, 2026-07-30 - єдина версія та дата з BRAVO.config
+# Version: 4.2.1, 2026-07-30 - єдина версія та дата з BRAVO.config
 ##########
 
 param (
@@ -994,15 +994,16 @@ function Invoke-BRAVOSevenZipIntegrityTest {
         if ([string]::IsNullOrWhiteSpace($Password)) {
             throw "пароль архіву не задано"
         }
-        if ($Password.Contains('"')) {
-            throw "пароль архіву містить непідтримуваний символ подвійних лапок"
+        if ($Password.IndexOfAny([char[]]"`r`n") -ge 0) {
+            throw "пароль архіву не може містити символи нового рядка"
         }
 
         $processInfo = New-Object System.Diagnostics.ProcessStartInfo
         $processInfo.FileName = $SevenZipPath
-        $processInfo.Arguments = (
-            "t -y -bb1 -p`"{0}`" `"{1}`"" -f $Password, $ArchivePath
-        )
+        # Без параметра -p 7-Zip запитує пароль зашифрованого архіву зі
+        # стандартного вводу. Так секрет не потрапляє до командного рядка.
+        $processInfo.Arguments = "t -y -bb1 `"$ArchivePath`""
+        $processInfo.RedirectStandardInput = $true
         $processInfo.RedirectStandardOutput = $true
         $processInfo.RedirectStandardError = $true
         $processInfo.UseShellExecute = $false
@@ -1011,6 +1012,8 @@ function Invoke-BRAVOSevenZipIntegrityTest {
         $process = New-Object System.Diagnostics.Process
         $process.StartInfo = $processInfo
         $capture = Start-BRAVOProcessOutputCapture -Process $process
+        $process.StandardInput.WriteLine($Password)
+        $process.StandardInput.Close()
 
         if ($TimeoutSeconds -gt 0) {
             $timeoutMilliseconds = [int][math]::Min(
@@ -1812,8 +1815,8 @@ try {
     if ([string]::IsNullOrWhiteSpace($script:ArchivePassword)) {
         throw "запис Credential Manager '$archiveCredentialTarget' не знайдено або він порожній для $([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
     }
-    if ($script:ArchivePassword.Contains('"')) {
-        throw "пароль архівів містить непідтримуваний символ подвійних лапок"
+    if ($script:ArchivePassword.IndexOfAny([char[]]"`r`n") -ge 0) {
+        throw "пароль архівів не може містити символи нового рядка"
     }
 } catch {
     $ArchiveCredentialError = $_.Exception.Message
@@ -1840,7 +1843,8 @@ $SevenZipIntegrityTestTimeoutSeconds = if (
 }
 $archivePasswordPresentInConfig = @($arcCommonParams | Where-Object { $_ -match '(?i)^-p' }).Count -gt 0
 if (-not [string]::IsNullOrWhiteSpace($script:ArchivePassword)) {
-    $arcCommonParams += "-p$($script:ArchivePassword)"
+    # -p без значення: пароль буде передано 7-Zip через stdin.
+    $arcCommonParams += "-p"
 }
 $MoveRetryCount = if ($MaintenanceConfig.FileOperations -and
     $null -ne $MaintenanceConfig.FileOperations.MoveRetryCount) {
@@ -2737,7 +2741,7 @@ function Split-DiscordNotificationText {
         do {
             $availableLength = $MaximumLength - $currentChunk.Length
             if ($currentChunk.Length -gt 0) {
-                $availableLength--
+                $availableLength -= [Environment]::NewLine.Length
             }
 
             if ($availableLength -le 0) {
@@ -3269,12 +3273,15 @@ function Restore-FromArchive {
     $extractParams = @(
         'x',
         "-o$Destination",
-        "-p$($script:ArchivePassword)",
         "-y",
         $ArchivePath
     )
     
-    $exitCode = Invoke-CommandWithLog -Command $ARC_PATH -Arguments $extractParams -Description "Відновлення моделі з архіву"
+    $exitCode = Invoke-CommandWithLog `
+        -Command $ARC_PATH `
+        -Arguments $extractParams `
+        -Description "Відновлення моделі з архіву" `
+        -StandardInputText $script:ArchivePassword
     
     if ($exitCode -eq 0) {
         Write-Log "Модель успішно відновлена з архіву: $([System.IO.Path]::GetFileName($ArchivePath))" -Level "SUCCESS"
@@ -3295,7 +3302,8 @@ function Invoke-CommandWithLog {
         [string]$Command,
         [array]$Arguments,
         [string]$Description,
-        [int]$TimeoutSeconds = $NativeCommandTimeoutSeconds
+        [int]$TimeoutSeconds = $NativeCommandTimeoutSeconds,
+        [AllowNull()][string]$StandardInputText = $null
     )
     
     Write-Log "$Description..." -Level "INFO"
@@ -3309,6 +3317,7 @@ function Invoke-CommandWithLog {
                 ConvertTo-BRAVOWindowsCommandLineArgument -Argument ([string]$_)
             }) -join " "
         )
+        $processInfo.RedirectStandardInput = $null -ne $StandardInputText
         $processInfo.RedirectStandardOutput = $true
         $processInfo.RedirectStandardError = $true
         $processInfo.UseShellExecute = $false
@@ -3317,6 +3326,10 @@ function Invoke-CommandWithLog {
         $process = New-Object System.Diagnostics.Process
         $process.StartInfo = $processInfo
         $outputCapture = Start-BRAVOProcessOutputCapture -Process $process
+        if ($null -ne $StandardInputText) {
+            $process.StandardInput.WriteLine($StandardInputText)
+            $process.StandardInput.Close()
+        }
         $timeoutMilliseconds = [int][math]::Min(
             [double][int]::MaxValue,
             [double][math]::Max(1, $TimeoutSeconds) * 1000
@@ -3492,7 +3505,11 @@ function Compress-OldData {
         
         try {
             $arcArgs = $arcCommonParams + @("$archivePath", "$($dir.FullName)")
-            $exitCode = Invoke-CommandWithLog -Command $ARC_PATH -Arguments $arcArgs -Description "Архівація $dirName -> $archiveName"
+            $exitCode = Invoke-CommandWithLog `
+                -Command $ARC_PATH `
+                -Arguments $arcArgs `
+                -Description "Архівація $dirName -> $archiveName" `
+                -StandardInputText $script:ArchivePassword
             
             if ($exitCode -eq 0 -and
                 (Test-SevenZipArchiveIntegrity -SevenZipPath $ARC_PATH -ArchivePath $archivePath)) {
@@ -3539,11 +3556,12 @@ function Remove-OldLogFiles {
     }
 
     $cutoffDate = (Get-Date).AddDays(-$RetentionDays)
-    # Включаємо всі типи лог-файлів: скрипти, розміри файлів, маркери
+    # Включаємо журнали maintenance, застарілий формат, розміри файлів і маркери.
     $oldFiles = Get-BRAVOFiles -Path $Path |
         Where-Object { 
             $_.CreationTime -lt $cutoffDate -and 
-            ($_.Name -like "script_log_*.txt" -or 
+            ($_.Name -like "BRAVO_MAINTENANCE_*.log" -or
+             $_.Name -like "script_log_*.txt" -or
              $_.Name -like "file_sizes_*.csv" -or 
              $_.Name -like "restore_done_*.marker")
         }
@@ -4304,7 +4322,7 @@ if ($RunMissedRestoreOnly -and $missedDailyWork) {
 # Похідні файлові шляхи
 $ARCH_NAME1 = "${ArchivePrefix}_before_$NOW.mdz"
 $ARCH_NAME2 = "${ArchivePrefix}_after_$NOW.mdz"
-$LOG_FILE = "$LOG_DIR\script_log_$NOW.txt"
+$LOG_FILE = "$LOG_DIR\BRAVO_MAINTENANCE_$NOW.log"
 $SIZES_FILE = "$LOG_DIR\file_sizes_before_$NOW.csv"
 $TRACE_ARCHIV_DIR = "$TRACE_DIR\$YYYY-$MM-$DD"
 $freeSpaceExclusionsText = if ($FREE_SPACE_EXCLUDED_DRIVES.Count -gt 0) {
@@ -4629,7 +4647,11 @@ if ($BravoMaintenanceEnabled -and $bravoStatus -ne "Running") {
                 Write-Log "Видалено попередній hash-файл перед повторним створенням архіву: $beforeHashPath" -Level "WARNING"
             }
             $arcArgs = $arcCommonParams + @($beforeArchivePath, "$MODEL_PATH\*")
-            $exitCode = Invoke-CommandWithLog -Command $ARC_PATH -Arguments $arcArgs -Description "Архівація моделі перед реставрацією"
+            $exitCode = Invoke-CommandWithLog `
+                -Command $ARC_PATH `
+                -Arguments $arcArgs `
+                -Description "Архівація моделі перед реставрацією" `
+                -StandardInputText $script:ArchivePassword
             
             if ($exitCode -ne 0) {
                 $exitDescription = Get-BRAVOSevenZipExitCodeDescription -ExitCode $exitCode
@@ -4695,7 +4717,11 @@ if ($BravoMaintenanceEnabled -and $bravoStatus -ne "Running") {
                             Write-Log "Видалено попередній hash-файл перед повторним створенням архіву: $afterHashPath" -Level "WARNING"
                         }
                         $arcArgs = $arcCommonParams + @($afterArchivePath, "$MODEL_PATH\*")
-                        $exitCode = Invoke-CommandWithLog -Command $ARC_PATH -Arguments $arcArgs -Description "Архівація моделі після реставрації"
+                        $exitCode = Invoke-CommandWithLog `
+                            -Command $ARC_PATH `
+                            -Arguments $arcArgs `
+                            -Description "Архівація моделі після реставрації" `
+                            -StandardInputText $script:ArchivePassword
                         $afterArchiveReady = (
                             $exitCode -eq 0 -and
                             (Test-SevenZipArchiveIntegrity -SevenZipPath $ARC_PATH -ArchivePath $afterArchivePath) -and
@@ -4959,7 +4985,8 @@ if ($BravoMaintenanceEnabled) {
     $traceOldLogs = @(Get-BRAVOFiles -Path $LOG_DIR |
         Where-Object {
             $_.CreationTime -lt (Get-Date).AddDays(-$LOG_RETENTION_DAYS) -and
-            ($_.Name -like "script_log_*.txt" -or
+            ($_.Name -like "BRAVO_MAINTENANCE_*.log" -or
+             $_.Name -like "script_log_*.txt" -or
              $_.Name -like "file_sizes_*.csv" -or
              $_.Name -like "restore_done_*.marker")
         })

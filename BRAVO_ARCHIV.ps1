@@ -1087,15 +1087,16 @@ function Invoke-BRAVOSevenZipIntegrityTest {
         if ([string]::IsNullOrWhiteSpace($Password)) {
             throw "пароль архіву не задано"
         }
-        if ($Password.Contains('"')) {
-            throw "пароль архіву містить непідтримуваний символ подвійних лапок"
+        if ($Password.IndexOfAny([char[]]"`r`n") -ge 0) {
+            throw "пароль архіву не може містити символи нового рядка"
         }
 
         $processInfo = New-Object System.Diagnostics.ProcessStartInfo
         $processInfo.FileName = $SevenZipPath
-        $processInfo.Arguments = (
-            "t -y -bb1 -p`"{0}`" `"{1}`"" -f $Password, $ArchivePath
-        )
+        # Без параметра -p 7-Zip запитує пароль зашифрованого архіву зі
+        # стандартного вводу. Так секрет не потрапляє до командного рядка.
+        $processInfo.Arguments = "t -y -bb1 `"$ArchivePath`""
+        $processInfo.RedirectStandardInput = $true
         $processInfo.RedirectStandardOutput = $true
         $processInfo.RedirectStandardError = $true
         $processInfo.UseShellExecute = $false
@@ -1104,6 +1105,8 @@ function Invoke-BRAVOSevenZipIntegrityTest {
         $process = New-Object System.Diagnostics.Process
         $process.StartInfo = $processInfo
         $capture = Start-BRAVOProcessOutputCapture -Process $process
+        $process.StandardInput.WriteLine($Password)
+        $process.StandardInput.Close()
 
         if ($TimeoutSeconds -gt 0) {
             $timeoutMilliseconds = [int][math]::Min(
@@ -2078,7 +2081,7 @@ function Split-DiscordNotificationText {
         do {
             $availableLength = $MaximumLength - $currentChunk.Length
             if ($currentChunk.Length -gt 0) {
-                $availableLength--
+                $availableLength -= [Environment]::NewLine.Length
             }
 
             if ($availableLength -le 0) {
@@ -4560,6 +4563,33 @@ function Get-HealthIssueComponentName {
     return $name
 }
 
+function ConvertTo-NotificationLiteralText {
+    param([AllowEmptyString()][string]$Text)
+
+    # Slack does not require Discord Markdown escaping. In PowerShell a
+    # backslash is literal, so use "\*" (one slash), not "\\*".
+    $literalText = [string]$Text
+    if ($NotificationProvider -ne "discord") {
+        return $literalText
+    }
+    $literalText = $literalText.Replace("\", "\\")
+    $literalText = $literalText.Replace("*", "\*")
+    $literalText = $literalText.Replace("_", "\_")
+    $literalText = $literalText.Replace("~", "\~")
+    $literalText = $literalText.Replace("|", "\|")
+    $literalText = $literalText.Replace(">", "\>")
+    return $literalText
+}
+
+function Format-HealthIssueFileName {
+    param([object]$Issue)
+
+    if ([string]::IsNullOrWhiteSpace([string]$Issue.FileName)) {
+        return ""
+    }
+    return " • файл: $(ConvertTo-NotificationLiteralText -Text ([string]$Issue.FileName))"
+}
+
 function Format-CompactLocalIssue {
     param([object]$Issue)
 
@@ -4574,14 +4604,10 @@ function Format-CompactLocalIssue {
     }
 
     if ($Issue.Reason -match '^остання коректна копія старша за ') {
-        return ":warning: $componentName — прострочено: $(Format-BackupAge $Issue.LastWriteTime) • $(Format-FileSize $Issue.SizeBytes)"
+        return ":warning: $componentName — прострочено: $(Format-BackupAge $Issue.LastWriteTime) • $(Format-FileSize $Issue.SizeBytes)$(Format-HealthIssueFileName -Issue $Issue)"
     }
 
-    $fileText = if (-not [string]::IsNullOrWhiteSpace([string]$Issue.FileName)) {
-        " • $($Issue.FileName)"
-    } else {
-        ""
-    }
+    $fileText = Format-HealthIssueFileName -Issue $Issue
     return ":x: $componentName — $($Issue.Reason)$fileText"
 }
 
@@ -4600,15 +4626,15 @@ function Format-CompactSFTPIssue {
             $ageOnly = $Issue.Reason -match '^віддалена копія старша за [\d.,]+ год\.$'
 
             if ($sizeMatches -and $ageOnly) {
-                return ":warning: $componentName — файл є, розмір збігається ($(Format-FileSize $actualSize)), але прострочений: $(Format-BackupAge $Issue.LastWriteTime)"
+                return ":warning: $componentName — файл є, розмір збігається ($(Format-FileSize $actualSize)), але прострочений: $(Format-BackupAge $Issue.LastWriteTime)$(Format-HealthIssueFileName -Issue $Issue)"
             }
             if (-not $fileExists) {
-                return ":x: $componentName — $($Issue.Reason)"
+                return ":x: $componentName — $($Issue.Reason)$(Format-HealthIssueFileName -Issue $Issue)"
             }
             if ($null -ne $expectedSize -and -not $sizeMatches) {
-                return ":x: $componentName — $($Issue.Reason) • очікується $(Format-FileSize $expectedSize), у хмарі $(Format-FileSize $actualSize)"
+                return ":x: $componentName — $($Issue.Reason) • очікується $(Format-FileSize $expectedSize), у хмарі $(Format-FileSize $actualSize)$(Format-HealthIssueFileName -Issue $Issue)"
             }
-            return ":warning: $componentName — файл є ($(Format-FileSize $actualSize)) • $($Issue.Reason)"
+            return ":warning: $componentName — файл є ($(Format-FileSize $actualSize)) • $($Issue.Reason)$(Format-HealthIssueFileName -Issue $Issue)"
         }
         "SFTPSynchronization" {
             if ($Issue.Reason -eq "у хмарі відсутні або потребують оновлення локальні файли/папки") {
@@ -5484,8 +5510,15 @@ $institutionSettingsRequired = (
     $null -ne $bravoSettings.InstitutionCode -and
     $null -ne $bravoSettings.ArchivePrefix
 )
-$notificationCredentialRequired = -not $SyncBAZA -and
-    $script:notificationMode -ne "none"
+$script:notificationProviderDisplayName = if ($script:notificationProvider -eq "discord") {
+    "Discord"
+} else {
+    "Slack"
+}
+# -SyncBAZA can emit an alert about objects which will never be uploaded.
+# Load its webhook too, but treat a missing webhook as a notification error,
+# not as a reason to stop the synchronization itself.
+$notificationCredentialRequired = $script:notificationMode -ne "none"
 $credentialHelperLoaded = $false
 
 if ($institutionSettingsRequired -or
@@ -6151,6 +6184,97 @@ function Remove-OldBackupSets {
     }
 }
 
+function Remove-OldLunchArchives {
+    param(
+        [Parameter(Mandatory = $true)][string]$ArchiveRoot,
+        [Parameter(Mandatory = $true)][string[]]$Directories,
+        [int]$RetentionMonths = 2
+    )
+
+    if (-not (Test-Path -LiteralPath $ArchiveRoot -PathType Container)) {
+        Write-Log "Каталог обідніх архівів не знайдено: $ArchiveRoot" -Level "ERROR"
+        return $false
+    }
+
+    $resolvedArchiveRoot = (Resolve-Path -LiteralPath $ArchiveRoot -ErrorAction Stop).Path.TrimEnd([char[]]"\\/")
+    $effectiveRetentionMonths = [Math]::Max(1, $RetentionMonths)
+    $cutoff = (Get-Date).AddMonths(-$effectiveRetentionMonths)
+    $failed = $false
+    $deletedCount = 0
+
+    Write-Log "==="
+    Write-Log "=== ОЧИЩЕННЯ СТАРИХ ОБІДНІХ АРХІВІВ ==="
+    Write-Log "Дата відсічення: $cutoff; маркер імені: _1300." -Level "INFO"
+
+    foreach ($directory in @($Directories | Where-Object {
+        -not [string]::IsNullOrWhiteSpace([string]$_)
+    })) {
+        $directoryPath = Join-Path -Path $resolvedArchiveRoot -ChildPath $directory
+        if (-not (Test-Path -LiteralPath $directoryPath -PathType Container)) {
+            Write-Log "Каталог обідніх архівів не знайдено: $directoryPath" -Level "WARNING"
+            $failed = $true
+            continue
+        }
+        $resolvedDirectoryPath = (Resolve-Path -LiteralPath $directoryPath -ErrorAction Stop).Path.TrimEnd([char[]]"\\/")
+        $archiveRootPrefix = $resolvedArchiveRoot + [IO.Path]::DirectorySeparatorChar
+        if (-not $resolvedDirectoryPath.StartsWith($archiveRootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            Write-Log "Небезпечний каталог очищення поза ArchiveRoot пропущено: $directory" -Level "ERROR"
+            $failed = $true
+            continue
+        }
+
+        $directoryDeletedCount = 0
+        $archiveSets = @{}
+        foreach ($file in @(Get-BRAVOFiles -LiteralPath $resolvedDirectoryPath -Filter "*_1300.*")) {
+            $setName = if ($file.Name -like "*.mdz.sha512") {
+                $file.Name.Substring(0, $file.Name.Length - ".sha512".Length)
+            } elseif ($file.Name -like "*.mdz") {
+                $file.Name
+            } else {
+                continue
+            }
+            if (-not $archiveSets.ContainsKey($setName)) {
+                $archiveSets[$setName] = @{}
+            }
+            if ($file.Name -like "*.mdz.sha512") {
+                $archiveSets[$setName].Hash = $file
+            } else {
+                $archiveSets[$setName].Archive = $file
+            }
+        }
+
+        foreach ($setName in @($archiveSets.Keys | Sort-Object)) {
+            $archiveSet = $archiveSets[$setName]
+            if (-not $archiveSet.ContainsKey("Archive") -or -not $archiveSet.ContainsKey("Hash")) {
+                Write-Log "Неповний обідній комплект залишено без змін: $setName" -Level "WARNING"
+                continue
+            }
+            $setLastWriteTime = (@(
+                $archiveSet.Archive.LastWriteTime,
+                $archiveSet.Hash.LastWriteTime
+            ) | Measure-Object -Maximum).Maximum
+            if ($setLastWriteTime -ge $cutoff) {
+                continue
+            }
+            try {
+                Remove-Item -LiteralPath $archiveSet.Archive.FullName -Force -ErrorAction Stop
+                Remove-Item -LiteralPath $archiveSet.Hash.FullName -Force -ErrorAction Stop
+                $directoryDeletedCount += 2
+                $deletedCount += 2
+                Write-Log "Видалено обідній комплект: $setName і $($archiveSet.Hash.Name)" -Level "SUCCESS"
+            } catch {
+                $failed = $true
+                Write-Log "Не вдалося видалити обідній комплект ${setName}: $($_.Exception.Message)" -Level "ERROR"
+            }
+        }
+
+        Write-Log "Каталог ${directory}: видалено $directoryDeletedCount обідніх файлів" -Level "INFO"
+    }
+
+    Write-Log "Усього видалено обідніх файлів: $deletedCount" -Level "INFO"
+    return (-not $failed)
+}
+
 function Remove-OldLogsByAge {
     param(
         [string]$Path,
@@ -6314,6 +6438,152 @@ function Write-SevenZipFailureDiagnostics {
     }
 }
 
+function Get-BRAVOVSSSnapshotSourcePath {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)][string]$DeviceObject
+    )
+
+    $normalizedSourcePath = $SourcePath.Replace("/", "\")
+    $volumeRoot = [IO.Path]::GetPathRoot($normalizedSourcePath)
+    if ([string]::IsNullOrWhiteSpace($volumeRoot) -or
+        $volumeRoot -notmatch '^[A-Za-z]:\\$') {
+        throw "VSS підтримує лише локальний шлях із літерою диска: $SourcePath"
+    }
+    if ([string]::IsNullOrWhiteSpace($DeviceObject)) {
+        throw "VSS не повернув шлях DeviceObject для джерела: $SourcePath"
+    }
+
+    $snapshotRoot = $DeviceObject.TrimEnd([char[]]"\/")
+    $relativePath = $normalizedSourcePath.Substring($volumeRoot.Length).TrimStart([char[]]"\/")
+    if ([string]::IsNullOrWhiteSpace($relativePath)) {
+        return "$snapshotRoot\"
+    }
+    return "$snapshotRoot\$relativePath"
+}
+
+function Get-BRAVOVSSReturnCodeDescription {
+    param([int]$ReturnCode)
+
+    $descriptions = @{
+        0 = "успішно"
+        1 = "доступ заборонено"
+        2 = "некоректний аргумент"
+        3 = "том не знайдено"
+        4 = "том не підтримує VSS"
+        5 = "контекст VSS не підтримується"
+        6 = "недостатньо місця для shadow copy"
+        7 = "том зайнятий"
+        8 = "досягнуто максимальну кількість shadow copies"
+        9 = "вже виконується інша операція shadow copy"
+        10 = "VSS provider відхилив операцію"
+        11 = "VSS provider не зареєстрований"
+        12 = "помилка VSS provider"
+        13 = "невідома помилка VSS"
+    }
+    if ($descriptions.ContainsKey($ReturnCode)) {
+        return $descriptions[$ReturnCode]
+    }
+    return "невідома помилка VSS"
+}
+
+function New-BRAVOVSSSnapshot {
+    param([Parameter(Mandatory = $true)][string]$SourcePath)
+
+    $normalizedSourcePath = $SourcePath.Replace("/", "\")
+    $volumeRoot = [IO.Path]::GetPathRoot($normalizedSourcePath)
+    if ([string]::IsNullOrWhiteSpace($volumeRoot) -or
+        $volumeRoot -notmatch '^[A-Za-z]:\\$') {
+        throw "Не вдалося визначити локальний том VSS для джерела: $SourcePath"
+    }
+
+    $snapshotContext = [string]$backupConsistency.SnapshotContext
+    if ([string]::IsNullOrWhiteSpace($snapshotContext)) {
+        $snapshotContext = "ClientAccessible"
+    }
+
+    $shadowId = $null
+    try {
+        Write-Log "Створення VSS-знімка тому $volumeRoot для узгодженої архівації" -Level "INFO"
+        $shadowClass = [wmiclass]"\\.\root\cimv2:Win32_ShadowCopy"
+        $createResult = $shadowClass.Create($volumeRoot, $snapshotContext)
+        if ($null -eq $createResult) {
+            throw "Win32_ShadowCopy.Create не повернув результат"
+        }
+
+        $returnCode = [int]$createResult.ReturnValue
+        if ($returnCode -ne 0) {
+            $description = Get-BRAVOVSSReturnCodeDescription -ReturnCode $returnCode
+            throw "Win32_ShadowCopy.Create повернув код $returnCode ($description)"
+        }
+
+        $shadowId = [string]$createResult.ShadowID
+        if ([string]::IsNullOrWhiteSpace($shadowId)) {
+            throw "VSS не повернув ідентифікатор створеного знімка"
+        }
+
+        $escapedShadowId = $shadowId.Replace("'", "''")
+        $shadow = Get-WmiObject `
+            -Namespace "root\cimv2" `
+            -Class "Win32_ShadowCopy" `
+            -Filter ("ID='{0}'" -f $escapedShadowId) `
+            -ErrorAction Stop |
+            Select-Object -First 1
+        if ($null -eq $shadow -or [string]::IsNullOrWhiteSpace([string]$shadow.DeviceObject)) {
+            throw "створений VSS-знімок $shadowId не знайдено"
+        }
+
+        $snapshotSourcePath = Get-BRAVOVSSSnapshotSourcePath `
+            -SourcePath $SourcePath `
+            -DeviceObject ([string]$shadow.DeviceObject)
+        Write-Log "VSS-знімок створено: $shadowId" -Level "SUCCESS"
+        return [pscustomobject]@{
+            Id = $shadowId
+            VolumeRoot = $volumeRoot
+            DeviceObject = [string]$shadow.DeviceObject
+            SourcePath = $snapshotSourcePath
+            WmiObject = $shadow
+        }
+    } catch {
+        if (-not [string]::IsNullOrWhiteSpace($shadowId)) {
+            try {
+                $escapedShadowId = $shadowId.Replace("'", "''")
+                $orphanedShadow = Get-WmiObject `
+                    -Namespace "root\cimv2" `
+                    -Class "Win32_ShadowCopy" `
+                    -Filter ("ID='{0}'" -f $escapedShadowId) `
+                    -ErrorAction SilentlyContinue |
+                    Select-Object -First 1
+                if ($null -ne $orphanedShadow) {
+                    $null = $orphanedShadow.Delete()
+                }
+            } catch {
+                # Основна помилка створення VSS важливіша за помилку best-effort cleanup.
+            }
+        }
+        throw
+    }
+}
+
+function Remove-BRAVOVSSSnapshot {
+    param([Parameter(Mandatory = $true)][object]$Snapshot)
+
+    try {
+        $deleteResult = $Snapshot.WmiObject.Delete()
+        if ($null -ne $deleteResult -and [int]$deleteResult.ReturnValue -ne 0) {
+            $returnCode = [int]$deleteResult.ReturnValue
+            $description = Get-BRAVOVSSReturnCodeDescription -ReturnCode $returnCode
+            Write-Log "Не вдалося видалити VSS-знімок $($Snapshot.Id): код $returnCode ($description)" -Level "ERROR"
+            return $false
+        }
+        Write-Log "VSS-знімок видалено: $($Snapshot.Id)" -Level "SUCCESS"
+        return $true
+    } catch {
+        Write-Log "Не вдалося видалити VSS-знімок $($Snapshot.Id): $($_.Exception.Message)" -Level "ERROR"
+        return $false
+    }
+}
+
 function New-Archive {
     param(
         [string]$SourcePath,
@@ -6348,8 +6618,8 @@ function New-Archive {
             Write-Log "Пароль архiву не завантажено з Windows Credential Manager" -Level "ERROR"
             return $false
         }
-        if ($script:archivePassword.Contains('"')) {
-            Write-Log "Пароль архiву мiстить непiдтримуваний символ подвiйних лапок" -Level "ERROR"
+        if ($script:archivePassword.IndexOfAny([char[]]"`r`n") -ge 0) {
+            Write-Log "Пароль архiву не може мiстити символи нового рядка" -Level "ERROR"
             return $false
         }
 
@@ -6369,14 +6639,14 @@ function New-Archive {
             Write-Log "Видалено попереднiй hash-файл перед повторним створенням архiву: $staleHashPath" -Level "WARNING"
         }
 
-        $archivePasswordArgument = "-p`"$($script:archivePassword)`""
-        $arguments = "$effectiveArcParams $archivePasswordArgument `"$fullArchivePath`" `"$SourcePath`""
-        $safeArguments = "$effectiveArcParams -p******** `"$fullArchivePath`" `"$SourcePath`""
-        Write-Log "Команда: $ArcPath $safeArguments" -Level "DEBUG"
+        # -p без значення вмикає шифрування і читає пароль зі stdin.
+        $arguments = "$effectiveArcParams -p `"$fullArchivePath`" `"$SourcePath`""
+        Write-Log "Команда: $ArcPath $arguments (пароль передається через stdin)" -Level "DEBUG"
         
         $processInfo = New-Object System.Diagnostics.ProcessStartInfo
         $processInfo.FileName = $ArcPath
         $processInfo.Arguments = $arguments
+        $processInfo.RedirectStandardInput = $true
         # Потоки завжди перенаправляються, щоб технічний вивід 7-Zip не
         # дублював журнал. Власний індикатор показує час і поточний розмір.
         $processInfo.RedirectStandardOutput = $true
@@ -6389,6 +6659,8 @@ function New-Archive {
         # Сучасні ОС використовують ReadToEndAsync, Windows 7/.NET 4.0 —
         # сумісний подієвий механізм зі спільного модуля.
         $outputCapture = Start-BRAVOProcessOutputCapture -Process $process
+        $process.StandardInput.WriteLine($script:archivePassword)
+        $process.StandardInput.Close()
         $sevenZipProgressId = 2
         $progressActivity = "7-Zip — $ArchiveName"
         $archiveStarted = Get-Date
@@ -6526,7 +6798,10 @@ function New-SHA512Hash {
 # =============================================
 
 function Test-SFTPConfig {
-    param([switch]$BAZAOnly)
+    param(
+        [switch]$BAZAOnly,
+        [switch]$SynchronizationOnly
+    )
 
     $configurationErrors = @()
 
@@ -6546,7 +6821,7 @@ function Test-SFTPConfig {
         $configurationErrors += "не знайдено WinSCP: $winSCPPath"
     }
 
-    if (-not $BAZAOnly -and $componentSettings.SFTP.ArchiveUpload) {
+    if (-not $BAZAOnly -and -not $SynchronizationOnly -and $componentSettings.SFTP.ArchiveUpload) {
         foreach ($archive in ($archiveDefinitions | Where-Object { $_.Enabled })) {
             if (-not $sftpDirectories.ContainsKey($archive.Type) -or [string]::IsNullOrWhiteSpace($sftpDirectories[$archive.Type])) {
                 $configurationErrors += "не встановлено SFTP каталог для архiву $($archive.Type)"
@@ -6816,6 +7091,106 @@ function Test-NetworkConnection {
     }
 }
 
+function Remove-BRAVOWinSCPSensitiveTemporaryScript {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return
+    }
+
+    $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([char[]]"\/")
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $expectedPrefix = $temporaryRoot + [IO.Path]::DirectorySeparatorChar
+    $fileName = [IO.Path]::GetFileName($fullPath)
+    if (-not $fullPath.StartsWith($expectedPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+        $fileName -notmatch '^BRAVO_WinSCP_[0-9a-f]{32}\.txt$') {
+        throw "відхилено небезпечний шлях тимчасового WinSCP-файла: $Path"
+    }
+
+    if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
+        # Спершу прибираємо вміст із доступного файлового запису, потім файл.
+        [IO.File]::WriteAllText($fullPath, "", [Text.Encoding]::ASCII)
+        Remove-Item -LiteralPath $fullPath -Force -ErrorAction Stop
+    }
+}
+
+function Clear-BRAVOStaleWinSCPSensitiveTemporaryScripts {
+    $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+    $staleBefore = (Get-Date).AddDays(-1)
+    foreach ($file in @(
+            Get-ChildItem `
+                -LiteralPath $temporaryRoot `
+                -Filter "BRAVO_WinSCP_*.txt" `
+                -ErrorAction SilentlyContinue |
+                Where-Object { -not $_.PSIsContainer -and $_.LastWriteTime -lt $staleBefore }
+        )) {
+        try {
+            Remove-BRAVOWinSCPSensitiveTemporaryScript -Path $file.FullName
+        } catch {
+            # Файл іншого облікового запису може мати закритий ACL.
+        }
+    }
+}
+
+function New-BRAVOWinSCPTemporaryScriptPath {
+    # WinSCP script містить URL з обліковими даними. Створюємо файл атомарно
+    # та залишаємо доступ лише поточному користувачу, SYSTEM і Administrators.
+    Clear-BRAVOStaleWinSCPSensitiveTemporaryScripts
+    $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+    $temporaryPath = Join-Path `
+        -Path $temporaryRoot `
+        -ChildPath ("BRAVO_WinSCP_{0}.txt" -f [guid]::NewGuid().ToString("N"))
+    $stream = $null
+    try {
+        $stream = [IO.File]::Open(
+            $temporaryPath,
+            [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::Write,
+            [IO.FileShare]::None
+        )
+        $stream.Dispose()
+        $stream = $null
+
+        $acl = Get-Acl -LiteralPath $temporaryPath -ErrorAction Stop
+        $acl.SetAccessRuleProtection($true, $false)
+        foreach ($existingRule in @($acl.Access)) {
+            [void]$acl.RemoveAccessRuleAll($existingRule)
+        }
+
+        $uniqueSids = @{}
+        foreach ($sid in @(
+                [Security.Principal.WindowsIdentity]::GetCurrent().User,
+                (New-Object Security.Principal.SecurityIdentifier("S-1-5-18")),
+                (New-Object Security.Principal.SecurityIdentifier("S-1-5-32-544"))
+            )) {
+            if ($null -eq $sid -or $uniqueSids.ContainsKey($sid.Value)) {
+                continue
+            }
+            $uniqueSids[$sid.Value] = $true
+            $rule = New-Object `
+                -TypeName System.Security.AccessControl.FileSystemAccessRule `
+                -ArgumentList @(
+                    $sid,
+                    [Security.AccessControl.FileSystemRights]::FullControl,
+                    [Security.AccessControl.AccessControlType]::Allow
+                )
+            [void]$acl.AddAccessRule($rule)
+        }
+        Set-Acl -LiteralPath $temporaryPath -AclObject $acl -ErrorAction Stop
+        return $temporaryPath
+    } catch {
+        if ($null -ne $stream) {
+            $stream.Dispose()
+        }
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+            try {
+                Remove-BRAVOWinSCPSensitiveTemporaryScript -Path $temporaryPath
+            } catch {}
+        }
+        throw
+    }
+}
+
 function Test-SFTPConnection {
     param(
         [string]$WinSCPPath,
@@ -6838,7 +7213,7 @@ ls
 exit
 "@
     
-    $tempScript = [System.IO.Path]::GetTempFileName() + ".txt"
+    $tempScript = New-BRAVOWinSCPTemporaryScriptPath
     try {
         $testCommand | Out-File -FilePath $tempScript -Encoding $winSCPScriptEncoding -Force
         
@@ -6883,9 +7258,9 @@ exit
         }
 
     } finally {
-        if (Test-Path $tempScript) {
-            Remove-Item $tempScript -Force -ErrorAction SilentlyContinue
-        }
+        try {
+            Remove-BRAVOWinSCPSensitiveTemporaryScript -Path $tempScript
+        } catch {}
     }
 }
 
@@ -7035,6 +7410,18 @@ function Get-BAZASFTPComparison {
             }
 
             $localItem = $difference.Local
+            $localItemPath = if ($null -ne $localItem) {
+                [string]$localItem.FullName
+            } else {
+                ""
+            }
+            if ([string]::IsNullOrWhiteSpace($localItemPath) -and $null -ne $localItem) {
+                $localItemPath = [string]$localItem.FileName
+            }
+            if (-not [string]::IsNullOrWhiteSpace($localItemPath) -and
+                -not [IO.Path]::IsPathRooted($localItemPath)) {
+                $localItemPath = Join-Path -Path $LocalPath -ChildPath $localItemPath
+            }
             $pendingFiles += [pscustomobject]@{
                 Action = $rawAction
                 Reason = if ($rawAction -eq "UploadNew") {
@@ -7042,8 +7429,8 @@ function Get-BAZASFTPComparison {
                 } else {
                     "потребує оновлення у хмарі"
                 }
-                Path = if ($null -ne $localItem) {
-                    [string]$localItem.FileName
+                Path = if (-not [string]::IsNullOrWhiteSpace($localItemPath)) {
+                    $localItemPath
                 } else {
                     "невідомий локальний шлях"
                 }
@@ -7079,7 +7466,8 @@ function Write-BAZASFTPComparisonAudit {
         [object]$Comparison,
         [ValidateSet("Before", "After")]
         [string]$Stage,
-        [string]$ComponentName = "BAZA"
+        [string]$ComponentName = "BAZA",
+        [object[]]$IncompatibleIssues = @()
     )
 
     $stageText = if ($Stage -eq "Before") {
@@ -7094,6 +7482,11 @@ function Write-BAZASFTPComparisonAudit {
     }
 
     $pendingFiles = @($Comparison.PendingFiles)
+    $pendingSplit = Split-BAZAPendingFilesByCompatibility `
+        -PendingFiles $pendingFiles `
+        -IncompatibleIssues $IncompatibleIssues
+    $retryablePendingFiles = @($pendingSplit.Retryable)
+    $incompatiblePendingFiles = @($pendingSplit.Incompatible)
     $missingCount = @($pendingFiles | Where-Object { $_.Action -eq "UploadNew" }).Count
     $updateCount = @($pendingFiles | Where-Object { $_.Action -eq "UploadUpdate" }).Count
     if ($pendingFiles.Count -eq 0) {
@@ -7101,9 +7494,15 @@ function Write-BAZASFTPComparisonAudit {
         return
     }
 
-    $summaryLevel = if ($Stage -eq "Before") { "INFO" } else { "ERROR" }
-    Write-Log "Аудит $ComponentName ${stageText}: очiкують передачi: $($pendingFiles.Count) (вiдсутнi у хмарi: $missingCount; потребують оновлення: $updateCount)" -Level $summaryLevel
-    foreach ($pendingFile in $pendingFiles) {
+    $summaryLevel = if ($Stage -eq "Before") {
+        "INFO"
+    } elseif ($retryablePendingFiles.Count -eq 0 -and $incompatiblePendingFiles.Count -gt 0) {
+        "WARNING"
+    } else {
+        "ERROR"
+    }
+    Write-Log "Аудит $ComponentName ${stageText}: очiкують передачi: $($pendingFiles.Count) (вiдсутнi у хмарi: $missingCount; потребують оновлення: $updateCount; несумісні імена: $($incompatiblePendingFiles.Count))" -Level $summaryLevel
+    foreach ($pendingFile in $retryablePendingFiles) {
         $itemType = if ($pendingFile.IsDirectory) { "КАТАЛОГ" } else { "ФАЙЛ" }
         $sizeText = if ($null -ne $pendingFile.SizeBytes) {
             "; байт: $($pendingFile.SizeBytes)"
@@ -7112,18 +7511,103 @@ function Write-BAZASFTPComparisonAudit {
         }
         Write-Log "AUDIT $ComponentName $stageText [$itemType] [$($pendingFile.Reason)] $($pendingFile.Path)$sizeText" -Level $summaryLevel -FileOnly
     }
+    foreach ($pendingFile in $incompatiblePendingFiles) {
+        Write-Log "AUDIT $ComponentName $stageText [ПРОПУЩЕНО: НЕСУМІСНЕ ІМ'Я] $($pendingFile.Path)" -Level "WARNING" -FileOnly
+    }
+}
+
+function Test-BAZAPathBlockedByIncompatibleName {
+    param(
+        [string]$CandidatePath,
+        [object[]]$IncompatibleIssues = @()
+    )
+
+    if ([string]::IsNullOrWhiteSpace($CandidatePath)) {
+        return $false
+    }
+    try {
+        $candidateFullPath = [IO.Path]::GetFullPath($CandidatePath).TrimEnd([char[]]"\\/")
+    } catch {
+        return $false
+    }
+
+    foreach ($issue in @($IncompatibleIssues)) {
+        try {
+            $issueFullPath = [IO.Path]::GetFullPath([string]$issue.Path).TrimEnd([char[]]"\\/")
+        } catch {
+            continue
+        }
+        if ($candidateFullPath.Equals($issueFullPath, [StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+        if ([bool]$issue.IsDirectory) {
+            $issuePrefix = $issueFullPath + [IO.Path]::DirectorySeparatorChar
+            if ($candidateFullPath.StartsWith($issuePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                return $true
+            }
+        }
+    }
+    return $false
+}
+
+function Split-BAZAPendingFilesByCompatibility {
+    param(
+        [object[]]$PendingFiles = @(),
+        [object[]]$IncompatibleIssues = @()
+    )
+
+    $retryable = @()
+    $incompatible = @()
+    foreach ($pendingFile in @($PendingFiles)) {
+        if (Test-BAZAPathBlockedByIncompatibleName `
+            -CandidatePath ([string]$pendingFile.Path) `
+            -IncompatibleIssues $IncompatibleIssues) {
+            $incompatible += $pendingFile
+        } else {
+            $retryable += $pendingFile
+        }
+    }
+    return [pscustomobject]@{
+        Retryable = @($retryable)
+        Incompatible = @($incompatible)
+    }
 }
 
 function Get-BAZASynchronizationOutcome {
     param(
         [int]$WinSCPExitCode,
         [object]$ComparisonBefore,
-        [object]$ComparisonAfter
+        [object]$ComparisonAfter,
+        [object[]]$IncompatibleIssues = @()
     )
 
     $verificationSucceeded = $null -ne $ComparisonAfter -and $ComparisonAfter.Success
+    $afterSplit = if ($verificationSucceeded) {
+        Split-BAZAPendingFilesByCompatibility `
+            -PendingFiles @($ComparisonAfter.PendingFiles) `
+            -IncompatibleIssues $IncompatibleIssues
+    } else {
+        $null
+    }
+    $beforeSplit = if ($null -ne $ComparisonBefore -and $ComparisonBefore.Success) {
+        Split-BAZAPendingFilesByCompatibility `
+            -PendingFiles @($ComparisonBefore.PendingFiles) `
+            -IncompatibleIssues $IncompatibleIssues
+    } else {
+        $null
+    }
     $remainingCount = if ($verificationSucceeded) {
         @($ComparisonAfter.PendingFiles).Count
+    } else {
+        $null
+    }
+    $retryableRemainingCount = if ($verificationSucceeded) {
+        @($afterSplit.Retryable).Count
+    } else {
+        $null
+    }
+    $incompatibleRemainingCount = if ($verificationSucceeded) {
+        @($afterSplit.Incompatible).Count
     } else {
         $null
     }
@@ -7132,8 +7616,8 @@ function Get-BAZASynchronizationOutcome {
     } else {
         $null
     }
-    $completedCount = if ($null -ne $beforeCount -and $null -ne $remainingCount) {
-        [math]::Max(0, $beforeCount - $remainingCount)
+    $completedCount = if ($null -ne $beforeSplit -and $null -ne $afterSplit) {
+        [math]::Max(0, @($beforeSplit.Retryable).Count - @($afterSplit.Retryable).Count)
     } else {
         $null
     }
@@ -7144,14 +7628,22 @@ function Get-BAZASynchronizationOutcome {
         BeforeCount = $beforeCount
         CompletedCount = $completedCount
         RemainingCount = $remainingCount
+        RetryableRemainingCount = $retryableRemainingCount
+        IncompatibleRemainingCount = $incompatibleRemainingCount
         IsComplete = (
             $WinSCPExitCode -eq 0 -and
             $verificationSucceeded -and
-            $remainingCount -eq 0
+            $retryableRemainingCount -eq 0
+        )
+        IsDegraded = (
+            $WinSCPExitCode -eq 0 -and
+            $verificationSucceeded -and
+            $retryableRemainingCount -eq 0 -and
+            $incompatibleRemainingCount -gt 0
         )
         IsPartial = (
             $verificationSucceeded -and
-            $remainingCount -gt 0
+            $retryableRemainingCount -gt 0
         )
     }
 }
@@ -7231,7 +7723,12 @@ function Write-BAZARemoteNameCompatibilityAudit {
         Write-Log "AUDIT $ComponentName НЕСУМIСНЕ IМ'Я [$itemType] [довжина: $($issue.CharacterCount) символів; $($issue.Utf8ByteCount)/$($issue.MaximumUtf8Bytes) UTF-8 байт] $($issue.Path)" -Level "ERROR" -FileOnly
     }
 
-    Send-BAZAIncompatibleNameAlert -Issues $issues -ComponentName $ComponentName
+    # Notification failures must never stop the actual SFTP synchronization.
+    try {
+        Send-BAZAIncompatibleNameAlert -Issues $issues -ComponentName $ComponentName
+    } catch {
+        Write-Log "Не вдалося підготувати сповіщення про несумісні імена ${ComponentName}: $($_.Exception.Message)" -Level "ERROR"
+    }
 }
 
 function Send-BAZAIncompatibleNameAlert {
@@ -7240,8 +7737,15 @@ function Send-BAZAIncompatibleNameAlert {
         [string]$ComponentName = "BAZA"
     )
 
-    if ($NoSlack -or $NotificationMode -eq "none") {
+    if ($NoSlack -or $script:notificationMode -eq "none") {
         Write-Log "Сповіщення про несумісні імена $ComponentName вимкнено параметрами запуску або конфігурацією" -Level "INFO"
+        return
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$script:notificationWebhookUrl)) {
+        Write-Log (
+            "Сповіщення про несумісні імена $ComponentName не відправлено: " +
+            "webhook для $($script:notificationProviderDisplayName) не налаштовано"
+        ) -Level "INFO"
         return
     }
 
@@ -7254,10 +7758,22 @@ function Send-BAZAIncompatibleNameAlert {
                 if ($displayName.Length -gt 180) {
                     $displayName = $displayName.Substring(0, 177) + "..."
                 }
+
+                # The health formatter lives in a different function scope.
+                # Keep this standalone mode self-contained and only apply
+                # Markdown escaping when the selected provider is Discord.
+                if ($script:notificationProvider -eq "discord") {
+                    $displayName = $displayName.Replace("\", "\\")
+                    $displayName = $displayName.Replace("*", "\*")
+                    $displayName = $displayName.Replace("_", "\_")
+                    $displayName = $displayName.Replace("~", "\~")
+                    $displayName = $displayName.Replace("|", "\|")
+                    $displayName = $displayName.Replace(">", "\>")
+                }
                 (
                     "• $itemType [довжина: $($_.CharacterCount) символів; " +
                     "$($_.Utf8ByteCount)/$($_.MaximumUtf8Bytes) UTF-8 байт]:`n  " +
-                    ([char]96) + $displayName + ([char]96)
+                    $displayName
                 )
             }
     )
@@ -7305,14 +7821,26 @@ $examplesText
 "@
 
     try {
-        Send-BRAVOWebhookNotification `
-            -Provider $NotificationProvider `
-            -WebhookUrl $NotificationWebhookUrl `
-            -Message $message `
-            -TimeoutSeconds $NotificationRequestTimeoutSeconds
-        Write-Log "Сповіщення про $($Issues.Count) несумісних імен $ComponentName відправлено у $NotificationProviderDisplayName" -Level "SUCCESS"
+        $outboundMessages = if ($script:notificationProvider -eq "discord") {
+            @(Split-DiscordNotificationText -Message $message)
+        } else {
+            @($message)
+        }
+        foreach ($outboundMessage in $outboundMessages) {
+            Send-BRAVOWebhookNotification `
+                -Provider $script:notificationProvider `
+                -WebhookUrl $script:notificationWebhookUrl `
+                -Message $outboundMessage `
+                -TimeoutSeconds $script:notificationRequestTimeoutSeconds
+        }
+        $chunkText = if ($outboundMessages.Count -gt 1) {
+            " частинами: $($outboundMessages.Count)"
+        } else {
+            ""
+        }
+        Write-Log "Сповіщення про $($Issues.Count) несумісних імен $ComponentName відправлено у $($script:notificationProviderDisplayName)$chunkText" -Level "SUCCESS"
     } catch {
-        Write-Log "Не вдалося відправити сповіщення про несумісні імена $ComponentName у ${NotificationProviderDisplayName}: $($_.Exception.Message)" -Level "ERROR"
+        Write-Log "Не вдалося відправити сповіщення про несумісні імена $ComponentName у $($script:notificationProviderDisplayName): $($_.Exception.Message)" -Level "ERROR"
     }
 }
 
@@ -7347,7 +7875,7 @@ put "$LocalFilePath"
 exit
 "@
     
-    $tempScript = [System.IO.Path]::GetTempFileName() + ".txt"
+    $tempScript = New-BRAVOWinSCPTemporaryScriptPath
     $showWinSCPProgress = $progressSettings.Enabled -and $progressSettings.ShowWinSCPOutput
     $transferFileName = Split-Path $LocalFilePath -Leaf
     $transferActivity = "WinSCP — передача $transferFileName"
@@ -7436,14 +7964,12 @@ exit
         if ($showWinSCPProgress) {
             Show-RunningProgress -Id 11 -Activity $transferActivity -Completed
         }
-        # Очищаємо тимчасовий файл
-        if (Test-Path $tempScript) {
-            try {
-                Remove-Item $tempScript -Force -ErrorAction SilentlyContinue
-                Write-Log "Тимчасовий скрипт видалено: $tempScript" -Level "DEBUG"
-            } catch {
-                Write-Log "Не вдалося видалити тимчасовий скрипт: $($_.Exception.Message)" -Level "WARNING"
-            }
+        # Очищаємо тимчасовий файл із конфіденційними даними.
+        try {
+            Remove-BRAVOWinSCPSensitiveTemporaryScript -Path $tempScript
+            Write-Log "Тимчасовий скрипт видалено: $tempScript" -Level "DEBUG"
+        } catch {
+            Write-Log "Не вдалося видалити тимчасовий скрипт: $($_.Exception.Message)" -Level "WARNING"
         }
     }
 }
@@ -7514,7 +8040,8 @@ function Sync-FolderToSFTP {
     Write-BAZASFTPComparisonAudit `
         -Comparison $comparisonBefore `
         -Stage "Before" `
-        -ComponentName $ComponentName
+        -ComponentName $ComponentName `
+        -IncompatibleIssues $(if ($nameCompatibility.Success) { @($nameCompatibility.Issues) } else { @() })
 
     # Кореневий каталог синхронізації має бути попередньо створений на SFTP.
     # Не виконуємо mkdir: WinSCP повертає код 1, якщо каталог уже існує,
@@ -7530,7 +8057,7 @@ synchronize remote $sftpSynchronizationOptions "$LocalDirectory" "$remotePath"
 exit
 "@
 
-    $tempScript = [System.IO.Path]::GetTempFileName() + ".txt"
+    $tempScript = New-BRAVOWinSCPTemporaryScriptPath
     $showWinSCPProgress = $progressSettings.Enabled -and $progressSettings.ShowWinSCPOutput
     $syncActivity = "WinSCP — синхронiзацiя $ComponentName"
     try {
@@ -7644,12 +8171,14 @@ exit
         Write-BAZASFTPComparisonAudit `
             -Comparison $comparisonAfter `
             -Stage "After" `
-            -ComponentName $ComponentName
+            -ComponentName $ComponentName `
+            -IncompatibleIssues $(if ($nameCompatibility.Success) { @($nameCompatibility.Issues) } else { @() })
 
         $syncOutcome = Get-BAZASynchronizationOutcome `
             -WinSCPExitCode $winSCPExitCode `
             -ComparisonBefore $comparisonBefore `
-            -ComparisonAfter $comparisonAfter
+            -ComparisonAfter $comparisonAfter `
+            -IncompatibleIssues $(if ($nameCompatibility.Success) { @($nameCompatibility.Issues) } else { @() })
 
         if (-not $syncOutcome.VerificationSucceeded) {
             Write-Log "Не вдалося пiдтвердити результат синхронiзацiї $ComponentName повторним порiвнянням; результат вважається помилкою" -Level "ERROR"
@@ -7657,16 +8186,20 @@ exit
         }
 
         if ($null -ne $syncOutcome.CompletedCount) {
-            $resultLevel = if ($syncOutcome.IsComplete) {
+            $resultLevel = if ($syncOutcome.IsComplete -and -not $syncOutcome.IsDegraded) {
                 "SUCCESS"
             } else {
                 "WARNING"
             }
-            Write-Log "Результат ${ComponentName}: передано або оновлено об'єктiв: $($syncOutcome.CompletedCount); залишилося несинхронiзованих: $($syncOutcome.RemainingCount)" -Level $resultLevel
+            Write-Log "Результат ${ComponentName}: передано або оновлено сумісних об'єктiв: $($syncOutcome.CompletedCount); залишилося несинхронiзованих: $($syncOutcome.RemainingCount)" -Level $resultLevel
         }
 
         if ($syncOutcome.IsComplete) {
-            Write-Log "Каталог $ComponentName повнiстю синхронiзовано з $remotePath" -Level "SUCCESS"
+            if ($syncOutcome.IsDegraded) {
+                Write-Log "Каталог $ComponentName синхронізовано для всіх сумісних імен; $($syncOutcome.IncompatibleRemainingCount) об'єктів пропущено через незмінювані несумісні імена. Повторний запуск не потрібен." -Level "WARNING"
+            } else {
+                Write-Log "Каталог $ComponentName повнiстю синхронiзовано з $remotePath" -Level "SUCCESS"
+            }
             return $true
         }
 
@@ -7684,40 +8217,67 @@ exit
         Write-BAZASFTPComparisonAudit `
             -Comparison $comparisonAfterException `
             -Stage "After" `
-            -ComponentName $ComponentName
+            -ComponentName $ComponentName `
+            -IncompatibleIssues $(if ($nameCompatibility.Success) { @($nameCompatibility.Issues) } else { @() })
         return $false
     } finally {
         if ($showWinSCPProgress) {
             Show-RunningProgress -Id 12 -Activity $syncActivity -Completed
         }
-        if (Test-Path $tempScript) {
-            Remove-Item $tempScript -Force -ErrorAction SilentlyContinue
-        }
+        try {
+            Remove-BRAVOWinSCPSensitiveTemporaryScript -Path $tempScript
+        } catch {}
     }
 }
 
 function Invoke-ManualBAZASFTPSynchronization {
     Write-Log "==="
-    Write-Log "=== РУЧНА СИНХРОНIЗАЦIЯ BAZA НА SFTP ==="
-    Write-Log "Режим -SyncBAZA: архiвацiю, очищення архiвiв, NAS/SMB та health-check пропущено" -Level "INFO"
-    Show-ScriptProgress -Status "Ручна синхронiзацiя BAZA на SFTP" -PercentComplete 20
+    Write-Log "=== РУЧНА СИНХРОНIЗАЦIЯ BAZA_APP / BAZA_WWW НА SFTP ==="
+    Write-Log "Режим -SyncBAZA: синхронізуються всі увімкнені BAZA_APP/BAZA_WWW; архiвацiю, очищення архiвiв, NAS/SMB та health-check пропущено" -Level "INFO"
+    Show-ScriptProgress -Status "Ручна синхронiзацiя BAZA_APP / BAZA_WWW на SFTP" -PercentComplete 20
 
-    if (-not (Test-SFTPConfig -BAZAOnly)) {
-        Write-Log "Ручну синхронiзацiю BAZA зупинено через помилки конфiгурацiї SFTP" -Level "ERROR"
+    $syncTargets = @()
+    $sourceConfigurationFailed = $false
+    if ([bool]$componentSettings.Synchronization.BAZASFTP) {
+        if (Test-PathWithLog -Path $bazaPaths.Source -Description "Каталог BAZA_APP" -CreateIfMissing $false) {
+            $syncTargets += [pscustomobject]@{
+                Name = "BAZA_APP"
+                Source = [string]$bazaPaths.Source
+                Destination = [string]$sftpDirectories.BAZA
+            }
+        } else {
+            $sourceConfigurationFailed = $true
+            Write-Log "Ручну синхронізацію BAZA_APP пропущено: локальний каталог недоступний" -Level "ERROR"
+        }
+    }
+    if ([bool]$componentSettings.Synchronization.BAZAWWWSFTP) {
+        if ($bazaWWWDetection.Success -and
+            -not [string]::IsNullOrWhiteSpace([string]$bazaWWWPaths.Source) -and
+            (Test-PathWithLog -Path $bazaWWWPaths.Source -Description "Каталог BAZA_WWW" -CreateIfMissing $false)) {
+            $syncTargets += [pscustomobject]@{
+                Name = "BAZA_WWW"
+                Source = [string]$bazaWWWPaths.Source
+                Destination = [string]$sftpDirectories.BAZAWWW
+            }
+        } else {
+            $sourceConfigurationFailed = $true
+            $detectionReason = if ($bazaWWWDetection.Success) { "локальний каталог недоступний" } else { [string]$bazaWWWDetection.Reason }
+            Write-Log "Ручну синхронізацію BAZA_WWW пропущено: $detectionReason" -Level "ERROR"
+        }
+    }
+    if ($syncTargets.Count -eq 0) {
+        Write-Log "Ручну синхронізацію скасовано: BAZASFTP і BAZAWWWSFTP вимкнені або їхні джерела недоступні" -Level "ERROR"
         return $false
     }
 
-    if (-not (Test-PathWithLog `
-        -Path $bazaPaths.Source `
-        -Description "Каталог BAZA" `
-        -CreateIfMissing $false)) {
-        Write-Log "Ручну синхронiзацiю BAZA зупинено: локальний каталог недоступний" -Level "ERROR"
+    if (-not (Test-SFTPConfig -SynchronizationOnly)) {
+        Write-Log "Ручну синхронiзацiю BAZA_APP / BAZA_WWW зупинено через помилки конфiгурацiї SFTP" -Level "ERROR"
         return $false
     }
 
     Show-ScriptProgress -Status "Перевiрка з'єднання з SFTP" -PercentComplete 35
     if (-not (Test-NetworkConnection)) {
-        Write-Log "Ручну синхронiзацiю BAZA зупинено: мережеве з'єднання недоступне" -Level "ERROR"
+        Write-Log "Ручну синхронiзацiю BAZA_APP / BAZA_WWW зупинено: мережеве з'єднання недоступне" -Level "ERROR"
         return $false
     }
 
@@ -7725,25 +8285,32 @@ function Invoke-ManualBAZASFTPSynchronization {
         -WinSCPPath $winSCPPath `
         -RepositorySFTPUrl $sftpUrl `
         -HostKey $sftpHostKey)) {
-        Write-Log "Ручну синхронiзацiю BAZA зупинено: не вдалося пiдключитися до SFTP" -Level "ERROR"
+        Write-Log "Ручну синхронiзацiю BAZA_APP / BAZA_WWW зупинено: не вдалося пiдключитися до SFTP" -Level "ERROR"
         return $false
     }
 
-    Show-ScriptProgress -Status "Синхронiзацiя BAZA на SFTP" -PercentComplete 55
-    $syncSuccess = Sync-FolderToSFTP `
-        -WinSCPPath $winSCPPath `
-        -RepositorySFTPUrl $sftpUrl `
-        -HostKey $sftpHostKey `
-        -LocalDirectory $bazaPaths.Source `
-        -RemoteDirectory $sftpDirectories.BAZA
-
-    if ($syncSuccess) {
-        Write-Log "Ручну синхронiзацiю BAZA на SFTP завершено успiшно" -Level "SUCCESS"
-        return $true
+    $syncFailed = $sourceConfigurationFailed
+    $syncIndex = 0
+    foreach ($syncTarget in $syncTargets) {
+        $syncIndex++
+        $progressPercent = 55 + [math]::Floor(($syncIndex - 1) * 35 / [math]::Max(1, $syncTargets.Count))
+        Show-ScriptProgress -Status "Синхронiзацiя $($syncTarget.Name) на SFTP" -PercentComplete $progressPercent
+        $syncSuccess = Sync-FolderToSFTP `
+            -WinSCPPath $winSCPPath `
+            -RepositorySFTPUrl $sftpUrl `
+            -HostKey $sftpHostKey `
+            -LocalDirectory $syncTarget.Source `
+            -RemoteDirectory $syncTarget.Destination `
+            -ComponentName $syncTarget.Name
+        if ($syncSuccess) {
+            Write-Log "Ручну синхронiзацiю $($syncTarget.Name) на SFTP завершено успiшно" -Level "SUCCESS"
+        } else {
+            $syncFailed = $true
+            Write-Log "Ручна синхронiзацiя $($syncTarget.Name) на SFTP завершилася з помилкою" -Level "ERROR"
+        }
     }
 
-    Write-Log "Ручна синхронiзацiя BAZA на SFTP завершилася з помилкою" -Level "ERROR"
-    return $false
+    return (-not $syncFailed)
 }
 
 function Enter-BRAVOArchiveProcessLock {
@@ -7885,7 +8452,7 @@ function Main {
         $manualSyncDuration = $manualSyncFinished - $manualSyncStarted
 
         Write-Log "==="
-        Write-Log "=== ЗАВЕРШЕННЯ РУЧНОЇ СИНХРОНIЗАЦIЇ BAZA ==="
+        Write-Log "=== ЗАВЕРШЕННЯ РУЧНОЇ СИНХРОНIЗАЦIЇ BAZA_APP / BAZA_WWW ==="
         Write-Log "Результат: $(if ($manualSyncSuccess) {'УСПIШНО'} else {'ПОМИЛКА'})" -NoTimestamp
         Write-Log "Тривалiсть: $($manualSyncDuration.ToString($durationFormat))" -NoTimestamp
         Write-Log "Лог-файл: $logFile" -NoTimestamp
@@ -7905,6 +8472,8 @@ function Main {
     Write-Log "Режим сумiсностi: $(if ($compatibilityMode) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
     Write-Log "Видалення коректних архiвiв за строком зберігання: $(if ($enableArchiveDeletion) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
     Write-Log "Очищення неповних/пошкоджених комплектів після $failedArchiveRetentionDays днів: $(if ($enableFailedArchiveDeletion) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
+    Write-Log "Очищення обідніх архівів (_1300.): $(if ($enableLunchArchiveCleanup) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
+    Write-Log "Узгодженість щоденних архівів: $([string]$backupConsistency.Mode)" -NoTimestamp
     foreach ($archive in $archiveDefinitions) {
         Write-Log "Архiвацiя $($archive.Type): $(if ($archive.Enabled) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
     }
@@ -7947,6 +8516,23 @@ function Main {
             $archiveCredentialValid = $false
         } else {
             Write-Log "Пароль архiвiв завантажено з Windows Credential Manager" -Level "SUCCESS"
+        }
+    }
+
+    $archiveConsistencyValid = $true
+    if ($enabledArchives.Count -gt 0) {
+        Write-Log "==="
+        Write-Log "=== ПЕРЕВIРКА УЗГОДЖЕНОСТI АРХIВIВ ==="
+        $consistencyMode = [string]$backupConsistency.Mode
+        $snapshotContext = [string]$backupConsistency.SnapshotContext
+        if ($consistencyMode -ne "VSS") {
+            Write-Log "backupConsistency.Mode повинен мати значення VSS; live-архівація заборонена" -Level "ERROR"
+            $archiveConsistencyValid = $false
+        } elseif ($snapshotContext -ne "ClientAccessible") {
+            Write-Log "backupConsistency.SnapshotContext повинен мати значення ClientAccessible" -Level "ERROR"
+            $archiveConsistencyValid = $false
+        } else {
+            Write-Log "Узгодженість архівів: окремий VSS-знімок для кожного компонента" -Level "SUCCESS"
         }
     }
 
@@ -8003,7 +8589,7 @@ function Main {
     Write-Log "=== ПЕРЕВIРКА НЕОБХIДНИХ ШЛЯХIВ ==="
     Show-ScriptProgress -Status "Перевiрка необхiдних шляхiв" -PercentComplete 15
     $requiredPaths = @($baseRequiredPaths)
-    $archiveToolAvailable = $archiveCredentialValid
+    $archiveToolAvailable = $archiveCredentialValid -and $archiveConsistencyValid
 
     if ($enabledArchives.Count -gt 0) {
         $requiredPaths += @{Path=$arcPath; Description="7-Zip"; CreateIfMissing=$false}
@@ -8117,7 +8703,26 @@ function Main {
         $archiveName = $archive.NameTemplate -f $archivePrefix, $now
         Write-Log "==="
         Write-Log "=== АРХIВАЦIЯ $($archive.Type) ==="
-        $success = New-Archive -SourcePath $archive.Source -ArchivePath $archive.Destination -ArchiveName $archiveName -ArcPath $arcPath -ArcParams $archiveParams
+        $success = $false
+        $vssSnapshot = $null
+        try {
+            $vssSnapshot = New-BRAVOVSSSnapshot -SourcePath $archive.Source
+            $success = New-Archive `
+                -SourcePath $vssSnapshot.SourcePath `
+                -ArchivePath $archive.Destination `
+                -ArchiveName $archiveName `
+                -ArcPath $arcPath `
+                -ArcParams $archiveParams
+        } catch {
+            Write-Log "Не вдалося виконати узгоджену VSS-архівацію $($archive.Type): $($_.Exception.Message)" -Level "ERROR"
+            $success = $false
+        } finally {
+            if ($null -ne $vssSnapshot) {
+                if (-not (Remove-BRAVOVSSSnapshot -Snapshot $vssSnapshot)) {
+                    $operationFailed = $true
+                }
+            }
+        }
         
         if ($success) {
             Write-Log "==="
@@ -8165,6 +8770,32 @@ function Main {
             if (-not (Remove-OldBackupSets -Path $archive.Destination -RetentionDays $effectiveArchiveRetentionDays -Component $archive.Type -CleanupSectionShown ([ref]$archiveCleanupSectionShown))) {
                 $operationFailed = $true
             }
+        }
+    }
+
+    if ($enableLunchArchiveCleanup) {
+        $effectiveLunchArchiveRetentionMonths = 2
+        try {
+            if ($null -ne $lunchArchiveRetentionMonths -and [int]$lunchArchiveRetentionMonths -gt 0) {
+                $effectiveLunchArchiveRetentionMonths = [int]$lunchArchiveRetentionMonths
+            } else {
+                Write-Log "lunchArchiveRetentionMonths відсутній або некоректний; для безпеки застосовано $effectiveLunchArchiveRetentionMonths місяці" -Level "WARNING"
+            }
+        } catch {
+            Write-Log "lunchArchiveRetentionMonths не вдалося прочитати; для безпеки застосовано $effectiveLunchArchiveRetentionMonths місяці" -Level "WARNING"
+        }
+
+        $lunchArchiveDirectories = @($lunchArchiveCleanupDirectories | Where-Object {
+            -not [string]::IsNullOrWhiteSpace([string]$_)
+        })
+        if ([string]::IsNullOrWhiteSpace([string]$lunchArchiveCleanupPath) -or $lunchArchiveDirectories.Count -eq 0) {
+            Write-Log "Очищення обідніх архівів увімкнено, але lunchArchiveCleanupPath або lunchArchiveCleanupDirectories не налаштовано" -Level "ERROR"
+            $operationFailed = $true
+        } elseif (-not (Remove-OldLunchArchives `
+            -ArchiveRoot $lunchArchiveCleanupPath `
+            -Directories $lunchArchiveDirectories `
+            -RetentionMonths $effectiveLunchArchiveRetentionMonths)) {
+            $operationFailed = $true
         }
     }
     

@@ -38,9 +38,13 @@ param(
     [string]$ResultPath
 )
 
+$protectedWorkerMode = -not [string]::IsNullOrWhiteSpace($ProtectedPayloadPath)
 $helperLoggingPath = Join-Path $PSScriptRoot "BRAVO_HELPER_LOGGING.ps1"
 . $helperLoggingPath
-$null = Start-BRAVOHelperLog -ScriptPath $PSCommandPath -ConfigPath $ConfigPath
+$null = Start-BRAVOHelperLog `
+    -ScriptPath $PSCommandPath `
+    -ConfigPath $ConfigPath `
+    -QuietConsole:$protectedWorkerMode
 
 $interactiveMenuRequested = (
     -not $PSBoundParameters.ContainsKey("Action") -and
@@ -1244,6 +1248,8 @@ try {
             # Батьківський процес за таймаутом повідомить про збій worker.
         }
     }
-    Write-Host "ПОМИЛКА: $($_.Exception.Message)" -ForegroundColor Red
+    if (-not $protectedWorkerMode) {
+        Write-Host "ПОМИЛКА: $($_.Exception.Message)" -ForegroundColor Red
+    }
     Complete-BRAVOHelperLog -ExitCode 1
 }
