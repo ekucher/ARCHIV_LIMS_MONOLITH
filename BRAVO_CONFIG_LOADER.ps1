@@ -168,7 +168,7 @@ function Import-BravoConfiguration {
         -ErrorAction SilentlyContinue
 
     $legacyScriptVersion = $null
-    $versionMatches = $true
+    $versionMatches = $null
 
     if ($null -ne $legacyScriptVersionVariable) {
         $legacyScriptVersion = [string]$legacyScriptVersionVariable.Value
@@ -202,8 +202,9 @@ function Import-BravoConfiguration {
         ConfigRoot = $resolvedConfigRoot
         ConfigSchemaVersion = [int]$versionMetadata.ConfigSchemaVersion
         LegacyScriptVersion = $legacyScriptVersion
+        LegacyScriptVersionPresent = ($null -ne $legacyScriptVersionVariable)
         PackageVersion = [string]$global:ScriptVersion
-        PackageVersionMatchesLegacyConfig = [bool]$versionMatches
+        PackageVersionMatchesLegacyConfig = $versionMatches
         LoadedAt = Get-Date
     }
 
