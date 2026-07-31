@@ -154,14 +154,13 @@ function Import-BravoConfiguration {
 
     Assert-BravoLoadedConfiguration
 
+    $versionMatches = $true
     if ($versionMetadata.VersionFilePresent) {
-        if (-not [string]::Equals(
+        $versionMatches = [string]::Equals(
             [string]$global:ScriptVersion,
             [string]$versionMetadata.PackageVersion,
             [System.StringComparison]::OrdinalIgnoreCase
-        )) {
-            throw "Версія у BRAVO.config ($global:ScriptVersion) не відповідає VERSION.json ($($versionMetadata.PackageVersion))."
-        }
+        )
     }
 
     $global:BravoVersionMetadata = $versionMetadata
@@ -170,6 +169,8 @@ function Import-BravoConfiguration {
         ConfigPath = $resolvedConfigPath
         ConfigRoot = $resolvedConfigRoot
         ConfigSchemaVersion = [int]$versionMetadata.ConfigSchemaVersion
+        LegacyScriptVersion = [string]$global:ScriptVersion
+        PackageVersionMatchesLegacyConfig = [bool]$versionMatches
         LoadedAt = Get-Date
     }
 
