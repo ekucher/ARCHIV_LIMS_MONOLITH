@@ -1,4 +1,4 @@
-#requires -Version 3.0
+﻿#requires -Version 3.0
 
 Set-StrictMode -Version 2.0
 
@@ -30,17 +30,17 @@ function Get-BravoVersionMetadata {
         $versionData = $rawVersion | ConvertFrom-Json -ErrorAction Stop
     }
     catch {
-        throw "Unable to read VERSION.json: $($_.Exception.Message)"
+        throw "Не вдалося прочитати VERSION.json: $($_.Exception.Message)"
     }
 
     foreach ($requiredProperty in @('product', 'packageVersion', 'configSchemaVersion', 'stateSchemaVersion', 'updaterVersion')) {
         if ($null -eq $versionData.PSObject.Properties[$requiredProperty]) {
-            throw "VERSION.json does not contain required property '$requiredProperty'."
+            throw "VERSION.json не містить обов'язкової властивості '$requiredProperty'."
         }
     }
 
     if ([string]::IsNullOrWhiteSpace([string]$versionData.packageVersion)) {
-        throw 'VERSION.json contains an empty package version.'
+        throw 'VERSION.json містить порожню версію пакета.'
     }
 
     return [pscustomobject]@{
@@ -67,16 +67,16 @@ function Test-BravoLegacyConfiguration {
     )
 
     if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
-        throw "Configuration file not found: $ConfigPath"
+        throw "Не знайдено файл конфігурації: $ConfigPath"
     }
 
     $extension = [System.IO.Path]::GetExtension($ConfigPath)
     if (-not [string]::Equals($extension, '.config', [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Unsupported legacy configuration format: $extension"
+        throw "Непідтримуваний формат конфігурації: $extension"
     }
 
     if (-not (Test-Path -LiteralPath $ConfigRoot -PathType Container)) {
-        throw "Configuration directory not found: $ConfigRoot"
+        throw "Не знайдено каталог конфігурації: $ConfigRoot"
     }
 }
 
@@ -90,7 +90,6 @@ function Assert-BravoLoadedConfiguration {
         'pathSettings',
         'maintenanceSettings',
         'componentSettings',
-        'ScriptVersion',
         'ScriptDate'
     )
 
@@ -104,19 +103,19 @@ function Assert-BravoLoadedConfiguration {
     }
 
     if ($missingVariables.Count -gt 0) {
-        throw "BRAVO.config did not create required global variables: $($missingVariables -join ', ')"
+        throw "BRAVO.config не створив обов'язкові глобальні змінні: $($missingVariables -join ', ')"
     }
 
     if (-not ($global:bravoSettings -is [hashtable])) {
-        throw 'bravoSettings must be a hashtable.'
+        throw 'bravoSettings повинен бути хеш-таблицею.'
     }
 
     if (-not ($global:pathSettings -is [hashtable])) {
-        throw 'pathSettings must be a hashtable.'
+        throw 'pathSettings повинен бути хеш-таблицею.'
     }
 
     if (-not ($global:componentSettings -is [hashtable])) {
-        throw 'componentSettings must be a hashtable.'
+        throw 'componentSettings повинен бути хеш-таблицею.'
     }
 }
 
@@ -158,18 +157,42 @@ function Import-BravoConfiguration {
         & $legacyConfigScript -ConfigRoot $resolvedConfigRoot
     }
     catch {
-        throw "Unable to load BRAVO.config '$resolvedConfigPath': $($_.Exception.Message)"
+        throw "Не вдалося завантажити BRAVO.config '$resolvedConfigPath': $($_.Exception.Message)"
     }
 
     Assert-BravoLoadedConfiguration
 
+    $legacyScriptVersionVariable = Get-Variable `
+        -Name 'ScriptVersion' `
+        -Scope Global `
+        -ErrorAction SilentlyContinue
+
+    $legacyScriptVersion = $null
     $versionMatches = $true
+
+    if ($null -ne $legacyScriptVersionVariable) {
+        $legacyScriptVersion = [string]$legacyScriptVersionVariable.Value
+
+        if ($versionMetadata.VersionFilePresent) {
+            $versionMatches = [string]::Equals(
+                $legacyScriptVersion,
+                [string]$versionMetadata.PackageVersion,
+                [System.StringComparison]::OrdinalIgnoreCase
+            )
+        }
+    }
+
     if ($versionMetadata.VersionFilePresent) {
-        $versionMatches = [string]::Equals(
-            [string]$global:ScriptVersion,
-            [string]$versionMetadata.PackageVersion,
-            [System.StringComparison]::OrdinalIgnoreCase
+        $global:ScriptVersion = [string]$versionMetadata.PackageVersion
+    }
+    elseif ([string]::IsNullOrWhiteSpace($legacyScriptVersion)) {
+        throw (
+            'Не вдалося визначити версію пакета: відсутній VERSION.json ' +
+            'і BRAVO.config не містить ScriptVersion.'
         )
+    }
+    else {
+        $global:ScriptVersion = $legacyScriptVersion
     }
 
     $global:BravoVersionMetadata = $versionMetadata
@@ -178,7 +201,8 @@ function Import-BravoConfiguration {
         ConfigPath = $resolvedConfigPath
         ConfigRoot = $resolvedConfigRoot
         ConfigSchemaVersion = [int]$versionMetadata.ConfigSchemaVersion
-        LegacyScriptVersion = [string]$global:ScriptVersion
+        LegacyScriptVersion = $legacyScriptVersion
+        PackageVersion = [string]$global:ScriptVersion
         PackageVersionMatchesLegacyConfig = [bool]$versionMatches
         LoadedAt = Get-Date
     }
