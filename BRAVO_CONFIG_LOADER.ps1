@@ -146,7 +146,16 @@ function Import-BravoConfiguration {
     $versionMetadata = Get-BravoVersionMetadata -ConfigRoot $resolvedConfigRoot
 
     try {
-        . $resolvedConfigPath -ConfigRoot $resolvedConfigRoot
+        # Files with a non-.ps1 extension are not reliably dot-sourced by
+        # Windows PowerShell. Read the legacy file explicitly and compile it
+        # as a script block, preserving its param(ConfigRoot) contract.
+        $legacyConfigText = Get-Content `
+            -LiteralPath $resolvedConfigPath `
+            -Raw `
+            -ErrorAction Stop
+
+        $legacyConfigScript = [scriptblock]::Create($legacyConfigText)
+        & $legacyConfigScript -ConfigRoot $resolvedConfigRoot
     }
     catch {
         throw "Unable to load BRAVO.config '$resolvedConfigPath': $($_.Exception.Message)"
