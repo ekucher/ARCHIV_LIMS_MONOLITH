@@ -30,17 +30,17 @@ function Get-BravoVersionMetadata {
         $versionData = $rawVersion | ConvertFrom-Json -ErrorAction Stop
     }
     catch {
-        throw "Не вдалося прочитати VERSION.json: $($_.Exception.Message)"
+        throw "Unable to read VERSION.json: $($_.Exception.Message)"
     }
 
     foreach ($requiredProperty in @('product', 'packageVersion', 'configSchemaVersion', 'stateSchemaVersion', 'updaterVersion')) {
         if ($null -eq $versionData.PSObject.Properties[$requiredProperty]) {
-            throw "VERSION.json не містить обов'язкове поле '$requiredProperty'."
+            throw "VERSION.json does not contain required property '$requiredProperty'."
         }
     }
 
     if ([string]::IsNullOrWhiteSpace([string]$versionData.packageVersion)) {
-        throw 'VERSION.json містить порожню версію пакета.'
+        throw 'VERSION.json contains an empty package version.'
     }
 
     return [pscustomobject]@{
@@ -67,16 +67,16 @@ function Test-BravoLegacyConfiguration {
     )
 
     if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
-        throw "Файл конфігурації не знайдено: $ConfigPath"
+        throw "Configuration file not found: $ConfigPath"
     }
 
     $extension = [System.IO.Path]::GetExtension($ConfigPath)
     if (-not [string]::Equals($extension, '.config', [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Непідтримуваний формат legacy-конфігурації: $extension"
+        throw "Unsupported legacy configuration format: $extension"
     }
 
     if (-not (Test-Path -LiteralPath $ConfigRoot -PathType Container)) {
-        throw "Каталог конфігурації не знайдено: $ConfigRoot"
+        throw "Configuration directory not found: $ConfigRoot"
     }
 }
 
@@ -104,19 +104,19 @@ function Assert-BravoLoadedConfiguration {
     }
 
     if ($missingVariables.Count -gt 0) {
-        throw "BRAVO.config не створив обов'язкові глобальні параметри: $($missingVariables -join ', ')"
+        throw "BRAVO.config did not create required global variables: $($missingVariables -join ', ')"
     }
 
     if (-not ($global:bravoSettings -is [hashtable])) {
-        throw 'Параметр bravoSettings повинен бути hashtable.'
+        throw 'bravoSettings must be a hashtable.'
     }
 
     if (-not ($global:pathSettings -is [hashtable])) {
-        throw 'Параметр pathSettings повинен бути hashtable.'
+        throw 'pathSettings must be a hashtable.'
     }
 
     if (-not ($global:componentSettings -is [hashtable])) {
-        throw 'Параметр componentSettings повинен бути hashtable.'
+        throw 'componentSettings must be a hashtable.'
     }
 }
 
@@ -149,7 +149,7 @@ function Import-BravoConfiguration {
         . $resolvedConfigPath -ConfigRoot $resolvedConfigRoot
     }
     catch {
-        throw "Помилка завантаження BRAVO.config '$resolvedConfigPath': $($_.Exception.Message)"
+        throw "Unable to load BRAVO.config '$resolvedConfigPath': $($_.Exception.Message)"
     }
 
     Assert-BravoLoadedConfiguration
