@@ -250,7 +250,7 @@ function New-BRAVOTaskDefinition {
     param(
         $TaskService,
         [hashtable]$TaskSettings,
-        [ValidateSet("Backup", "Maintenance", "Health", "Recovery")]
+        [ValidateSet("Backup", "Maintenance", "Health", "Recovery", "BAZASync")]
         [string]$TaskType,
         [string]$ResolvedConfigPath
     )
@@ -285,8 +285,10 @@ function New-BRAVOTaskDefinition {
     $definition.Principal.LogonType = $logonType
     $definition.Principal.RunLevel = 1 # TASK_RUNLEVEL_HIGHEST
 
-    $triggerTime = if ($TaskType -eq "Health") {
-        ConvertTo-ScheduleTime -Value $TaskSettings.StartAt -SettingName "Health.StartAt"
+    $triggerTime = if ($TaskType -eq "Health" -or $TaskType -eq "BAZASync") {
+        ConvertTo-ScheduleTime `
+            -Value $TaskSettings.StartAt `
+            -SettingName "$TaskType.StartAt"
     } elseif ($TaskType -eq "Recovery") {
         $null
     } else {
@@ -311,6 +313,13 @@ function New-BRAVOTaskDefinition {
     if ($TaskType -eq "Health") {
         $trigger.Repetition.Interval = [System.Xml.XmlConvert]::ToString(
             [timespan]::FromMinutes([int]$TaskSettings.RepeatEveryMinutes)
+        )
+        $trigger.Repetition.Duration = "P1D"
+        $trigger.Repetition.StopAtDurationEnd = $false
+    }
+    if ($TaskType -eq "BAZASync") {
+        $trigger.Repetition.Interval = [System.Xml.XmlConvert]::ToString(
+            [timespan]::FromHours([int]$TaskSettings.RepeatEveryHours)
         )
         $trigger.Repetition.Duration = "P1D"
         $trigger.Repetition.StopAtDurationEnd = $false
@@ -340,7 +349,7 @@ function New-BRAVOTaskDefinition {
         } else {
             ""
         }
-        $healthCommand = "& '$escapedScriptPath' -HealthCheckOnly -ConfigPath '$escapedConfigPath'$skipArgument"
+        $healthCommand = "& '$escapedScriptPath' -HealthCheckOnly -NotifyOnSuccess -ConfigPath '$escapedConfigPath'$skipArgument -NoPause"
         $actionArguments += " -Command `"& { $healthCommand }`""
     } else {
         $actionArguments += " -File `"$scriptPath`""
@@ -351,6 +360,9 @@ function New-BRAVOTaskDefinition {
     }
     if ($TaskType -eq "Backup") {
         $actionArguments += " -NoPause"
+    }
+    if ($TaskType -eq "BAZASync") {
+        $actionArguments += " -SyncBAZA -NoPause"
     }
     $action = $definition.Actions.Create(0) # TASK_ACTION_EXEC
     $action.Path = [string]$schedulerSettings.PowerShellExecutable
@@ -433,21 +445,24 @@ function Test-SchedulerConfiguration {
     Test-TaskName -TaskName $schedulerSettings.Maintenance.TaskName -SettingName "Maintenance.TaskName"
     Test-TaskName -TaskName $schedulerSettings.Health.TaskName -SettingName "Health.TaskName"
     Test-TaskName -TaskName $schedulerSettings.Recovery.TaskName -SettingName "Recovery.TaskName"
+    Test-TaskName -TaskName $schedulerSettings.BAZASync.TaskName -SettingName "BAZASync.TaskName"
     $taskNames = @(
         [string]$schedulerSettings.Backup.TaskName,
         [string]$schedulerSettings.Maintenance.TaskName,
         [string]$schedulerSettings.Health.TaskName,
-        [string]$schedulerSettings.Recovery.TaskName
+        [string]$schedulerSettings.Recovery.TaskName,
+        [string]$schedulerSettings.BAZASync.TaskName
     )
     if (@($taskNames | Select-Object -Unique).Count -ne $taskNames.Count) {
-        throw "Імена Backup, Maintenance і Health завдань повинні відрізнятися"
+        throw "Імена Backup, Maintenance, Health, Recovery і BAZASync завдань повинні відрізнятися"
     }
 
     foreach ($taskSettings in @(
         $schedulerSettings.Backup,
         $schedulerSettings.Maintenance,
         $schedulerSettings.Health,
-        $schedulerSettings.Recovery
+        $schedulerSettings.Recovery,
+        $schedulerSettings.BAZASync
     )) {
         if ($taskSettings.Enabled -and -not (Test-Path -Path $taskSettings.ScriptPath -PathType Leaf)) {
             throw "Скрипт завдання не знайдено: $($taskSettings.ScriptPath)"
@@ -467,6 +482,15 @@ function Test-SchedulerConfiguration {
         if ([int]$schedulerSettings.Health.RepeatEveryMinutes -lt 1 -or
             [int]$schedulerSettings.Health.RepeatEveryMinutes -gt 1440) {
             throw "Health.RepeatEveryMinutes повинен бути в межах від 1 до 1440"
+        }
+    }
+    if ($schedulerSettings.BAZASync.Enabled) {
+        [void](ConvertTo-ScheduleTime `
+            -Value $schedulerSettings.BAZASync.StartAt `
+            -SettingName "BAZASync.StartAt")
+        if ([int]$schedulerSettings.BAZASync.RepeatEveryHours -lt 1 -or
+            [int]$schedulerSettings.BAZASync.RepeatEveryHours -gt 24) {
+            throw "BAZASync.RepeatEveryHours повинен бути в межах від 1 до 24"
         }
     }
     if ($schedulerSettings.Recovery.Enabled -and
@@ -494,6 +518,43 @@ try {
     $configText = [System.IO.File]::ReadAllText($resolvedConfigPath, [System.Text.Encoding]::UTF8)
     $configScript = [scriptblock]::Create($configText)
     & $configScript -ConfigRoot $configRoot
+
+    $bazaSftpEnabled = $false
+    if ($null -ne $componentSettings -and
+        $null -ne $componentSettings.Synchronization) {
+        $bazaSftpEnabled = [System.Convert]::ToBoolean(
+            $componentSettings.Synchronization.BAZASFTP
+        )
+    }
+
+    if (-not $schedulerSettings.Contains("BAZASync")) {
+        $schedulerSettings.BAZASync = @{
+            Enabled = $bazaSftpEnabled
+            TaskName = "BRAVO BAZA Synchronization"
+            Description = "Синхронізація BAZA_APP із хмарним SFTP кожні 4 години"
+            ScriptPath = [string]$schedulerSettings.Backup.ScriptPath
+            StartAt = "00:00"
+            RepeatEveryHours = 4
+            ExecutionTimeLimitHours = 2
+        }
+    } else {
+        # BAZA Sync не повинен запускатися, якщо SFTP-синхронізацію BAZA
+        # вимкнено у componentSettings.Synchronization.BAZASFTP.
+        $schedulerSettings.BAZASync.Enabled = (
+            [System.Convert]::ToBoolean($schedulerSettings.BAZASync.Enabled) -and
+            $bazaSftpEnabled
+        )
+    }
+
+    # BAZA синхронізується першою кожні 4 години. Health-check запускається
+    # через 15 хвилин після неї, щоб перевіряти вже актуальний стан SFTP.
+    if ($schedulerSettings.BAZASync.Enabled -and $schedulerSettings.Health.Enabled) {
+        $schedulerSettings.BAZASync.StartAt = "00:00"
+        $schedulerSettings.BAZASync.RepeatEveryHours = 4
+        $schedulerSettings.Health.StartAt = "00:15"
+        $schedulerSettings.Health.RepeatEveryMinutes = 240
+    }
+
     $taskPath = Normalize-TaskPath -TaskPath $schedulerSettings.TaskPath
     Test-SchedulerConfiguration -ResolvedConfigPath $resolvedConfigPath
     $taskService = New-Object -ComObject "Schedule.Service"
@@ -527,7 +588,8 @@ try {
         [pscustomobject]@{ Type = "Backup"; Settings = $schedulerSettings.Backup },
         [pscustomobject]@{ Type = "Maintenance"; Settings = $schedulerSettings.Maintenance },
         [pscustomobject]@{ Type = "Health"; Settings = $schedulerSettings.Health },
-        [pscustomobject]@{ Type = "Recovery"; Settings = $schedulerSettings.Recovery }
+        [pscustomobject]@{ Type = "Recovery"; Settings = $schedulerSettings.Recovery },
+        [pscustomobject]@{ Type = "BAZASync"; Settings = $schedulerSettings.BAZASync }
     )
 
     $requireProtectedRuntime = (
@@ -622,8 +684,14 @@ try {
                 "щодня о $($taskSettings.DailyAt)"
             } elseif ($taskPlan.Type -eq "Recovery") {
                 "після старту сервера; затримка $($taskSettings.StartupDelayMinutes) хв."
+            } elseif ($taskPlan.Type -eq "BAZASync") {
+                "кожні $($taskSettings.RepeatEveryHours) год., починаючи з $($taskSettings.StartAt)"
             } else {
-                "кожні $($taskSettings.RepeatEveryMinutes) хв., починаючи з $($taskSettings.StartAt)"
+                if (([int]$taskSettings.RepeatEveryMinutes % 60) -eq 0) {
+                    "кожні $([int]$taskSettings.RepeatEveryMinutes / 60) год., починаючи з $($taskSettings.StartAt)"
+                } else {
+                    "кожні $($taskSettings.RepeatEveryMinutes) хв., починаючи з $($taskSettings.StartAt)"
+                }
             }
             Write-Host "[ПЕРЕВІРКА] $taskPath$taskName — $scheduleText" -ForegroundColor Cyan
             continue

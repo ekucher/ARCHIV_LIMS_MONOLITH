@@ -1609,9 +1609,14 @@ if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
 try {
     $ConfigPath = (Resolve-Path -LiteralPath $ConfigPath).Path
     $configRoot = Split-Path -Path $ConfigPath -Parent
-    $configText = [System.IO.File]::ReadAllText($ConfigPath, [System.Text.Encoding]::UTF8)
-    $configScript = [scriptblock]::Create($configText)
-    & $configScript -ConfigRoot $configRoot
+    $configurationLoaderPath = Join-Path $configRoot 'BRAVO_CONFIG_LOADER.ps1'
+    if (-not (Test-Path -LiteralPath $configurationLoaderPath -PathType Leaf)) {
+        throw "Configuration loader not found: $configurationLoaderPath"
+    }
+    . $configurationLoaderPath
+    Import-BravoConfiguration `
+        -ConfigRoot $configRoot `
+        -ConfigPath $ConfigPath
 
     if ($null -eq $credentialSettings -or
         $null -eq (Get-Command -Name Initialize-BRAVOCredentialManager -ErrorAction SilentlyContinue)) {

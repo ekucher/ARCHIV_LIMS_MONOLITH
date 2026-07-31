@@ -1704,11 +1704,21 @@ if (-not (Test-Path -Path $ConfigPath -PathType Leaf)) {
 }
 
 try {
-    $ConfigPath = (Resolve-Path -LiteralPath $ConfigPath).Path
-    $configRoot = Split-Path -Path $ConfigPath -Parent
-    $configText = [System.IO.File]::ReadAllText($ConfigPath, [System.Text.Encoding]::UTF8)
-    $configScript = [scriptblock]::Create($configText)
-    & $configScript -ConfigRoot $configRoot
+    $loaderPath = Join-Path `
+        -Path $bravoScriptDirectory `
+        -ChildPath "BRAVO_CONFIG_LOADER.ps1"
+
+    if (-not (Test-Path -LiteralPath $loaderPath -PathType Leaf)) {
+        throw "Configuration loader not found: $loaderPath"
+    }
+
+    . $loaderPath
+
+    Import-BravoConfiguration `
+        -ConfigPath $ConfigPath `
+        -ScriptRoot $bravoScriptDirectory
+
+    $ConfigPath = [string]$global:BravoConfigurationMetadata.ConfigPath
     if ($null -ne $credentialSettings) {
         [void](Import-BRAVOInstitutionSettings `
             -CredentialSettings $credentialSettings `
@@ -5421,12 +5431,21 @@ if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
 
 # Завантаження конфігурації
 try {
-    $configPath = (Resolve-Path -LiteralPath $ConfigPath).Path
-    $configRoot = Split-Path -Path $configPath -Parent
-    $configText = [System.IO.File]::ReadAllText($configPath, [System.Text.Encoding]::UTF8)
-    $configScript = [scriptblock]::Create($configText)
-    & $configScript -ConfigRoot $configRoot
+    $loaderPath = Join-Path `
+        -Path $bravoScriptDirectory `
+        -ChildPath "BRAVO_CONFIG_LOADER.ps1"
 
+    if (-not (Test-Path -LiteralPath $loaderPath -PathType Leaf)) {
+        throw "Configuration loader not found: $loaderPath"
+    }
+
+    . $loaderPath
+
+    Import-BravoConfiguration `
+        -ConfigPath $ConfigPath `
+        -ScriptRoot $bravoScriptDirectory
+
+    $configPath = [string]$global:BravoConfigurationMetadata.ConfigPath
     Write-Host "Конфiгурацiю завантажено успiшно: $configPath" -ForegroundColor $logColors.SUCCESS
 } catch {
     Write-Host "ПОМИЛКА: Не вдалося завантажити конфiгурацiю: $($_.Exception.Message)" -ForegroundColor Red
