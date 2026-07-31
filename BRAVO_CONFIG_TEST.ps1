@@ -19,7 +19,7 @@ $scriptRoot = if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
 
 $loaderPath = Join-Path $scriptRoot 'BRAVO_CONFIG_LOADER.ps1'
 if (-not (Test-Path -LiteralPath $loaderPath -PathType Leaf)) {
-    throw "Loader конфігурації не знайдено: $loaderPath"
+    throw "Configuration loader not found: $loaderPath"
 }
 
 . $loaderPath
@@ -49,20 +49,20 @@ if ($AsJson) {
     exit 0
 }
 
-Write-Host ('[INFO] Конфігурацію завантажено: {0}' -f $validation.ConfigPath)
-Write-Host ('[INFO] Версія пакета: {0}' -f $validation.PackageVersion)
-Write-Host ('[INFO] Версія legacy-config: {0}' -f $validation.LegacyScriptVersion)
-Write-Host ('[INFO] Схема конфігурації: {0}' -f $validation.ConfigSchemaVersion)
+Write-Host ('[INFO] Configuration loaded: {0}' -f $validation.ConfigPath)
+Write-Host ('[INFO] Package version: {0}' -f $validation.PackageVersion)
+Write-Host ('[INFO] Legacy config version: {0}' -f $validation.LegacyScriptVersion)
+Write-Host ('[INFO] Configuration schema: {0}' -f $validation.ConfigSchemaVersion)
 Write-Host ('[INFO] LIMSRoot: {0}' -f $validation.LIMSRoot)
 Write-Host ('[INFO] ArchiveRoot: {0}' -f $validation.ArchiveRoot)
 Write-Host ('[INFO] BackupRoot: {0}' -f $validation.BackupRoot)
 
 if (-not $validation.PackageVersionMatchesLegacyConfig) {
     Write-Warning (
-        'Перехідний стан: VERSION.json і BRAVO.config мають різні версії. ' +
-        'Це дозволено лише до завершення інтеграції loader у production-скрипти.'
+        'Transitional state: VERSION.json and BRAVO.config have different versions. ' +
+        'This is allowed only until loader integration into production scripts is complete.'
     )
 }
 
-Write-Host '[SUCCESS] Перевірку конфігурації завершено успішно.'
+Write-Host '[SUCCESS] Configuration validation completed successfully.'
 exit 0
