@@ -27,6 +27,13 @@ try {
     Write-Host "ПОМИЛКА сумісності: $($_.Exception.Message)" -ForegroundColor Red
     exit 1
 }
+$archiveHelpersPath = Join-Path $vetOfficeScriptDirectory "BRAVO_ARCHIVE_HELPERS.ps1"
+if (-not (Test-Path -LiteralPath $archiveHelpersPath -PathType Leaf)) {
+    Write-Host "ПОМИЛКА: Не знайдено спільні archive helpers: $archiveHelpersPath" -ForegroundColor Red
+    exit 1
+}
+. $archiveHelpersPath
+. (Join-Path $vetOfficeScriptDirectory 'BRAVO_SYSTEM_HELPERS.ps1')
 
 # Запит на підвищення дозволу виконання скрипта
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -254,18 +261,7 @@ function Get-VetOfficeScheduledTasks {
     )
 }
 
-function Get-VetOfficeTaskStateName {
-    param([int]$State)
 
-    switch ($State) {
-        0 { return "UNKNOWN" }
-        1 { return "DISABLED" }
-        2 { return "QUEUED" }
-        3 { return "READY" }
-        4 { return "RUNNING" }
-        default { return [string]$State }
-    }
-}
 
 function Add-ToTaskScheduler {
     param(
@@ -417,7 +413,7 @@ function Add-ToTaskScheduler {
         try {
             if ($createdTask) {
                 Write-Host "✓ Завдання знайдено в Планувальнику" -ForegroundColor Green
-                Write-Host "Статус: $(Get-VetOfficeTaskStateName -State ([int]$createdTask.State))" -ForegroundColor White
+                Write-Host "Статус: $(Get-BRAVOTaskStateName -State ([int]$createdTask.State))" -ForegroundColor White
                 Write-Host "Останнiй запуск: $($createdTask.LastRunTime)" -ForegroundColor Gray
                 Write-Host "Наступний запуск: $($createdTask.NextRunTime)" -ForegroundColor Gray
             }
@@ -454,7 +450,7 @@ function Show-TaskSchedulerInfo {
         Write-Host "Знайдено завдання:" -ForegroundColor Green
         foreach ($task in $tasks) {
             Write-Host "`n  Назва: $($task.Name)" -ForegroundColor White
-            Write-Host "  Статус: $(Get-VetOfficeTaskStateName -State ([int]$task.State))" -ForegroundColor Gray
+            Write-Host "  Статус: $(Get-BRAVOTaskStateName -State ([int]$task.State))" -ForegroundColor Gray
             Write-Host "Останнiй запуск: $($task.LastRunTime)" -ForegroundColor Gray
             Write-Host "Наступний запуск: $($task.NextRunTime)" -ForegroundColor Gray
             
@@ -487,7 +483,7 @@ function Show-TaskSchedulerInfo {
         $tasks | ForEach-Object {
             [pscustomobject]@{
                 TaskName = $_.Name
-                State = Get-VetOfficeTaskStateName -State ([int]$_.State)
+                State = Get-BRAVOTaskStateName -State ([int]$_.State)
                 LastRun = $_.LastRunTime
                 NextRun = $_.NextRunTime
             }
@@ -869,31 +865,7 @@ function Remove-OldBackupSets {
     }
 }
 
-function Remove-OldLogsByAge {
-    param(
-        [string]$Path,
-        [string]$Filter,
-        [int]$RetentionDays
-    )
 
-    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
-        return $false
-    }
-
-    $cutoff = (Get-Date).AddDays(-$RetentionDays)
-    $failed = $false
-    foreach ($file in @(Get-BRAVOFiles -Path $Path -Filter $Filter |
-        Where-Object { $_.LastWriteTime -lt $cutoff })) {
-        try {
-            Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop
-            Write-Log "Видалено старий лог: $($file.Name)" -Level "SUCCESS"
-        } catch {
-            $failed = $true
-            Write-Log "Не вдалося видалити лог $($file.Name): $($_.Exception.Message)" -Level "ERROR"
-        }
-    }
-    return (-not $failed)
-}
 
 function Sync-Folders {
     param(
@@ -1138,44 +1110,7 @@ function Sync-Folders {
 # ФУНКЦІЇ АРХІВАЦІЇ
 # =============================================
 
-function Test-SevenZipArchiveIntegrity {
-    param(
-        [string]$SevenZipPath,
-        [string]$ArchivePath,
-        [string]$Password,
-        [int]$TimeoutSeconds = 43200
-    )
 
-    Write-Log "Перевiрка цiлiсностi 7-Zip: $(Split-Path $ArchivePath -Leaf)"
-    $testResult = Invoke-BRAVOSevenZipIntegrityTest `
-        -SevenZipPath $SevenZipPath `
-        -ArchivePath $ArchivePath `
-        -Password $Password `
-        -TimeoutSeconds $TimeoutSeconds
-    $exitCodeText = if ($null -eq $testResult.ExitCode) {
-        "немає"
-    } else {
-        [string]$testResult.ExitCode
-    }
-
-    if ($testResult.Success) {
-        Write-Log "Цiлiснiсть архiву пiдтверджено 7-Zip (код: 0): $ArchivePath" -Level "SUCCESS"
-        return $true
-    }
-
-    Write-Log "Перевiрка цiлiсностi 7-Zip не пройдена (код: $exitCodeText — $($testResult.Description)): $ArchivePath" -Level "ERROR"
-    $diagnosticLines = @(
-        @($testResult.StandardError, $testResult.StandardOutput) |
-            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
-            ForEach-Object { [string]$_ -split '\r?\n' } |
-            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-            Select-Object -Last 20
-    )
-    if ($diagnosticLines.Count -gt 0) {
-        Write-Log "Дiагностика 7-Zip test: $($diagnosticLines -join [Environment]::NewLine)" -Level "DEBUG"
-    }
-    return $false
-}
 
 function New-Archive {
     param(

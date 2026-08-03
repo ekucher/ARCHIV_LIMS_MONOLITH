@@ -40,11 +40,7 @@ $null = Start-BRAVOHelperLog -ScriptPath $PSCommandPath -ConfigPath $ConfigPath
 
 $ErrorActionPreference = "Stop"
 
-function Test-IsAdministrator {
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
-    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-}
+
 
 function Wait-BRAVOSetupCompletion {
     if ($NoPause -or -not [Environment]::UserInteractive) {
@@ -62,11 +58,7 @@ function Wait-BRAVOSetupCompletion {
     }
 }
 
-function Quote-ProcessArgument {
-    param([string]$Value)
 
-    return '"' + $Value.Replace('"', '\"') + '"'
-}
 
 function Invoke-ChildPowerShell {
     param(
@@ -108,8 +100,12 @@ function Get-SetupConfiguration {
     }
     $resolvedPath = (Resolve-Path -LiteralPath $Path).Path
     $configRoot = Split-Path $resolvedPath -Parent
-    $configText = [IO.File]::ReadAllText($resolvedPath, [Text.Encoding]::UTF8)
-    & ([scriptblock]::Create($configText)) -ConfigRoot $configRoot
+    $configurationLoaderPath = Join-Path $configRoot 'BRAVO_CONFIG_LOADER.ps1'
+    if (-not (Test-Path -LiteralPath $configurationLoaderPath -PathType Leaf)) {
+        throw "Configuration loader not found: $configurationLoaderPath"
+    }
+    . $configurationLoaderPath
+    Import-BravoConfiguration -ConfigRoot $configRoot -ConfigPath $resolvedPath
 
     $credentialScript = if ($null -ne $credentialSettings -and
         -not [string]::IsNullOrWhiteSpace([string]$credentialSettings.SetupScriptPath)) {
@@ -187,6 +183,7 @@ try {
     } else {
         [Environment]::CurrentDirectory
     }
+    . (Join-Path $scriptDirectory 'BRAVO_SYSTEM_HELPERS.ps1')
     if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
         $ConfigPath = Join-Path $scriptDirectory "BRAVO.config"
     }
@@ -194,8 +191,9 @@ try {
 
     $credentialWorkRequested = $Action -in @("Full", "Credentials")
     $schedulerWorkRequested = $Action -in @("Full", "Scheduler")
-    $requiresAdministrator = (
-        (-not $ValidateOnly -and $schedulerWorkRequested) -or
+    # ValidateOnly виконує лише read-only перевірки й не повинен відкривати UAC.
+    $requiresAdministrator = (-not $ValidateOnly) -and (
+        $schedulerWorkRequested -or
         ($credentialWorkRequested -and $StoreFor -in @("Both", "ScheduledTaskAccount"))
     )
     if ($requiresAdministrator -and -not (Test-IsAdministrator)) {

@@ -33,7 +33,7 @@ function Get-BravoVersionMetadata {
         throw "Не вдалося прочитати VERSION.json: $($_.Exception.Message)"
     }
 
-    foreach ($requiredProperty in @('product', 'packageVersion', 'configSchemaVersion', 'stateSchemaVersion', 'updaterVersion')) {
+    foreach ($requiredProperty in @('product', 'packageVersion', 'configSchemaVersion', 'stateSchemaVersion', 'updaterVersion', 'releaseDate')) {
         if ($null -eq $versionData.PSObject.Properties[$requiredProperty]) {
             throw "VERSION.json не містить обов'язкової властивості '$requiredProperty'."
         }
@@ -41,6 +41,16 @@ function Get-BravoVersionMetadata {
 
     if ([string]::IsNullOrWhiteSpace([string]$versionData.packageVersion)) {
         throw 'VERSION.json містить порожню версію пакета.'
+    }
+    $parsedReleaseDate = [datetime]::MinValue
+    if (-not ([datetime]::TryParseExact(
+                [string]$versionData.releaseDate,
+                'yyyy-MM-dd',
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::None,
+                [ref]$parsedReleaseDate
+            ))) {
+        throw 'VERSION.json містить некоректну releaseDate; очікується формат YYYY-MM-DD.'
     }
 
     return [pscustomobject]@{
@@ -89,8 +99,7 @@ function Assert-BravoLoadedConfiguration {
         'credentialSettings',
         'pathSettings',
         'maintenanceSettings',
-        'componentSettings',
-        'ScriptDate'
+        'componentSettings'
     )
 
     $missingVariables = New-Object System.Collections.Generic.List[string]
@@ -184,6 +193,7 @@ function Import-BravoConfiguration {
 
     if ($versionMetadata.VersionFilePresent) {
         $global:ScriptVersion = [string]$versionMetadata.PackageVersion
+        $global:ScriptDate = [string]$versionMetadata.ReleaseDate
     }
     elseif ([string]::IsNullOrWhiteSpace($legacyScriptVersion)) {
         throw (
@@ -205,6 +215,7 @@ function Import-BravoConfiguration {
         LegacyScriptVersionPresent = ($null -ne $legacyScriptVersionVariable)
         PackageVersion = [string]$global:ScriptVersion
         PackageVersionMatchesLegacyConfig = $versionMatches
+        ReleaseDate = [string]$global:ScriptDate
         LoadedAt = Get-Date
     }
 

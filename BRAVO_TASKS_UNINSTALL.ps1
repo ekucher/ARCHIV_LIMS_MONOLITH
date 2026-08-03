@@ -24,6 +24,7 @@ if (-not (Test-Path -LiteralPath $compatibilityModulePath -PathType Leaf)) {
 }
 try {
     . $compatibilityModulePath
+    . (Join-Path $bravoScriptDirectory 'BRAVO_SYSTEM_HELPERS.ps1')
 } catch {
     Write-Error "Помилка сумісності: $($_.Exception.Message)"
     Complete-BRAVOHelperLog -ExitCode 1
@@ -38,28 +39,9 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
 
 $ErrorActionPreference = "Stop"
 
-function Test-IsAdministrator {
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
-    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-}
 
-function Normalize-TaskPath {
-    param([string]$TaskPath)
 
-    if ([string]::IsNullOrWhiteSpace($TaskPath)) {
-        throw "schedulerSettings.TaskPath не налаштовано"
-    }
 
-    $trimmed = $TaskPath.Trim().Trim("\")
-    if ([string]::IsNullOrWhiteSpace($trimmed)) {
-        return "\"
-    }
-    if ($trimmed -match '[/:*?"<>|]' -or $trimmed -match '(^|\\)\.\.?($|\\)') {
-        throw "Некоректний TaskPath: $TaskPath"
-    }
-    return "\$trimmed\"
-}
 
 function Remove-TaskFolderIfEmpty {
     param([string]$TaskPath)
@@ -95,18 +77,7 @@ function Remove-TaskFolderIfEmpty {
     Write-Host "Порожній каталог планувальника видалено: $TaskPath" -ForegroundColor Green
 }
 
-function Get-BRAVOTaskStateName {
-    param([int]$State)
 
-    switch ($State) {
-        0 { return "UNKNOWN" }
-        1 { return "DISABLED" }
-        2 { return "QUEUED" }
-        3 { return "READY" }
-        4 { return "RUNNING" }
-        default { return [string]$State }
-    }
-}
 
 if (-not (Test-Path -Path $ConfigPath -PathType Leaf)) {
     Write-Error "Файл конфігурації не знайдено: $ConfigPath"
@@ -116,9 +87,12 @@ if (-not (Test-Path -Path $ConfigPath -PathType Leaf)) {
 $resolvedConfigPath = (Resolve-Path -Path $ConfigPath).Path
 try {
     $configRoot = Split-Path -Path $resolvedConfigPath -Parent
-    $configText = [System.IO.File]::ReadAllText($resolvedConfigPath, [System.Text.Encoding]::UTF8)
-    $configScript = [scriptblock]::Create($configText)
-    & $configScript -ConfigRoot $configRoot
+    $configurationLoaderPath = Join-Path $configRoot 'BRAVO_CONFIG_LOADER.ps1'
+    if (-not (Test-Path -LiteralPath $configurationLoaderPath -PathType Leaf)) {
+        throw "Configuration loader not found: $configurationLoaderPath"
+    }
+    . $configurationLoaderPath
+    Import-BravoConfiguration -ConfigRoot $configRoot -ConfigPath $resolvedConfigPath
     $taskService = New-Object -ComObject "Schedule.Service"
     $taskService.Connect()
     $taskPath = Normalize-TaskPath -TaskPath $schedulerSettings.TaskPath

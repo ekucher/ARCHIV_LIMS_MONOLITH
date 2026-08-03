@@ -25,6 +25,7 @@ try {
     $rollbackRecords = New-Object System.Collections.ArrayList
     $installationCommitted = $false
     . $compatibilityModulePath
+    . (Join-Path $bravoScriptDirectory 'BRAVO_SYSTEM_HELPERS.ps1')
 } catch {
     Write-Error "Помилка сумісності: $($_.Exception.Message)"
     Complete-BRAVOHelperLog -ExitCode 1
@@ -39,11 +40,7 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
 
 $ErrorActionPreference = "Stop"
 
-function Test-IsAdministrator {
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
-    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-}
+
 
 function Set-BRAVOProtectedRuntimeAcl {
     param([string]$RuntimeRoot)
@@ -70,37 +67,47 @@ function Set-BRAVOProtectedRuntimeAcl {
     $system = New-Object Security.Principal.SecurityIdentifier("S-1-5-18")
     $users = New-Object Security.Principal.SecurityIdentifier("S-1-5-32-545")
 
-    $acl = Get-Acl -LiteralPath $resolvedRoot
-    $acl.SetAccessRuleProtection($true, $false)
-    $acl.SetOwner($administrators)
-    foreach ($rule in @($acl.Access)) {
-        [void]$acl.RemoveAccessRuleAll($rule)
+    # Захищаємо не тільки корінь: існуючі дочірні файли могли успадкувати
+    # дозвіл запису до того, як комплект був перенесений у runtime. SYSTEM
+    # запускає ці файли з ExecutionPolicy Bypass, тому кожен із них має
+    # отримати власний закритий ACL.
+    $runtimeItems = @($resolvedRoot) + @(
+        Get-ChildItem -LiteralPath $resolvedRoot -Force -Recurse -ErrorAction Stop |
+            ForEach-Object { $_.FullName }
+    )
+    foreach ($runtimeItem in $runtimeItems) {
+        $acl = Get-Acl -LiteralPath $runtimeItem -ErrorAction Stop
+        $acl.SetAccessRuleProtection($true, $false)
+        $acl.SetOwner($administrators)
+        foreach ($rule in @($acl.Access)) {
+            [void]$acl.RemoveAccessRuleAll($rule)
+        }
+        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
+            $administrators,
+            [Security.AccessControl.FileSystemRights]::FullControl,
+            $inheritance,
+            $propagation,
+            $allow
+        )))
+        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
+            $system,
+            [Security.AccessControl.FileSystemRights]::FullControl,
+            $inheritance,
+            $propagation,
+            $allow
+        )))
+        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
+            $users,
+            [Security.AccessControl.FileSystemRights]::ReadAndExecute,
+            $inheritance,
+            $propagation,
+            $allow
+        )))
+        Set-Acl -LiteralPath $runtimeItem -AclObject $acl -ErrorAction Stop
     }
-    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
-        $administrators,
-        [Security.AccessControl.FileSystemRights]::FullControl,
-        $inheritance,
-        $propagation,
-        $allow
-    )))
-    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
-        $system,
-        [Security.AccessControl.FileSystemRights]::FullControl,
-        $inheritance,
-        $propagation,
-        $allow
-    )))
-    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
-        $users,
-        [Security.AccessControl.FileSystemRights]::ReadAndExecute,
-        $inheritance,
-        $propagation,
-        $allow
-    )))
-    Set-Acl -LiteralPath $resolvedRoot -AclObject $acl
 
     Write-Host (
-        "Runtime захищено ACL: $resolvedRoot; запис дозволений лише SYSTEM " +
+        "Runtime рекурсивно захищено ACL: $resolvedRoot; запис дозволений лише SYSTEM " +
         "і Administrators."
     ) -ForegroundColor Green
 }
@@ -119,22 +126,7 @@ function Enable-BRAVOTaskSchedulerOperationalLog {
     }
 }
 
-function Normalize-TaskPath {
-    param([string]$TaskPath)
 
-    if ([string]::IsNullOrWhiteSpace($TaskPath)) {
-        throw "schedulerSettings.TaskPath не налаштовано"
-    }
-
-    $trimmed = $TaskPath.Trim().Trim("\")
-    if ([string]::IsNullOrWhiteSpace($trimmed)) {
-        return "\"
-    }
-    if ($trimmed -match '[/:*?"<>|]' -or $trimmed -match '(^|\\)\.\.?($|\\)') {
-        throw "Некоректний TaskPath: $TaskPath"
-    }
-    return "\$trimmed\"
-}
 
 function ConvertTo-ScheduleTime {
     param(
@@ -338,22 +330,13 @@ function New-BRAVOTaskDefinition {
     $actionArguments = "-NoLogo -NoProfile -NonInteractive"
     $actionArguments += " -WindowStyle $($schedulerSettings.WindowStyle)"
     $actionArguments += " -ExecutionPolicy Bypass"
+    $actionArguments += " -File `"$scriptPath`""
+    $actionArguments += " -ConfigPath `"$ResolvedConfigPath`""
     if ($TaskType -eq "Health") {
-        # BRAVO_ARCHIV_HEALTH повертає структурований результат і не викликає
-        # exit, бо може запускатися всередині BRAVO_ARCHIV. Планувальник
-        # перетворює цей статус на коректний process exit code.
-        $escapedScriptPath = $scriptPath.Replace("'", "''")
-        $escapedConfigPath = $ResolvedConfigPath.Replace("'", "''")
-        $skipArgument = if ($TaskSettings.SkipIfBackupTaskRunning) {
-            " -SkipIfBackupTaskRunning"
-        } else {
-            ""
+        $actionArguments += " -NotifyOnSuccess -NoPause"
+        if ($TaskSettings.SkipIfBackupTaskRunning) {
+            $actionArguments += " -SkipIfBackupTaskRunning"
         }
-        $healthCommand = "& '$escapedScriptPath' -HealthCheckOnly -NotifyOnSuccess -ConfigPath '$escapedConfigPath'$skipArgument -NoPause"
-        $actionArguments += " -Command `"& { $healthCommand }`""
-    } else {
-        $actionArguments += " -File `"$scriptPath`""
-        $actionArguments += " -ConfigPath `"$ResolvedConfigPath`""
     }
     if ($TaskType -eq "Recovery") {
         $actionArguments += " -RunMissedRestoreOnly"
@@ -551,14 +534,8 @@ try {
         )
     }
 
-    # BAZA синхронізується першою кожні 4 години. Health-check запускається
-    # через 15 хвилин після неї, щоб перевіряти вже актуальний стан SFTP.
-    if ($schedulerSettings.BAZASync.Enabled -and $schedulerSettings.Health.Enabled) {
-        $schedulerSettings.BAZASync.StartAt = "00:00"
-        $schedulerSettings.BAZASync.RepeatEveryHours = 4
-        $schedulerSettings.Health.StartAt = "00:15"
-        $schedulerSettings.Health.RepeatEveryMinutes = 240
-    }
+    # Розклад є єдиним джерелом правди у BRAVO.config. Інсталятор не має
+    # непомітно змінювати періодичність health-check під час реєстрації задач.
 
     $taskPath = Normalize-TaskPath -TaskPath $schedulerSettings.TaskPath
     Test-SchedulerConfiguration -ResolvedConfigPath $resolvedConfigPath

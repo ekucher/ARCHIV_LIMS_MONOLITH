@@ -30,7 +30,7 @@
 | Оновити лише параметри установи | `BRAVO_SETUP.cmd -Action Credentials -CredentialComponent Institution` |
 | Запустити архівацію вручну | `BRAVO_ARCHIV.cmd -NoPause` |
 | Запустити обслуговування вручну | `BRAVO_MAINTENANCE.cmd` |
-| Запустити health-check вручну | `BRAVO_ARCHIV.cmd -HealthCheckOnly` |
+| Запустити health-check вручну | `BRAVO_HEALTH.cmd` |
 | Виконати тести коду | `BRAVO_SELF_TEST.cmd` |
 
 Усі команди в цій інструкції потрібно виконувати з каталогу `ARCHIV`. Для
@@ -111,7 +111,7 @@ C:\LIMS\
 - синхронізацію основної `BAZA` на SFTP;
 - щоденний backup о `23:00`;
 - щоденне maintenance о `23:55`;
-- health-check щогодини, починаючи з `00:15`.
+- health-check кожні 240 хвилин, починаючи з `00:15`.
 
 Початково вимкнено:
 
@@ -308,7 +308,7 @@ BRAVO_CREDENTIALS_SETUP.cmd -Action Set -Component Institution -StoreFor Both
 |---|---|---|
 | `BRAVO_ARCHIV` | щодня `23:00` | архівація та передача копій |
 | `BRAVO_MAINTENANCE` | щодня `23:55` | обслуговування BRAVO |
-| `BRAVO_ARCHIV_HEALTH` | кожні 720 хв. від `00:15` | контроль служб і локальних/SFTP/SMB копій |
+| `BRAVO_ARCHIV_HEALTH` | кожні 240 хв. від `00:15` | контроль служб і локальних/SFTP/SMB копій |
 
 Архівація, maintenance і health-check використовують спільний
 `BRAVO_OPERATION.lock`. Якщо інша операція вже працює, наступна не накладається
@@ -367,7 +367,7 @@ BRAVO_MAINTENANCE.cmd
 Health-check:
 
 ```bat
-BRAVO_ARCHIV.cmd -HealthCheckOnly
+BRAVO_HEALTH.cmd
 ```
 
 Ці команди виконують **фактичні операції**. Перед першим production-запуском
@@ -542,7 +542,7 @@ ARCHIV_VETOFFICE.cmd
 | `BRAVO_DRY_RUN.cmd/.ps1` | симуляція без production-операцій |
 | `BRAVO_ARCHIV.cmd/.ps1` | production-архівація |
 | `BRAVO_MAINTENANCE.cmd/.ps1` | production-обслуговування |
-| `BRAVO_ARCHIV.cmd -HealthCheckOnly` | контроль резервних копій |
+| `BRAVO_HEALTH.cmd/.ps1` | контроль резервних копій і служб |
 | `BRAVO_TASKS_DIAGNOSE.cmd/.ps1` | діагностика Планувальника і запуск від `SYSTEM` |
 
 ### Службові файли

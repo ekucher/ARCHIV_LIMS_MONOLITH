@@ -17,20 +17,14 @@ $scriptRoot = if ($PSCommandPath) {
 } else {
     [Environment]::CurrentDirectory
 }
+. (Join-Path $scriptRoot 'BRAVO_SYSTEM_HELPERS.ps1')
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $scriptRoot "BRAVO.config"
 }
 
-function Test-IsAdministrator {
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
-    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-}
 
-function Quote-BRAVOArgument {
-    param([string]$Value)
-    return '"' + $Value.Replace('"', '\"') + '"'
-}
+
+
 
 function Get-BRAVOTaskResultDescription {
     param([int64]$ResultCode)
@@ -94,8 +88,12 @@ try {
     }
     $resolvedConfigPath = (Resolve-Path -LiteralPath $ConfigPath).Path
     $configRoot = Split-Path -Path $resolvedConfigPath -Parent
-    $configText = [IO.File]::ReadAllText($resolvedConfigPath, [Text.Encoding]::UTF8)
-    & ([scriptblock]::Create($configText)) -ConfigRoot $configRoot
+    $configurationLoaderPath = Join-Path $configRoot 'BRAVO_CONFIG_LOADER.ps1'
+    if (-not (Test-Path -LiteralPath $configurationLoaderPath -PathType Leaf)) {
+        throw "Configuration loader not found: $configurationLoaderPath"
+    }
+    . $configurationLoaderPath
+    Import-BravoConfiguration -ConfigRoot $configRoot -ConfigPath $resolvedConfigPath
 
     if (-not $InspectOnly -and
         [string]$schedulerSettings.RunAsUser -in @("SYSTEM", "NT AUTHORITY\SYSTEM")) {
@@ -123,9 +121,9 @@ try {
             "-ExecutionPolicy",
             "Bypass",
             "-File",
-            (Quote-BRAVOArgument $PSCommandPath),
+            (Quote-ProcessArgument $PSCommandPath),
             "-ConfigPath",
-            (Quote-BRAVOArgument $resolvedConfigPath)
+            (Quote-ProcessArgument $resolvedConfigPath)
         )
         if ($TestAccess) { $arguments += "-TestAccess" }
         if ($SendTestNotification) { $arguments += "-SendTestNotification" }
@@ -245,12 +243,12 @@ try {
             "-ExecutionPolicy",
             "Bypass",
             "-File",
-            (Quote-BRAVOArgument $dryRunPath),
+            (Quote-ProcessArgument $dryRunPath),
             "-ConfigPath",
-            (Quote-BRAVOArgument $resolvedConfigPath),
+            (Quote-ProcessArgument $resolvedConfigPath),
             "-RequireScheduledTasks",
             "-ResultPath",
-            (Quote-BRAVOArgument $resultPath)
+            (Quote-ProcessArgument $resultPath)
         )
         if ($TestAccess) { $argumentParts += "-TestAccess" }
         if ($SendTestNotification) { $argumentParts += "-SendTestNotification" }

@@ -746,6 +746,18 @@ function Start-BRAVOProcessOutputCapture {
         [System.Diagnostics.Process]$Process
     )
 
+    # Архіватор і health-check можуть підключити SFTP runtime, який надає
+    # атомарний lock для WinSCP.com. Інші процеси та утиліти працюють без нього.
+    $winSCPProcessLock = $null
+    if ([System.IO.Path]::GetFileName([string]$Process.StartInfo.FileName) -ieq "WinSCP.com" -and
+        $null -ne (Get-Command -Name "Enter-BRAVOWinSCPProcessLock" -CommandType Function -ErrorAction SilentlyContinue)) {
+        $lockResult = Enter-BRAVOWinSCPProcessLock
+        if (-not $lockResult.Success) {
+            throw "Запуск WinSCP заблоковано атомарним lock ($($lockResult.Path)): $($lockResult.Error)"
+        }
+        $winSCPProcessLock = $lockResult.Stream
+    }
+
     $readToEndAsyncMethod = [System.IO.StreamReader].GetMethod(
         "ReadToEndAsync",
         [Type[]]@()
@@ -756,12 +768,18 @@ function Start-BRAVOProcessOutputCapture {
     )
 
     if ($useModernApi) {
-        $Process.Start() | Out-Null
+        try {
+            $Process.Start() | Out-Null
+        } catch {
+            if ($winSCPProcessLock) { $winSCPProcessLock.Dispose() }
+            throw
+        }
         return New-Object PSObject -Property @{
             Mode = "Task"
             Process = $Process
             OutputTask = $Process.StandardOutput.ReadToEndAsync()
             ErrorTask = $Process.StandardError.ReadToEndAsync()
+            WinSCPProcessLock = $winSCPProcessLock
         }
     }
 
@@ -808,6 +826,7 @@ function Start-BRAVOProcessOutputCapture {
         foreach ($job in @($outputJob, $errorJob)) {
             Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
         }
+        if ($winSCPProcessLock) { $winSCPProcessLock.Dispose() }
         throw
     }
 
@@ -820,6 +839,7 @@ function Start-BRAVOProcessOutputCapture {
         ErrorSource = $errorSource
         OutputJob = $outputJob
         ErrorJob = $errorJob
+        WinSCPProcessLock = $winSCPProcessLock
     }
 }
 
@@ -846,7 +866,7 @@ function Complete-BRAVOProcessOutputCapture {
                 StandardError = [string]$Capture.ErrorTask.Result
             }
         } finally {
-            # Task-based capture не реєструє PowerShell event jobs.
+            if ($Capture.WinSCPProcessLock) { $Capture.WinSCPProcessLock.Dispose() }
         }
     }
 
@@ -870,6 +890,7 @@ function Complete-BRAVOProcessOutputCapture {
         foreach ($job in @($Capture.OutputJob, $Capture.ErrorJob)) {
             Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
         }
+        if ($Capture.WinSCPProcessLock) { $Capture.WinSCPProcessLock.Dispose() }
     }
 }
 

@@ -68,6 +68,7 @@ if (-not (Test-Path -LiteralPath $compatibilityModulePath -PathType Leaf)) {
 }
 try {
     . $compatibilityModulePath
+    . (Join-Path $bravoScriptDirectory 'BRAVO_SYSTEM_HELPERS.ps1')
 } catch {
     Write-Error "Помилка сумісності: $($_.Exception.Message)"
     Complete-BRAVOHelperLog -ExitCode 1
@@ -82,17 +83,13 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
 
 $ErrorActionPreference = "Stop"
 
-function Test-IsAdministrator {
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
-    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-}
+
 
 function Test-IsSystemIdentity {
     return [Security.Principal.WindowsIdentity]::GetCurrent().User.Value -eq "S-1-5-18"
 }
 
-function Import-BRAVOConfiguration {
+function Get-BRAVOCredentialSetupConfiguration {
     param([string]$Path)
 
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -101,8 +98,12 @@ function Import-BRAVOConfiguration {
 
     $resolvedPath = (Resolve-Path -LiteralPath $Path).Path
     $root = Split-Path -Path $resolvedPath -Parent
-    $text = [IO.File]::ReadAllText($resolvedPath, [Text.Encoding]::UTF8)
-    & ([scriptblock]::Create($text)) -ConfigRoot $root
+    $configurationLoaderPath = Join-Path $root 'BRAVO_CONFIG_LOADER.ps1'
+    if (-not (Test-Path -LiteralPath $configurationLoaderPath -PathType Leaf)) {
+        throw "Configuration loader not found: $configurationLoaderPath"
+    }
+    . $configurationLoaderPath
+    Import-BravoConfiguration -ConfigRoot $root -ConfigPath $resolvedPath
 
     if ($null -eq $credentialSettings -or
         [string]::IsNullOrWhiteSpace([string]$credentialSettings.HelperPath) -or
@@ -1015,7 +1016,7 @@ function Invoke-ProtectedPayloadWorker {
 }
 
 try {
-    $resolvedConfigPath = Import-BRAVOConfiguration -Path $ConfigPath
+    $resolvedConfigPath = Get-BRAVOCredentialSetupConfiguration -Path $ConfigPath
     . $credentialSettings.HelperPath
 
     if (-not [string]::IsNullOrWhiteSpace($ProtectedPayloadPath)) {
