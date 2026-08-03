@@ -9,8 +9,8 @@ param(
     [string]$ResultPath
 )
 
-$helperLoggingPath = Join-Path $PSScriptRoot "BRAVO_HELPER_LOGGING.ps1"
-. $helperLoggingPath
+$helperLoggingPath = Join-Path $PSScriptRoot "modules\BRAVO.HelperLogging\BRAVO.HelperLogging.psd1"
+Import-Module -Name $helperLoggingPath -ErrorAction Stop
 $null = Start-BRAVOHelperLog `
     -ScriptPath $PSCommandPath `
     -ConfigPath $ConfigPath `
@@ -716,9 +716,9 @@ try {
         if ($null -eq $credentialSettings -or
             [string]::IsNullOrWhiteSpace([string]$credentialSettings.HelperPath) -or
             -not (Test-Path -LiteralPath $credentialSettings.HelperPath -PathType Leaf)) {
-            Add-DryRunResult FAIL "Credential Manager" "Модуль" "BRAVO_CREDENTIALS.ps1 не знайдено"
+            Add-DryRunResult FAIL "Credential Manager" "Модуль" "BRAVO.Credentials не знайдено"
         } else {
-            . $credentialSettings.HelperPath
+            Import-Module -Name $credentialSettings.HelperPath -ErrorAction Stop
             try {
                 $institutionImportResults = @(Import-BRAVOInstitutionSettings `
                     -CredentialSettings $credentialSettings `

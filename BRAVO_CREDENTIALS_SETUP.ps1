@@ -39,8 +39,8 @@ param(
 )
 
 $protectedWorkerMode = -not [string]::IsNullOrWhiteSpace($ProtectedPayloadPath)
-$helperLoggingPath = Join-Path $PSScriptRoot "BRAVO_HELPER_LOGGING.ps1"
-. $helperLoggingPath
+$helperLoggingPath = Join-Path $PSScriptRoot "modules\BRAVO.HelperLogging\BRAVO.HelperLogging.psd1"
+Import-Module -Name $helperLoggingPath -ErrorAction Stop
 $null = Start-BRAVOHelperLog `
     -ScriptPath $PSCommandPath `
     -ConfigPath $ConfigPath `
@@ -61,14 +61,18 @@ $bravoScriptDirectory = if (-not [string]::IsNullOrWhiteSpace($PSCommandPath)) {
     [Environment]::CurrentDirectory
 }
 
-$compatibilityModulePath = Join-Path $bravoScriptDirectory "BRAVO_COMPATIBILITY.ps1"
+$compatibilityModulePath = Join-Path $bravoScriptDirectory "modules\BRAVO.Compatibility\BRAVO.Compatibility.psd1"
+$systemModulePath = Join-Path $bravoScriptDirectory "modules\BRAVO.System\BRAVO.System.psd1"
 if (-not (Test-Path -LiteralPath $compatibilityModulePath -PathType Leaf)) {
     Write-Error "Не знайдено модуль сумісності: $compatibilityModulePath"
     Complete-BRAVOHelperLog -ExitCode 1
 }
 try {
-    . $compatibilityModulePath
-    . (Join-Path $bravoScriptDirectory 'BRAVO_SYSTEM_HELPERS.ps1')
+    Import-Module -Name $compatibilityModulePath -ErrorAction Stop
+    Import-Module -Name $systemModulePath -ErrorAction Stop
+    Assert-BRAVOPowerShellCompatibility
+    [void](Initialize-BRAVOConsoleEncoding -CodePage 65001)
+    $script:BRAVOPowerShellUpdate = Get-BRAVOPowerShellUpdateRecommendation
 } catch {
     Write-Error "Помилка сумісності: $($_.Exception.Message)"
     Complete-BRAVOHelperLog -ExitCode 1
@@ -108,7 +112,7 @@ function Get-BRAVOCredentialSetupConfiguration {
     if ($null -eq $credentialSettings -or
         [string]::IsNullOrWhiteSpace([string]$credentialSettings.HelperPath) -or
         -not (Test-Path -LiteralPath $credentialSettings.HelperPath -PathType Leaf)) {
-        throw "Не знайдено BRAVO_CREDENTIALS.ps1: $($credentialSettings.HelperPath)"
+        throw "Не знайдено модуль BRAVO.Credentials: $($credentialSettings.HelperPath)"
     }
 
     return $resolvedPath
@@ -1017,7 +1021,7 @@ function Invoke-ProtectedPayloadWorker {
 
 try {
     $resolvedConfigPath = Get-BRAVOCredentialSetupConfiguration -Path $ConfigPath
-    . $credentialSettings.HelperPath
+    Import-Module -Name $credentialSettings.HelperPath -ErrorAction Stop
 
     if (-not [string]::IsNullOrWhiteSpace($ProtectedPayloadPath)) {
         if ([string]::IsNullOrWhiteSpace($ResultPath)) {

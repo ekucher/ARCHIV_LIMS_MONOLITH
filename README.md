@@ -382,12 +382,19 @@ Health-check:
 ## 10. Оновлення в установі
 
 1. Зробіть копію поточного `BRAVO.config`.
-2. Замініть `.ps1` і документацію новою версією.
-3. Порівняйте та перенесіть локальні значення шляхів, компонентів, служб,
+2. Атомарно замініть весь комплект новою версією: виконувані `.ps1`,
+   `VERSION.json`, документацію та весь каталог `modules`. Не змішуйте модулі й
+   wrappers із різних версій.
+3. Після копіювання вилучіть застарілі root-бібліотеки
+   `BRAVO_COMPATIBILITY.ps1`, `BRAVO_CREDENTIALS.ps1`,
+   `BRAVO_HELPER_LOGGING.ps1`, `BRAVO_NOTIFICATION.ps1`,
+   `BRAVO_ARCHIVE_HELPERS.ps1`, `BRAVO_ARCHIV_RUNTIME.ps1` і
+   `BRAVO_SYSTEM_HELPERS.ps1`.
+4. Порівняйте та перенесіть локальні значення шляхів, компонентів, служб,
    SFTP/SMB і розкладу у новий `BRAVO.config`.
-4. Не переносіть у config секрети, назву установи, код або префікс — вони вже
+5. Не переносіть у config секрети, назву установи, код або префікс — вони вже
    зберігаються у Credential Manager.
-5. Запустіть:
+6. Запустіть:
 
 ```powershell
 .\BRAVO_SELF_TEST.ps1
@@ -513,11 +520,14 @@ code. Це дозволяє окремо бачити батьківський s
 |---|---|
 | `BRAVO.config` | головна конфігурація BRAVO |
 | `BRAVO_CREDENTIALS_SETUP.ps1` | керування записами Credential Manager |
-| `BRAVO_CREDENTIALS.ps1` | внутрішня бібліотека читання/запису credentials |
-| `BRAVO_HELPER_LOGGING.ps1` | спільне transcript-журналювання допоміжних скриптів |
+| `modules\BRAVO.Credentials` | модуль читання/запису credentials |
+| `modules\BRAVO.HelperLogging` | модуль transcript-журналювання допоміжних скриптів |
 | `BRAVO_TASKS_INSTALL.ps1` | встановлення завдань |
 | `BRAVO_TASKS_UNINSTALL.ps1` | видалення завдань |
-| `BRAVO_COMPATIBILITY.ps1` | сумісність зі старими Windows/PowerShell |
+| `modules\BRAVO.Compatibility` | модуль сумісності зі старими Windows/PowerShell |
+| `modules\BRAVO.Archive` | runtime-модуль архівації; `BRAVO_ARCHIV.ps1` є тонким wrapper |
+| `modules\BRAVO.Health` | runtime-модуль health-check; `BRAVO_HEALTH.ps1` є тонким wrapper |
+| `modules\BRAVO.Maintenance` | runtime-модуль maintenance; `BRAVO_MAINTENANCE.ps1` є тонким wrapper |
 | `BRAVO_SELF_TEST.ps1` | автоматичні регресійні тести |
 
 Детальні параметри комплексного setup наведені у
@@ -533,8 +543,7 @@ code. Це дозволяє окремо бачити батьківський s
 - не вимикайте `RequireProtectedRuntime`, окрім контрольованої міграції;
 - не додавайте `-delete` до SFTP-синхронізації BAZA: хмара є накопичувальною;
 - після зміни SFTP fingerprint перевірте його через незалежний довірений канал;
-- враховуйте, що пароль 7-Zip передається утиліті як аргумент процесу через
-  обмеження CLI 7-Zip; обмежуйте локальні адміністративні права і доступ до
-  сервера;
+- пароль 7-Zip передається утиліті лише через redirected standard input і не
+  повинен повертатися до аргументів процесу; це контролює self-test;
 - перед production-змінами завжди виконуйте self-test, `-ValidateOnly` і
   dry-run.

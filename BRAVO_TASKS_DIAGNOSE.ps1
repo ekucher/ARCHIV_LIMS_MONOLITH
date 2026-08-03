@@ -7,8 +7,8 @@ param(
     [switch]$NoElevation
 )
 
-$helperLoggingPath = Join-Path $PSScriptRoot "BRAVO_HELPER_LOGGING.ps1"
-. $helperLoggingPath
+$helperLoggingPath = Join-Path $PSScriptRoot "modules\BRAVO.HelperLogging\BRAVO.HelperLogging.psd1"
+Import-Module -Name $helperLoggingPath -ErrorAction Stop
 $null = Start-BRAVOHelperLog -ScriptPath $PSCommandPath -ConfigPath $ConfigPath
 
 $ErrorActionPreference = "Stop"
@@ -17,11 +17,11 @@ $scriptRoot = if ($PSCommandPath) {
 } else {
     [Environment]::CurrentDirectory
 }
-$systemHelpersPath = Join-Path $scriptRoot 'BRAVO_SYSTEM_HELPERS.ps1'
+$systemHelpersPath = Join-Path $scriptRoot 'modules\BRAVO.System\BRAVO.System.psd1'
 if (-not (Test-Path -LiteralPath $systemHelpersPath -PathType Leaf)) {
-    throw "Не знайдено системні helper-функції: $systemHelpersPath"
+    throw "Не знайдено PowerShell-модуль системних helpers: $systemHelpersPath"
 }
-. $systemHelpersPath
+Import-Module -Name $systemHelpersPath -ErrorAction Stop
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $scriptRoot "BRAVO.config"
 }
@@ -125,9 +125,9 @@ try {
             "-ExecutionPolicy",
             "Bypass",
             "-File",
-            (Quote-ProcessArgument $PSCommandPath),
+            (ConvertTo-BRAVOProcessArgument $PSCommandPath),
             "-ConfigPath",
-            (Quote-ProcessArgument $resolvedConfigPath)
+            (ConvertTo-BRAVOProcessArgument $resolvedConfigPath)
         )
         if ($TestAccess) { $arguments += "-TestAccess" }
         if ($SendTestNotification) { $arguments += "-SendTestNotification" }
@@ -247,12 +247,12 @@ try {
             "-ExecutionPolicy",
             "Bypass",
             "-File",
-            (Quote-ProcessArgument $dryRunPath),
+            (ConvertTo-BRAVOProcessArgument $dryRunPath),
             "-ConfigPath",
-            (Quote-ProcessArgument $resolvedConfigPath),
+            (ConvertTo-BRAVOProcessArgument $resolvedConfigPath),
             "-RequireScheduledTasks",
             "-ResultPath",
-            (Quote-ProcessArgument $resultPath)
+            (ConvertTo-BRAVOProcessArgument $resultPath)
         )
         if ($TestAccess) { $argumentParts += "-TestAccess" }
         if ($SendTestNotification) { $argumentParts += "-SendTestNotification" }

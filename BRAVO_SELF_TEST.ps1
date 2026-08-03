@@ -3,8 +3,8 @@ param(
     [string]$ConfigPath
 )
 
-$helperLoggingPath = Join-Path $PSScriptRoot "BRAVO_HELPER_LOGGING.ps1"
-. $helperLoggingPath
+$helperLoggingPath = Join-Path $PSScriptRoot "modules\BRAVO.HelperLogging\BRAVO.HelperLogging.psd1"
+Import-Module -Name $helperLoggingPath -ErrorAction Stop
 $null = Start-BRAVOHelperLog -ScriptPath $PSCommandPath -ConfigPath $ConfigPath
 
 $ErrorActionPreference = "Stop"
@@ -79,7 +79,11 @@ function New-BRAVOSelfTestRuntimeModule {
 
 try {
     Write-Host "BRAVO SELF-TEST (STATIC + RUNTIME)" -ForegroundColor Cyan
-    $powerShellFiles = @(Get-ChildItem -LiteralPath $root -Filter "*.ps1" -File)
+    $powerShellFiles = @(
+        @(Get-ChildItem -LiteralPath $root -File -Filter '*.ps1')
+        @(Get-ChildItem -LiteralPath (Join-Path $root 'modules') -Recurse -File |
+            Where-Object { $_.Extension -in @('.ps1', '.psm1', '.psd1') })
+    )
     foreach ($file in $powerShellFiles) {
         $tokens = $null
         $errors = $null
@@ -129,7 +133,16 @@ try {
         -Name "Credentials/SystemWorkerQuietConsole" `
         -Failure "SYSTEM worker Credential Manager не повинен виконувати Write-Host без консолі"
 
-    . (Join-Path $root "BRAVO_COMPATIBILITY.ps1")
+    Remove-Module -Name 'BRAVO.Compatibility' -Force -ErrorAction SilentlyContinue
+    $outputEncodingBeforeCompatibilityImport = $global:OutputEncoding
+    Import-Module -Name (Join-Path $root "modules\BRAVO.Compatibility\BRAVO.Compatibility.psd1") -Force -ErrorAction Stop
+    Test-BRAVOCondition `
+        -Condition ([object]::ReferenceEquals(
+                $outputEncodingBeforeCompatibilityImport,
+                $global:OutputEncoding
+            )) `
+        -Name "Compatibility/ImportHasNoConsoleSideEffects" `
+        -Failure "імпорт Compatibility не повинен змінювати global OutputEncoding"
     $insecureWebhookRejected = $false
     try {
         Send-BRAVOWebhookNotification `
@@ -279,20 +292,49 @@ try {
         ) `
         -Name "Version/AuthoritativeLoader" `
         -Failure "VERSION.json має бути єдиним джерелом версії та releaseDate для ScriptVersion і ScriptDate"
+    $moduleManifests = @(Get-ChildItem -LiteralPath (Join-Path $root 'modules') -Recurse -Filter '*.psd1' -File)
+    $moduleVersionsMatch = @($moduleManifests | Where-Object {
+            [string](Test-ModuleManifest -Path $_.FullName -ErrorAction Stop).Version -ne
+            [string]$loadedConfiguration.Version.PackageVersion
+        }).Count -eq 0
+    Test-BRAVOCondition `
+        -Condition ($moduleManifests.Count -gt 0 -and $moduleVersionsMatch) `
+        -Name "Version/ModuleManifests" `
+        -Failure "ModuleVersion усіх manifests має відповідати packageVersion у VERSION.json"
+    $archiveHelpersModulePath = Join-Path `
+        $root `
+        'modules\BRAVO.ArchiveHelpers\BRAVO.ArchiveHelpers.psd1'
+    Remove-Module -Name 'BRAVO.ArchiveHelpers' -Force -ErrorAction SilentlyContinue
+    Import-Module -Name $archiveHelpersModulePath -Force -ErrorAction Stop
+    $archiveHelperSmokeCompleted = $false
+    try {
+        $archiveHelperSmokeResult = Test-SevenZipArchiveIntegrity `
+            -SevenZipPath (Join-Path $root '__MISSING_7Z__.exe') `
+            -ArchivePath (Join-Path $root '__MISSING_ARCHIVE__.7z') `
+            -Password 'self-test-placeholder' `
+            -Logger { param($Message, $Level) }
+        $archiveHelperSmokeCompleted = ($archiveHelperSmokeResult -eq $false)
+    } catch {
+        $archiveHelperSmokeCompleted = $false
+    }
+    Test-BRAVOCondition `
+        -Condition $archiveHelperSmokeCompleted `
+        -Name "Modules/ArchiveHelpersAreCallerIndependent" `
+        -Failure "ArchiveHelpers мають виконуватися без приватних функцій caller-а"
     Test-BRAVOCondition `
         -Condition ([string]$archiveParams -match '(?i)(^|\s)-ssw(\s|$)') `
         -Name "BackupAvailability/AllowOpenFiles" `
         -Failure "backup без зупинки служб має дозволяти читання відкритих файлів"
     $archiveScriptText = [IO.File]::ReadAllText(
-        (Join-Path $root "BRAVO_ARCHIV.ps1"),
+        (Join-Path $root "modules\BRAVO.Archive\BRAVO.Archive.Runtime.ps1"),
         [Text.Encoding]::UTF8
     )
     $healthScriptText = [IO.File]::ReadAllText(
-        (Join-Path $root "BRAVO_HEALTH.ps1"),
+        (Join-Path $root "modules\BRAVO.Health\BRAVO.Health.Runtime.ps1"),
         [Text.Encoding]::UTF8
     )
     $notificationScriptText = [IO.File]::ReadAllText(
-        (Join-Path $root "BRAVO_NOTIFICATION.ps1"),
+        (Join-Path $root "modules\BRAVO.Notifications\BRAVO.Notifications.psm1"),
         [Text.Encoding]::UTF8
     )
     $archiveLoaderCalls = @(
@@ -474,11 +516,11 @@ try {
         -Name "Services/ArchiveReadOnly" `
         -Failure "BRAVO_ARCHIV не повинен зупиняти або запускати Windows-служби"
     $maintenanceScriptText = [IO.File]::ReadAllText(
-        (Join-Path $root "BRAVO_MAINTENANCE.ps1"),
+        (Join-Path $root "modules\BRAVO.Maintenance\BRAVO.Maintenance.Runtime.ps1"),
         [Text.Encoding]::UTF8
     )
     $compatibilityScriptText = [IO.File]::ReadAllText(
-        (Join-Path $root "BRAVO_COMPATIBILITY.ps1"),
+        (Join-Path $root "modules\BRAVO.Compatibility\BRAVO.Compatibility.psm1"),
         [Text.Encoding]::UTF8
     )
     $sevenZipPasswordInArgumentsPattern = '(?im)^.*(?:^|\s)-p(?:\$|"|\{).*archivePassword.*$'
@@ -508,7 +550,7 @@ try {
         -Condition (
             $maintenanceScriptText.Contains("Send-InactiveServiceWarning") -and
             $maintenanceScriptText.Contains("СЛУЖБИ НЕ ЗАПУЩЕНІ ПЕРЕД MAINTENANCE") -and
-            $maintenanceScriptText.Contains("BRAVO_NOTIFICATION.ps1") -and
+            $maintenanceScriptText.Contains("BRAVO.Notifications") -and
             $notificationScriptText.Contains('$availableLength -= [Environment]::NewLine.Length')
         ) `
         -Name "Notifications/MaintenanceInactiveServices" `
@@ -527,14 +569,46 @@ try {
             $healthScriptText.Contains('function Invoke-BRAVOHealth') -and
             $healthScriptText.Contains('[switch]$SkipIfBackupTaskRunning') -and
             $healthScriptText.Contains('SkipIfBackupTaskRunning = $SkipIfBackupTaskRunning') -and
-            $healthScriptText.Contains("BRAVO_COMPATIBILITY.ps1") -and
-            $healthScriptText.Contains("BRAVO_CREDENTIALS.ps1") -and
-            $healthScriptText.Contains("BRAVO_ARCHIV_RUNTIME.ps1") -and
+            $healthScriptText.Contains("BRAVO.Compatibility") -and
+            $healthScriptText.Contains("BRAVO.Credentials") -and
+            $healthScriptText.Contains("BRAVO.ArchiveRuntime") -and
             $schedulerSettings.Health.ScriptPath -eq (Join-Path $root 'BRAVO_HEALTH.ps1') -and
-            -not $archiveScriptText.Contains('function Invoke-BRAVOEmbeddedHealth')
+            -not $archiveScriptText.Contains('function Invoke-BRAVOEmbeddedHealth') -and
+            $archiveScriptText.Contains('Invoke-BRAVOHealthCheck @healthParameters') -and
+            -not $archiveScriptText.Contains('. $healthScriptPath')
         ) `
         -Name "Health/SeparateRuntime" `
         -Failure "health має бути окремим runtime-скриптом без дублювання compatibility і credentials коду в архіваторі"
+    $healthModulePath = Join-Path $root 'modules\BRAVO.Health\BRAVO.Health.psd1'
+    $healthModule = Import-Module `
+        -Name $healthModulePath `
+        -Force `
+        -PassThru `
+        -ErrorAction Stop
+    $healthModule.SessionState.PSVariable.Set('Login', 'self-test-user')
+    $healthModule.SessionState.PSVariable.Set(
+        'sftpUrl',
+        'sftp://self-test-user:self-test-secret@example.invalid/'
+    )
+    $missingHealthConfigPath = Join-Path $root '__BRAVO_SELF_TEST_MISSING_HEALTH_CONFIG__.config'
+    $programmaticHealthResult = Invoke-BRAVOHealthCheck `
+        -ConfigPath $missingHealthConfigPath `
+        -RuntimeRoot $root `
+        -EntryScriptPath (Join-Path $root 'BRAVO_HEALTH.ps1') `
+        -ErrorAction Continue `
+        2>$null
+    Test-BRAVOCondition `
+        -Condition ([string]$programmaticHealthResult.Status -eq 'ConfigurationError') `
+        -Name "Health/ProgrammaticApiDoesNotExit" `
+        -Failure "програмний Health API має повертати result object без завершення процесу"
+    Test-BRAVOCondition `
+        -Condition (
+            $null -eq $healthModule.SessionState.PSVariable.GetValue('Login') -and
+            $null -eq $healthModule.SessionState.PSVariable.GetValue('sftpUrl') -and
+            $null -eq $healthModule.SessionState.PSVariable.GetValue('smbCredential')
+        ) `
+        -Name "Health/ProgrammaticApiClearsCredentialState" `
+        -Failure "програмний Health API має очищати секретний module state навіть після ранньої помилки"
     Test-BRAVOCondition `
         -Condition (
             [bool]$backupMonitoring.CheckManagedServices -and
@@ -627,6 +701,65 @@ try {
         (Join-Path $root "BRAVO_TASKS_INSTALL.ps1"),
         [Text.Encoding]::UTF8
     )
+    $runtimeScopeChecks = @(
+        [pscustomobject]@{
+            Name = "Archive"
+            Text = $archiveScriptText
+            AllowedGlobalVariables = @(
+                "BravoConfigurationMetadata",
+                "LogLevel",
+                "OutputEncoding",
+                "ScriptDate",
+                "ScriptVersion"
+            )
+            RequiredScriptVariables = @("Login", "resolvedSftpHost", "sftpUrl", "logFile")
+        },
+        [pscustomobject]@{
+            Name = "Health"
+            Text = $healthScriptText
+            AllowedGlobalVariables = @(
+                "BravoConfigurationMetadata",
+                "ScriptDate",
+                "ScriptVersion"
+            )
+            RequiredScriptVariables = @("Login", "resolvedSftpHost", "sftpUrl")
+        },
+        [pscustomobject]@{
+            Name = "Maintenance"
+            Text = $maintenanceScriptText
+            AllowedGlobalVariables = @("ScriptDate", "ScriptVersion")
+            RequiredScriptVariables = @("criticalErrorOccurred", "ScriptStartTime")
+        }
+    )
+    foreach ($runtimeScopeCheck in $runtimeScopeChecks) {
+        $globalVariables = @(
+            [regex]::Matches(
+                $runtimeScopeCheck.Text,
+                '\$global:([A-Za-z_][A-Za-z0-9_]*)'
+            ) | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+        )
+        $unexpectedGlobalVariables = @(
+            $globalVariables | Where-Object {
+                $_ -notin $runtimeScopeCheck.AllowedGlobalVariables
+            }
+        )
+        $missingScriptVariables = @(
+            $runtimeScopeCheck.RequiredScriptVariables | Where-Object {
+                -not $runtimeScopeCheck.Text.Contains('$script:' + $_)
+            }
+        )
+        Test-BRAVOCondition `
+            -Condition (
+                $unexpectedGlobalVariables.Count -eq 0 -and
+                $missingScriptVariables.Count -eq 0
+            ) `
+            -Name "RuntimeScope/$($runtimeScopeCheck.Name)" `
+            -Failure (
+                "runtime-стан $($runtimeScopeCheck.Name) має бути script-scoped; " +
+                "неочікувані global: $($unexpectedGlobalVariables -join ', '); " +
+                "відсутні script: $($missingScriptVariables -join ', ')"
+            )
+    }
     Test-BRAVOCondition `
         -Condition (
             [int]$schedulerSettings.Health.RepeatEveryMinutes -eq 240 -and
@@ -641,23 +774,23 @@ try {
         ) `
         -Name "Scheduler/ProtectedRuntimeRecursiveAcl" `
         -Failure "ACL hardening має застосовуватися до всіх наявних дочірніх файлів runtime"
-    foreach ($fileName in @(
-            "BRAVO_SETUP.ps1",
-            "BRAVO_DRY_RUN.ps1",
-            "BRAVO_HEALTH.ps1",
-            "BRAVO_TASKS_DIAGNOSE.ps1",
-            "BRAVO_TASKS_UNINSTALL.ps1",
-            "BRAVO_CREDENTIALS_SETUP.ps1",
-            "BRAVO_TASKS_INSTALL.ps1"
+    foreach ($utility in @(
+            [pscustomobject]@{ Name = "BRAVO_SETUP.ps1"; Path = "BRAVO_SETUP.ps1" },
+            [pscustomobject]@{ Name = "BRAVO_DRY_RUN.ps1"; Path = "BRAVO_DRY_RUN.ps1" },
+            [pscustomobject]@{ Name = "BRAVO_HEALTH.ps1"; Path = "modules\BRAVO.Health\BRAVO.Health.Runtime.ps1" },
+            [pscustomobject]@{ Name = "BRAVO_TASKS_DIAGNOSE.ps1"; Path = "BRAVO_TASKS_DIAGNOSE.ps1" },
+            [pscustomobject]@{ Name = "BRAVO_TASKS_UNINSTALL.ps1"; Path = "BRAVO_TASKS_UNINSTALL.ps1" },
+            [pscustomobject]@{ Name = "BRAVO_CREDENTIALS_SETUP.ps1"; Path = "BRAVO_CREDENTIALS_SETUP.ps1" },
+            [pscustomobject]@{ Name = "BRAVO_TASKS_INSTALL.ps1"; Path = "BRAVO_TASKS_INSTALL.ps1" }
         )) {
         $utilityText = [IO.File]::ReadAllText(
-            (Join-Path $root $fileName),
+            (Join-Path $root $utility.Path),
             [Text.Encoding]::UTF8
         )
         Test-BRAVOCondition `
             -Condition ($utilityText.Contains('BRAVO_CONFIG_LOADER.ps1') -and
                 $utilityText.Contains('Import-BravoConfiguration')) `
-            -Name "ConfigurationLoader/$fileName" `
+            -Name "ConfigurationLoader/$($utility.Name)" `
             -Failure "BRAVO-утиліта має використовувати спільний BRAVO_CONFIG_LOADER.ps1"
     }
     $credentialsSetupText = [IO.File]::ReadAllText(
@@ -684,17 +817,17 @@ try {
         -Name "Legacy/CommandWrappersRemoved" `
         -Failure "BRAVO .cmd-обгортки не мають повертатися до runtime"
 
-    foreach ($fileName in @(
-            "BRAVO_ARCHIV.ps1",
-            "BRAVO_MAINTENANCE.ps1"
+    foreach ($runtimeFile in @(
+            "modules\BRAVO.Archive\BRAVO.Archive.Runtime.ps1",
+            "modules\BRAVO.Maintenance\BRAVO.Maintenance.Runtime.ps1"
         )) {
         $text = [IO.File]::ReadAllText(
-            (Join-Path $root $fileName),
+            (Join-Path $root $runtimeFile),
             [Text.Encoding]::UTF8
         )
         Test-BRAVOCondition `
             -Condition ($text.Contains("BRAVO_OPERATION.lock")) `
-            -Name "SharedLock/$fileName" `
+            -Name "SharedLock/$runtimeFile" `
             -Failure "скрипт не використовує BRAVO_OPERATION.lock"
     }
 
@@ -712,16 +845,16 @@ try {
         -Condition (
             -not $archiveScriptText.Contains('BEGIN BRAVO EMBEDDED RUNTIME LIBRARIES') -and
             -not $maintenanceScriptText.Contains('BEGIN BRAVO EMBEDDED RUNTIME LIBRARIES') -and
-            $archiveScriptText.Contains("BRAVO_COMPATIBILITY.ps1") -and
-            $archiveScriptText.Contains("BRAVO_CREDENTIALS.ps1") -and
-            $archiveScriptText.Contains("BRAVO_ARCHIV_RUNTIME.ps1") -and
-            $maintenanceScriptText.Contains("BRAVO_COMPATIBILITY.ps1") -and
-            $maintenanceScriptText.Contains("BRAVO_CREDENTIALS.ps1")
+            $archiveScriptText.Contains("BRAVO.Compatibility") -and
+            $archiveScriptText.Contains("BRAVO.Credentials") -and
+            $archiveScriptText.Contains("BRAVO.ArchiveRuntime") -and
+            $maintenanceScriptText.Contains("BRAVO.Compatibility") -and
+            $maintenanceScriptText.Contains("BRAVO.Credentials")
         ) `
         -Name "Runtime/SharedCompatibilityAndCredentials" `
         -Failure "archive та maintenance мають використовувати спільні compatibility/credentials замість вбудованих копій"
     $archiveRuntimeText = [IO.File]::ReadAllText(
-        (Join-Path $root "BRAVO_ARCHIV_RUNTIME.ps1"),
+        (Join-Path $root "modules\BRAVO.ArchiveRuntime\BRAVO.ArchiveRuntime.psm1"),
         [Text.Encoding]::UTF8
     )
     Test-BRAVOCondition `
@@ -733,6 +866,22 @@ try {
         ) `
         -Name "Runtime/WinSCPProcessCheckCompatibility" `
         -Failure "SFTP runtime має використовувати WMI/CIM fallback і не дублювати process-capture функції"
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveRuntimeText.Contains('function Get-BRAVOWinSCPDotNetComponents') -and
+            -not $archiveScriptText.Contains('function Get-WinSCPDotNetComponents') -and
+            -not $healthScriptText.Contains('function Get-WinSCPDotNetComponents')
+        ) `
+        -Name "Runtime/SharedWinSCPDotNetDiscovery" `
+        -Failure "пошук WinSCP .NET components має мати одну реалізацію у BRAVO.ArchiveRuntime"
+    Test-BRAVOCondition `
+        -Condition (
+            $maintenanceScriptText.Contains('BRAVO.ArchiveHelpers') -and
+            $maintenanceScriptText.Contains('function Test-BRAVOMaintenanceSevenZipArchiveIntegrity') -and
+            -not $maintenanceScriptText.Contains('function Test-SevenZipArchiveIntegrity')
+        ) `
+        -Name "Runtime/SharedSevenZipIntegrityHelper" `
+        -Failure "Maintenance має використовувати спільну перевірку 7-Zip з ArchiveHelpers"
     $setupScriptText = [IO.File]::ReadAllText(
         (Join-Path $root "BRAVO_SETUP.ps1"),
         [Text.Encoding]::UTF8

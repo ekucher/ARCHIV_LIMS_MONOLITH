@@ -5,8 +5,8 @@ param(
     [switch]$StopRunningTasks
 )
 
-$helperLoggingPath = Join-Path $PSScriptRoot "BRAVO_HELPER_LOGGING.ps1"
-. $helperLoggingPath
+$helperLoggingPath = Join-Path $PSScriptRoot "modules\BRAVO.HelperLogging\BRAVO.HelperLogging.psd1"
+Import-Module -Name $helperLoggingPath -ErrorAction Stop
 $null = Start-BRAVOHelperLog -ScriptPath $PSCommandPath -ConfigPath $ConfigPath
 
 $bravoScriptDirectory = if (-not [string]::IsNullOrWhiteSpace($PSCommandPath)) {
@@ -17,14 +17,18 @@ $bravoScriptDirectory = if (-not [string]::IsNullOrWhiteSpace($PSCommandPath)) {
     [Environment]::CurrentDirectory
 }
 
-$compatibilityModulePath = Join-Path $bravoScriptDirectory "BRAVO_COMPATIBILITY.ps1"
+$compatibilityModulePath = Join-Path $bravoScriptDirectory "modules\BRAVO.Compatibility\BRAVO.Compatibility.psd1"
+$systemModulePath = Join-Path $bravoScriptDirectory "modules\BRAVO.System\BRAVO.System.psd1"
 if (-not (Test-Path -LiteralPath $compatibilityModulePath -PathType Leaf)) {
     Write-Error "Не знайдено модуль сумісності: $compatibilityModulePath"
     Complete-BRAVOHelperLog -ExitCode 1
 }
 try {
-    . $compatibilityModulePath
-    . (Join-Path $bravoScriptDirectory 'BRAVO_SYSTEM_HELPERS.ps1')
+    Import-Module -Name $compatibilityModulePath -ErrorAction Stop
+    Import-Module -Name $systemModulePath -ErrorAction Stop
+    Assert-BRAVOPowerShellCompatibility
+    [void](Initialize-BRAVOConsoleEncoding -CodePage 65001)
+    $script:BRAVOPowerShellUpdate = Get-BRAVOPowerShellUpdateRecommendation
 } catch {
     Write-Error "Помилка сумісності: $($_.Exception.Message)"
     Complete-BRAVOHelperLog -ExitCode 1
@@ -95,7 +99,7 @@ try {
     Import-BravoConfiguration -ConfigRoot $configRoot -ConfigPath $resolvedConfigPath
     $taskService = New-Object -ComObject "Schedule.Service"
     $taskService.Connect()
-    $taskPath = Normalize-TaskPath -TaskPath $schedulerSettings.TaskPath
+    $taskPath = ConvertTo-BRAVOTaskPath -TaskPath $schedulerSettings.TaskPath
     $taskNames = @(
         [string]$schedulerSettings.Backup.TaskName,
         [string]$schedulerSettings.Maintenance.TaskName,
@@ -115,7 +119,7 @@ try {
         }
     )
     if ($schedulerSettings.LegacyTaskPath -and $schedulerSettings.LegacyTaskNames) {
-        $legacyTaskPath = Normalize-TaskPath -TaskPath ([string]$schedulerSettings.LegacyTaskPath)
+        $legacyTaskPath = ConvertTo-BRAVOTaskPath -TaskPath ([string]$schedulerSettings.LegacyTaskPath)
         $taskTargets += @(
             $schedulerSettings.LegacyTaskNames | ForEach-Object {
                 [pscustomobject]@{ TaskPath = $legacyTaskPath; TaskName = [string]$_ }

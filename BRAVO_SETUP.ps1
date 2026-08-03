@@ -27,8 +27,8 @@ param(
     [switch]$NoPause
 )
 
-$helperLoggingPath = Join-Path $PSScriptRoot "BRAVO_HELPER_LOGGING.ps1"
-. $helperLoggingPath
+$helperLoggingPath = Join-Path $PSScriptRoot "modules\BRAVO.HelperLogging\BRAVO.HelperLogging.psd1"
+Import-Module -Name $helperLoggingPath -ErrorAction Stop
 $null = Start-BRAVOHelperLog -ScriptPath $PSCommandPath -ConfigPath $ConfigPath
 
 # Єдина точка налаштування BRAVO:
@@ -142,9 +142,9 @@ function Restart-SetupElevated {
         "-ExecutionPolicy",
         "Bypass",
         "-File",
-        (Quote-ProcessArgument $PSCommandPath),
+        (ConvertTo-BRAVOProcessArgument $PSCommandPath),
         "-ConfigPath",
-        (Quote-ProcessArgument $SetupConfiguration.ConfigPath),
+        (ConvertTo-BRAVOProcessArgument $SetupConfiguration.ConfigPath),
         "-Action",
         $Action,
         "-StoreFor",
@@ -183,7 +183,7 @@ try {
     } else {
         [Environment]::CurrentDirectory
     }
-    . (Join-Path $scriptDirectory 'BRAVO_SYSTEM_HELPERS.ps1')
+    Import-Module -Name (Join-Path $scriptDirectory 'modules\BRAVO.System\BRAVO.System.psd1') -ErrorAction Stop
     if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
         $ConfigPath = Join-Path $scriptDirectory "BRAVO.config"
     }

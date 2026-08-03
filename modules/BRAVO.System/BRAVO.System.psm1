@@ -5,13 +5,13 @@ function Test-IsAdministrator {
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
-function Quote-ProcessArgument {
+function ConvertTo-BRAVOProcessArgument {
     param([string]$Value)
 
     return '"' + $Value.Replace('"', '\"') + '"'
 }
 
-function Normalize-TaskPath {
+function ConvertTo-BRAVOTaskPath {
     param([string]$TaskPath)
 
     if ([string]::IsNullOrWhiteSpace($TaskPath)) {

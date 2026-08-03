@@ -4,8 +4,8 @@ param(
     [switch]$ValidateOnly
 )
 
-$helperLoggingPath = Join-Path $PSScriptRoot "BRAVO_HELPER_LOGGING.ps1"
-. $helperLoggingPath
+$helperLoggingPath = Join-Path $PSScriptRoot "modules\BRAVO.HelperLogging\BRAVO.HelperLogging.psd1"
+Import-Module -Name $helperLoggingPath -ErrorAction Stop
 $null = Start-BRAVOHelperLog -ScriptPath $PSCommandPath -ConfigPath $ConfigPath
 
 $bravoScriptDirectory = if (-not [string]::IsNullOrWhiteSpace($PSCommandPath)) {
@@ -16,7 +16,8 @@ $bravoScriptDirectory = if (-not [string]::IsNullOrWhiteSpace($PSCommandPath)) {
     [Environment]::CurrentDirectory
 }
 
-$compatibilityModulePath = Join-Path $bravoScriptDirectory "BRAVO_COMPATIBILITY.ps1"
+$compatibilityModulePath = Join-Path $bravoScriptDirectory "modules\BRAVO.Compatibility\BRAVO.Compatibility.psd1"
+$systemModulePath = Join-Path $bravoScriptDirectory "modules\BRAVO.System\BRAVO.System.psd1"
 if (-not (Test-Path -LiteralPath $compatibilityModulePath -PathType Leaf)) {
     Write-Error "Не знайдено модуль сумісності: $compatibilityModulePath"
     Complete-BRAVOHelperLog -ExitCode 1
@@ -24,8 +25,12 @@ if (-not (Test-Path -LiteralPath $compatibilityModulePath -PathType Leaf)) {
 try {
     $rollbackRecords = New-Object System.Collections.ArrayList
     $installationCommitted = $false
-    . $compatibilityModulePath
-    . (Join-Path $bravoScriptDirectory 'BRAVO_SYSTEM_HELPERS.ps1')
+    Import-Module -Name $compatibilityModulePath -ErrorAction Stop
+    Import-Module -Name $systemModulePath -ErrorAction Stop
+    Assert-BRAVOPowerShellCompatibility
+    [void](Initialize-BRAVOConsoleEncoding -CodePage 65001)
+    $script:BRAVOCompatibility = Get-BRAVOCompatibilityInfo
+    $script:BRAVOPowerShellUpdate = Get-BRAVOPowerShellUpdateRecommendation
 } catch {
     Write-Error "Помилка сумісності: $($_.Exception.Message)"
     Complete-BRAVOHelperLog -ExitCode 1
@@ -375,6 +380,30 @@ function Test-SchedulerConfiguration {
         -not (Test-Path -LiteralPath $credentialSettings.HelperPath -PathType Leaf)) {
         throw "Не знайдено модуль Credential Manager: $($credentialSettings.HelperPath)"
     }
+    $runtimeRoot = Split-Path -Path $ResolvedConfigPath -Parent
+    $requiredModuleNames = @(
+        'BRAVO.Compatibility',
+        'BRAVO.Credentials',
+        'BRAVO.Notifications',
+        'BRAVO.ArchiveHelpers',
+        'BRAVO.ArchiveRuntime',
+        'BRAVO.Archive',
+        'BRAVO.Health',
+        'BRAVO.Maintenance',
+        'BRAVO.HelperLogging',
+        'BRAVO.System'
+    )
+    foreach ($moduleName in $requiredModuleNames) {
+        $manifestPath = Join-Path $runtimeRoot "modules\$moduleName\$moduleName.psd1"
+        if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw "Не знайдено required PowerShell-модуль: $manifestPath"
+        }
+        try {
+            Import-Module -Name $manifestPath -DisableNameChecking -ErrorAction Stop
+        } catch {
+            throw "Не вдалося імпортувати required PowerShell-модуль '$moduleName': $($_.Exception.Message)"
+        }
+    }
     if ([string]::IsNullOrWhiteSpace([string]$credentialSettings.SetupScriptPath) -or
         -not (Test-Path -LiteralPath $credentialSettings.SetupScriptPath -PathType Leaf)) {
         throw "Не знайдено скрипт налаштування секретів: $($credentialSettings.SetupScriptPath)"
@@ -537,7 +566,7 @@ try {
     # Розклад є єдиним джерелом правди у BRAVO.config. Інсталятор не має
     # непомітно змінювати періодичність health-check під час реєстрації задач.
 
-    $taskPath = Normalize-TaskPath -TaskPath $schedulerSettings.TaskPath
+    $taskPath = ConvertTo-BRAVOTaskPath -TaskPath $schedulerSettings.TaskPath
     Test-SchedulerConfiguration -ResolvedConfigPath $resolvedConfigPath
     $taskService = New-Object -ComObject "Schedule.Service"
     $taskService.Connect()
@@ -717,7 +746,7 @@ try {
         Write-Host "Конфігурація планувальника коректна. Системні зміни не виконувалися." -ForegroundColor Green
     } else {
         if ($schedulerSettings.LegacyTaskPath -and $schedulerSettings.LegacyTaskNames) {
-            $legacyTaskPath = Normalize-TaskPath -TaskPath ([string]$schedulerSettings.LegacyTaskPath)
+            $legacyTaskPath = ConvertTo-BRAVOTaskPath -TaskPath ([string]$schedulerSettings.LegacyTaskPath)
             $legacyFolder = Get-BRAVOScheduledTaskFolder `
                 -TaskService $taskService `
                 -TaskPath $legacyTaskPath

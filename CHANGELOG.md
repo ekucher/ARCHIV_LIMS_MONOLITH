@@ -1,5 +1,18 @@
 # Changelog
 
+## 4.2.12 — 2026-08-03
+
+- Runtime Archive, Health і Maintenance та спільні бібліотеки перенесено до
+  versioned PowerShell-модулів у каталозі `modules`; task-entrypoint-и залишено
+  тонкими стабільними wrappers.
+- `BRAVO.ArchiveHelpers` отримав явний logger callback і більше не залежить від
+  приватного `Write-Log` caller-а; додано runtime smoke-test цієї межі модуля.
+- Програмний Health API гарантовано очищає SFTP/SMB credential state у `finally`.
+- Пошук WinSCP .NET components і перевірку цілісності 7-Zip централізовано у
+  спільних модулях без дубльованих реалізацій у domain runtime.
+- Процедуру оновлення змінено на атомарну заміну всього комплекту разом із
+  каталогом `modules`; опис передачі пароля 7-Zip синхронізовано з реалізацією.
+
 ## 4.2.11 — 2026-08-03
 
 - `BRAVO_SETUP -ValidateOnly` більше не запитує UAC: режим виконує лише

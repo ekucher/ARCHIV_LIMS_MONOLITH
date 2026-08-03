@@ -1,4 +1,7 @@
-﻿# Shared BRAVO helpers. Source this file after BRAVO_COMPATIBILITY.ps1.
+﻿# Shared BRAVO notification helpers with an explicit Compatibility dependency.
+
+$compatibilityManifest = Join-Path (Split-Path $PSScriptRoot -Parent) 'BRAVO.Compatibility\BRAVO.Compatibility.psd1'
+Import-Module -Name $compatibilityManifest -ErrorAction Stop
 
 function Get-HostInformation {
     if ($null -ne $script:CachedHostInformation) {

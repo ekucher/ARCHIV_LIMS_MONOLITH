@@ -1145,8 +1145,3 @@ function Get-BRAVOTaskStateName {
         default { return [string]$State }
     }
 }
-
-Assert-BRAVOPowerShellCompatibility
-[void](Initialize-BRAVOConsoleEncoding -CodePage 65001)
-$script:BRAVOCompatibility = Get-BRAVOCompatibilityInfo
-$script:BRAVOPowerShellUpdate = Get-BRAVOPowerShellUpdateRecommendation

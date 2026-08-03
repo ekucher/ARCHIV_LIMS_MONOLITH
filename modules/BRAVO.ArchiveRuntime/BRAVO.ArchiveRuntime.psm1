@@ -1,6 +1,55 @@
 ﻿# Archive-specific extensions of the shared BRAVO runtime.
-# They serialize WinSCP.com access; generic compatibility and credentials are
-# loaded by BRAVO_ARCHIV.ps1 before this file is dot-sourced.
+# They serialize WinSCP.com access and import their Compatibility dependency.
+$compatibilityManifest = Join-Path (Split-Path $PSScriptRoot -Parent) 'BRAVO.Compatibility\BRAVO.Compatibility.psd1'
+Import-Module -Name $compatibilityManifest -ErrorAction Stop
+
+function Get-BRAVOWinSCPDotNetComponents {
+    [CmdletBinding()]
+    param(
+        [string]$WinSCPAssemblyPath,
+        [string]$WinSCPPath
+    )
+
+    $assemblyCandidates = @()
+    if (-not [string]::IsNullOrWhiteSpace($WinSCPAssemblyPath)) {
+        $assemblyCandidates += $WinSCPAssemblyPath
+    }
+    if (-not [string]::IsNullOrWhiteSpace($WinSCPPath)) {
+        $assemblyCandidates += Join-Path `
+            (Split-Path -Path $WinSCPPath -Parent) `
+            'WinSCPnet.dll'
+    }
+    if (-not [string]::IsNullOrWhiteSpace(${env:ProgramFiles(x86)})) {
+        $assemblyCandidates += Join-Path `
+            ${env:ProgramFiles(x86)} `
+            'WinSCP\WinSCPnet.dll'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:ProgramFiles)) {
+        $assemblyCandidates += Join-Path `
+            $env:ProgramFiles `
+            'WinSCP\WinSCPnet.dll'
+    }
+
+    foreach ($assemblyPath in @($assemblyCandidates | Select-Object -Unique)) {
+        if (-not (Test-Path -LiteralPath $assemblyPath -PathType Leaf)) {
+            continue
+        }
+        $executablePath = Join-Path `
+            (Split-Path -Path $assemblyPath -Parent) `
+            'WinSCP.exe'
+        if (-not (Test-Path -LiteralPath $executablePath -PathType Leaf)) {
+            continue
+        }
+
+        return [pscustomobject]@{
+            AssemblyPath = (Resolve-Path -LiteralPath $assemblyPath).Path
+            ExecutablePath = (Resolve-Path -LiteralPath $executablePath).Path
+        }
+    }
+
+    return $null
+}
+
 function Enter-BRAVOWinSCPProcessLock {
     $lockPath = Join-Path $logPath "BRAVO_WINSCP.lock"
     try {
