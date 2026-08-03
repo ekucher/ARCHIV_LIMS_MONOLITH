@@ -605,6 +605,36 @@ function Show-ItemProgress {
     return
 }
 
+# Нумерація етапів операційної консолі: [1/6], [2/6], ...
+# Загальна кількість рахується на старті за увімкненими компонентами, тому
+# вимкнений SFTP чи NAS не створює порожніх етапів.
+$script:BRAVOStepCurrent = 0
+$script:BRAVOStepTotal = 0
+
+function Initialize-BRAVOArchiveSteps {
+    param([Parameter(Mandatory = $true)][int]$Total)
+
+    $script:BRAVOStepCurrent = 0
+    $script:BRAVOStepTotal = [Math]::Max(1, $Total)
+}
+
+function Write-BRAVOArchiveStep {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [ValidateSet('OK', 'SKIPPED', 'WARNING', 'ERROR')]
+        [string]$Status = 'OK',
+        [string]$Details
+    )
+
+    $script:BRAVOStepCurrent++
+    Write-BRAVOStepResult `
+        -Current $script:BRAVOStepCurrent `
+        -Total $script:BRAVOStepTotal `
+        -Name $Name `
+        -Status $Status `
+        -Details $Details
+}
+
 function Show-RunningProgress {
     param(
         [int]$Id,
@@ -3146,6 +3176,20 @@ function Main {
         $bazaWWWSFTPSyncEnabled
     )
     $operationFailed = $false
+
+    # Етапи консолі: середовище + шляхи + по одному на компонент, далі —
+    # лише ті передавання й перевірки, що справді увімкнені в конфігурації.
+    $healthCheckEnabled = (
+        [bool]$backupMonitoring.Enabled -and [bool]$backupMonitoring.RunAfterBackup
+    )
+    Initialize-BRAVOArchiveSteps -Total (
+        2 +
+        $enabledArchives.Count +
+        $(if ($sftpTransferEnabled) { 1 } else { 0 }) +
+        $(if ($smbArchiveCopyEnabled) { 1 } else { 0 }) +
+        $(if ($healthCheckEnabled) { 1 } else { 0 })
+    )
+
     Show-ScriptProgress -Status "Iнiцiалiзацiя" -PercentComplete 2
     
     Write-Log "==="
@@ -3303,6 +3347,18 @@ function Main {
     
     # Перевірка шляхів
     Write-Log "==="
+    # Етап 1 підсумовує все, що перевірялося до цього: сумісність, пароль,
+    # узгодженість, конфігурацію передавання та очищення старих логів.
+    $environmentValid = (
+        $archiveCredentialValid -and
+        $archiveConsistencyValid -and
+        $sftpConfigurationValid -and
+        $smbConfigurationValid
+    )
+    Write-BRAVOArchiveStep `
+        -Name "Перевірка середовища" `
+        -Status $(if ($environmentValid) { 'OK' } else { 'WARNING' })
+
     Write-Log "=== ПЕРЕВIРКА НЕОБХIДНИХ ШЛЯХIВ ==="
     Show-ScriptProgress -Status "Перевiрка необхiдних шляхiв" -PercentComplete 15
     $requiredPaths = @($baseRequiredPaths)
@@ -3383,7 +3439,11 @@ function Main {
         $bazaWWWSourceAvailable
     )
     Show-PathCheckSummary -CheckedPaths $requiredPaths -AllPathsExist $allPathsExist
-    
+    Write-BRAVOArchiveStep `
+        -Name "Перевірка шляхів" `
+        -Status $(if ($allPathsExist) { 'OK' } else { 'ERROR' }) `
+        -Details $(if ($allPathsExist) { '' } else { 'Частина шляхів недоступна; деталі у журналі.' })
+
     # Синхронізація BAZA
     if ($bazaLocalSyncEnabled -and $bazaSourceAvailable -and $bazaDestinationAvailable) {
         Show-ScriptProgress -Status "Локальна синхронiзацiя BAZA" -PercentComplete 20
@@ -3420,6 +3480,7 @@ function Main {
         $archiveName = $archive.NameTemplate -f $archivePrefix, $now
         Write-Log "==="
         Write-Log "=== АРХIВАЦIЯ $($archive.Type) ==="
+        $archiveStepStarted = Get-Date
         $success = $false
         $vssSnapshot = $null
         try {
@@ -3462,6 +3523,31 @@ function Main {
                 HashSuccess = $false
             }
         }
+
+        # Розмір і тривалість показуємо в консолі коротко; повні шляхи,
+        # аргументи 7-Zip і його вивід лишаються в журналі.
+        $archiveStepDuration = (Get-Date) - $archiveStepStarted
+        $archiveStepDetails = $archiveStepDuration.ToString($durationFormat)
+        if ($success) {
+            $createdArchivePath = Join-Path $archive.Destination $archiveName
+            if (Test-Path -LiteralPath $createdArchivePath -PathType Leaf) {
+                $createdArchiveSize = (Get-Item -LiteralPath $createdArchivePath).Length
+                $archiveStepDetails = "{0} / {1}" -f
+                    (Format-BRAVOFileSize -Bytes $createdArchiveSize),
+                    $archiveStepDuration.ToString($durationFormat)
+            }
+        }
+        $archiveStepStatus = if (-not $success) {
+            'ERROR'
+        } elseif (-not $hashSuccess) {
+            'WARNING'
+        } else {
+            'OK'
+        }
+        Write-BRAVOArchiveStep `
+            -Name ("Архівація {0}" -f $archive.Type) `
+            -Status $archiveStepStatus `
+            -Details $archiveStepDetails
     }
     Show-ItemProgress -Id 10 -Activity "BRAVO_ARCHIV — архiвацiя компонентiв" -Completed
     
@@ -3521,6 +3607,10 @@ function Main {
     }
     
     # Передача на SFTP
+    # Статус етапу визначаємо за приростом кількості ERROR у журналі: прапорець
+    # $operationFailed накопичується з попередніх фаз і показав би збій навіть
+    # тоді, коли саме передавання пройшло успішно.
+    $errorsBeforeSftp = (Get-BRAVOLogStatistics).Errors
     if ($sftpTransferEnabled) {
         Show-ScriptProgress -Status "Перевiрка з'єднання з SFTP" -PercentComplete 78
         if (-not $sftpConfigurationValid) {
@@ -3640,8 +3730,16 @@ function Main {
     } else {
         Write-Log "Усi компоненти передачi на SFTP вимкнено в конфiгурацiї" -Level "INFO"
     }
+    if ($sftpTransferEnabled) {
+        $sftpStepFailed = (Get-BRAVOLogStatistics).Errors -gt $errorsBeforeSftp
+        Write-BRAVOArchiveStep `
+            -Name "Передача архівів на SFTP" `
+            -Status $(if ($sftpStepFailed) { 'ERROR' } else { 'OK' }) `
+            -Details $(if ($sftpStepFailed) { 'Деталі записано у журнал.' } else { '' })
+    }
 
     # Копіювання успішно створених архівів та hash-файлів на NAS/SMB
+    $errorsBeforeSmb = (Get-BRAVOLogStatistics).Errors
     if ($smbArchiveCopyEnabled) {
         Show-ScriptProgress -Status "Копіювання архівів на NAS/SMB" -PercentComplete 92
         Write-Log "==="
@@ -3666,7 +3764,14 @@ function Main {
     } else {
         Write-Log "Копіювання архівів на NAS/SMB вимкнено в конфігурації" -Level "INFO"
     }
-    
+    if ($smbArchiveCopyEnabled) {
+        $smbStepFailed = (Get-BRAVOLogStatistics).Errors -gt $errorsBeforeSmb
+        Write-BRAVOArchiveStep `
+            -Name "Копіювання архівів на NAS/SMB" `
+            -Status $(if ($smbStepFailed) { 'ERROR' } else { 'OK' }) `
+            -Details $(if ($smbStepFailed) { 'Деталі записано у журнал.' } else { '' })
+    }
+
     # Завершення
     $scriptEndTime = Get-Date
     $duration = $scriptEndTime - $scriptStartTime
@@ -3690,7 +3795,8 @@ function Main {
     Write-Log "Створено архiвiв: $successCount з $totalCount" -NoTimestamp
     Write-Log "Лог-файл: $logFile" -NoTimestamp
 
-    if ($backupMonitoring.Enabled -and $backupMonitoring.RunAfterBackup) {
+    $errorsBeforeHealth = (Get-BRAVOLogStatistics).Errors
+    if ($healthCheckEnabled) {
         Show-ScriptProgress -Status "Перевiрка стану резервних копiй" -PercentComplete 96
         Write-Log "==="
         Write-Log "=== ПЕРЕВIРКА СТАНУ РЕЗЕРВНИХ КОПIЙ ==="
@@ -3738,12 +3844,44 @@ function Main {
         }
     }
 
+    if ($healthCheckEnabled) {
+        $healthStepFailed = (Get-BRAVOLogStatistics).Errors -gt $errorsBeforeHealth
+        Write-BRAVOArchiveStep `
+            -Name "Перевірка резервних копій" `
+            -Status $(if ($healthStepFailed) { 'ERROR' } else { 'OK' }) `
+            -Details $(if ($healthStepFailed) { 'Деталі записано у журнал.' } else { '' })
+    }
+
     Write-Log "Результат: $(if ($operationFailed) {'ПОМИЛКА'} else {'УСПIШНО'})" -NoTimestamp
     Write-Log "==="
     if (-not $operationFailed) {
         Write-BRAVOBackupExecutionState
     }
     Show-ScriptProgress -Status "Завершено" -PercentComplete 100
+    Complete-BRAVOProgress
+
+    # Фінальний підсумок операційної консолі.
+    $logStatistics = Get-BRAVOLogStatistics
+    $summaryResult = if ($operationFailed) {
+        if ($successCount -gt 0) { 'ЧАСТКОВО' } else { 'ПОМИЛКА' }
+    } else {
+        'УСПІШНО'
+    }
+    $summaryMetrics = New-Object System.Collections.Specialized.OrderedDictionary
+    $summaryMetrics.Add('Архівів створено', ("{0} з {1}" -f $successCount, $totalCount))
+    if ($sftpTransferEnabled) {
+        $summaryMetrics.Add('Передача на SFTP', $(if ($sftpStepFailed) { 'з помилками' } else { 'виконано' }))
+    }
+    if ($smbArchiveCopyEnabled) {
+        $summaryMetrics.Add('Копіювання на NAS/SMB', $(if ($smbStepFailed) { 'з помилками' } else { 'виконано' }))
+    }
+    $summaryMetrics.Add('Попереджень', [string]$logStatistics.Warnings)
+    $summaryMetrics.Add('Помилок', [string]$logStatistics.Errors)
+    Write-BRAVOSummary `
+        -Result $summaryResult `
+        -Duration $duration `
+        -Metrics $summaryMetrics `
+        -LogFile $script:logFile
     if ($operationFailed) {
         $script:processExitCode = 1
     }
