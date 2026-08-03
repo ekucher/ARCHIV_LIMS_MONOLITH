@@ -3129,7 +3129,7 @@ function Main {
     $configuredConsoleLevel = if ($null -ne $consoleSettings.ConsoleLevel) {
         [string]$consoleSettings.ConsoleLevel
     } else {
-        'SUCCESS'
+        'WARNING'
     }
     $configuredStepWidth = if ($null -ne $consoleSettings.StepWidth) {
         [int]$consoleSettings.StepWidth
@@ -3215,6 +3215,20 @@ function Main {
         Write-Log "Лог-файл: $logFile" -NoTimestamp
         $script:processExitCode = if ($manualSyncSuccess) { 0 } else { 1 }
         Show-ScriptProgress -Status "Завершено" -PercentComplete 100
+        Complete-BRAVOProgress
+
+        # Ручна синхронізація завершується до етапів, тому підсумок тут
+        # окремий: інакше в консолі не лишилося б жодного зворотного звʼязку.
+        $manualSyncStatistics = Get-BRAVOLogStatistics
+        $manualSyncMetrics = New-Object System.Collections.Specialized.OrderedDictionary
+        $manualSyncMetrics.Add('Операція', 'Ручна синхронізація BAZA_APP / BAZA_WWW')
+        $manualSyncMetrics.Add('Попереджень', [string]$manualSyncStatistics.Warnings)
+        $manualSyncMetrics.Add('Помилок', [string]$manualSyncStatistics.Errors)
+        Write-BRAVOSummary `
+            -Result $(if ($manualSyncSuccess) { 'УСПІШНО' } else { 'ПОМИЛКА' }) `
+            -Duration $manualSyncDuration `
+            -Metrics $manualSyncMetrics `
+            -LogFile $script:logFile
         return
     }
     

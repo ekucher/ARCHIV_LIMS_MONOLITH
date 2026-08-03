@@ -10,7 +10,7 @@
 # стан модуля ініціалізується явно.
 $script:BRAVOLogFile = $null
 $script:BRAVOLogFileLevel = 'INFO'
-$script:BRAVOLogConsoleLevel = 'SUCCESS'
+$script:BRAVOLogConsoleLevel = 'WARNING'
 $script:BRAVOLogActive = $false
 $script:BRAVOLogWarningCount = 0
 $script:BRAVOLogErrorCount = 0
@@ -76,7 +76,7 @@ function Initialize-BRAVOLog {
 
         [string]$FileLevel = 'INFO',
 
-        [string]$ConsoleLevel = 'SUCCESS'
+        [string]$ConsoleLevel = 'WARNING'
     )
 
     $logDirectory = Split-Path -Path $LogFile -Parent
@@ -130,10 +130,14 @@ function Write-BRAVOLog {
         $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff'
         $line = '{0} [{1,-7}] [{2}] {3}' -f $timestamp, $Level, $Component, $safeMessage
         try {
+            # UTF-8 із BOM — конвенція журналів проєкту ($logFileEncoding = "UTF8").
+            # Без BOM Windows PowerShell 5.1, Notepad і частина засобів перегляду
+            # читають файл як ANSI і показують кирилицю кракозябрами.
+            # AppendAllText пише преамбулу лише під час створення файлу.
             [System.IO.File]::AppendAllText(
                 $script:BRAVOLogFile,
                 $line + [Environment]::NewLine,
-                (New-Object System.Text.UTF8Encoding($false))
+                (New-Object System.Text.UTF8Encoding($true))
             )
         } catch {
             Write-Warning "Не вдалося записати журнал: $($_.Exception.Message)"
