@@ -25,6 +25,10 @@ if (-not (Test-Path -LiteralPath $compatibilityModulePath -PathType Leaf)) {
 try {
     $rollbackRecords = New-Object System.Collections.ArrayList
     $installationCommitted = $false
+    # Обробник помилок читає $taskFolder, а присвоюється воно значно нижче.
+    # Якщо збій стається раніше (наприклад, під час hardening ACL), StrictMode
+    # кидає другу помилку прямо в catch і ховає справжню причину.
+    $taskFolder = $null
     Import-Module -Name $compatibilityModulePath -ErrorAction Stop
     Import-Module -Name $systemModulePath -ErrorAction Stop
     Assert-BRAVOPowerShellCompatibility
@@ -81,6 +85,14 @@ function Set-BRAVOProtectedRuntimeAcl {
             ForEach-Object { $_.FullName }
     )
     foreach ($runtimeItem in $runtimeItems) {
+        # Прапорці успадкування допустимі лише для каталогів. Для файлу
+        # FileSystemAccessRule кидає "No flags can be set", через що весь
+        # hardening ACL зривався на першому ж дочірньому файлі.
+        $itemInheritance = if ([System.IO.Directory]::Exists($runtimeItem)) {
+            $inheritance
+        } else {
+            [Security.AccessControl.InheritanceFlags]::None
+        }
         $acl = Get-Acl -LiteralPath $runtimeItem -ErrorAction Stop
         $acl.SetAccessRuleProtection($true, $false)
         $acl.SetOwner($administrators)
@@ -90,21 +102,21 @@ function Set-BRAVOProtectedRuntimeAcl {
         $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
             $administrators,
             [Security.AccessControl.FileSystemRights]::FullControl,
-            $inheritance,
+            $itemInheritance,
             $propagation,
             $allow
         )))
         $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
             $system,
             [Security.AccessControl.FileSystemRights]::FullControl,
-            $inheritance,
+            $itemInheritance,
             $propagation,
             $allow
         )))
         $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
             $users,
             [Security.AccessControl.FileSystemRights]::ReadAndExecute,
-            $inheritance,
+            $itemInheritance,
             $propagation,
             $allow
         )))

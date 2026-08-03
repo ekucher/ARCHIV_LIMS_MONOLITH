@@ -780,6 +780,62 @@ try {
         ) `
         -Name "Scheduler/ProtectedRuntimeRecursiveAcl" `
         -Failure "ACL hardening має застосовуватися до всіх наявних дочірніх файлів runtime"
+    Test-BRAVOCondition `
+        -Condition (
+            $taskInstallScriptText.Contains('[System.IO.Directory]::Exists($runtimeItem)') -and
+            $taskInstallScriptText.Contains('[Security.AccessControl.InheritanceFlags]::None')
+        ) `
+        -Name "Scheduler/AclInheritanceOnlyForContainers" `
+        -Failure "прапорці успадкування ACL можна ставити лише каталогам, інакше файл дає 'No flags can be set'"
+
+    # Функціональна регресія: попередня перевірка вище була суто текстовою й
+    # проходила навіть тоді, коли hardening ACL падав на бойовому сервері.
+    # Тут правило справді будується для каталогу та для файлу.
+    # AddAccessRule працює над копією ACL у пам'яті й не потребує прав адміністратора.
+    $aclProbeRoot = Join-Path `
+        -Path ([IO.Path]::GetTempPath()) `
+        -ChildPath ("BRAVO_ACL_PROBE_{0}" -f [guid]::NewGuid().ToString("N"))
+    try {
+        [void][IO.Directory]::CreateDirectory($aclProbeRoot)
+        $aclProbeFile = Join-Path $aclProbeRoot "probe.ps1"
+        [IO.File]::WriteAllText($aclProbeFile, "# probe", (New-Object Text.UTF8Encoding($false)))
+        $probeInheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+            [Security.AccessControl.InheritanceFlags]::ObjectInherit
+        $probeSid = New-Object Security.Principal.SecurityIdentifier("S-1-5-18")
+        $aclProbeFailure = $null
+        foreach ($probeItem in @($aclProbeRoot, $aclProbeFile)) {
+            $probeItemInheritance = if ([IO.Directory]::Exists($probeItem)) {
+                $probeInheritance
+            } else {
+                [Security.AccessControl.InheritanceFlags]::None
+            }
+            try {
+                $probeAcl = Get-Acl -LiteralPath $probeItem -ErrorAction Stop
+                $probeAcl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
+                    $probeSid,
+                    [Security.AccessControl.FileSystemRights]::FullControl,
+                    $probeItemInheritance,
+                    [Security.AccessControl.PropagationFlags]::None,
+                    [Security.AccessControl.AccessControlType]::Allow
+                )))
+            } catch {
+                $aclProbeFailure = "$probeItem — $($_.Exception.Message)"
+            }
+        }
+        Test-BRAVOCondition `
+            -Condition ($null -eq $aclProbeFailure) `
+            -Name "Scheduler/AclRuleAppliesToFilesAndFolders" `
+            -Failure "правило ACL не будується: $aclProbeFailure"
+    } finally {
+        if (Test-Path -LiteralPath $aclProbeRoot -PathType Container) {
+            [IO.Directory]::Delete($aclProbeRoot, $true)
+        }
+    }
+
+    Test-BRAVOCondition `
+        -Condition ($taskInstallScriptText -match '(?s)\$installationCommitted\s*=\s*\$false.*?\$taskFolder\s*=\s*\$null') `
+        -Name "Scheduler/RollbackStateInitialized" `
+        -Failure 'обробник помилок читає $taskFolder, тому його треба ініціалізувати до основного try'
     foreach ($utility in @(
             [pscustomobject]@{ Name = "BRAVO_SETUP.ps1"; Path = "BRAVO_SETUP.ps1" },
             [pscustomobject]@{ Name = "BRAVO_DRY_RUN.ps1"; Path = "BRAVO_DRY_RUN.ps1" },
