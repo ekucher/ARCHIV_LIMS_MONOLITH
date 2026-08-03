@@ -12,6 +12,15 @@ $script:BRAVOConsoleStepWidth = 58
 $script:BRAVOConsoleStepOpen = $false
 $script:BRAVOConsoleEnabled = $true
 
+# Єдиний індикатор прогресу. Раніше паралельно малювались три Write-Progress
+# (загальний, покомпонентний і 7-Zip), причому перші два дублювали один одного.
+# Тут завжди один Id без ParentId, тому вкладених смуг не виникає.
+$script:BRAVOProgressId = 1
+$script:BRAVOProgressActivity = 'BRAVO'
+$script:BRAVOProgressPhase = $null
+$script:BRAVOProgressPercent = 0
+$script:BRAVOProgressEnabled = $true
+
 $script:BRAVOConsoleStatusColors = @{
     RUNNING = 'Cyan'
     OK      = 'Green'
@@ -32,6 +41,72 @@ function Initialize-BRAVOConsole {
     $script:BRAVOConsoleStepWidth = $StepWidth
     $script:BRAVOConsoleStepOpen = $false
     $script:BRAVOConsoleEnabled = $Enabled
+}
+
+function Initialize-BRAVOProgress {
+    [CmdletBinding()]
+    param(
+        [string]$Activity = 'BRAVO',
+        [bool]$Enabled = $true
+    )
+
+    $script:BRAVOProgressActivity = $Activity
+    $script:BRAVOProgressEnabled = $Enabled
+    $script:BRAVOProgressPhase = $null
+    $script:BRAVOProgressPercent = 0
+}
+
+# Фаза — це великий етап скрипта. Вона лишається на смузі, поки конкретна
+# операція (7-Zip, robocopy, WinSCP) не додасть до неї свій живий деталь.
+function Write-BRAVOProgressPhase {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Phase,
+        [int]$PercentComplete = -1
+    )
+
+    $script:BRAVOProgressPhase = $Phase
+    if ($PercentComplete -ge 0) {
+        $script:BRAVOProgressPercent = [Math]::Max(0, [Math]::Min(100, $PercentComplete))
+    }
+    Write-BRAVOProgressDetail -Detail ''
+}
+
+function Write-BRAVOProgressDetail {
+    [CmdletBinding()]
+    param([AllowEmptyString()][string]$Detail)
+
+    if (-not $script:BRAVOProgressEnabled) {
+        return
+    }
+
+    $status = if ([string]::IsNullOrWhiteSpace($Detail)) {
+        [string]$script:BRAVOProgressPhase
+    } elseif ([string]::IsNullOrWhiteSpace($script:BRAVOProgressPhase)) {
+        $Detail
+    } else {
+        "{0} — {1}" -f $script:BRAVOProgressPhase, $Detail
+    }
+    if ([string]::IsNullOrWhiteSpace($status)) {
+        $status = ' '
+    }
+
+    Write-Progress `
+        -Id $script:BRAVOProgressId `
+        -Activity $script:BRAVOProgressActivity `
+        -Status $status `
+        -PercentComplete $script:BRAVOProgressPercent
+}
+
+function Complete-BRAVOProgress {
+    [CmdletBinding()]
+    param()
+
+    if (-not $script:BRAVOProgressEnabled) {
+        return
+    }
+    $script:BRAVOProgressPhase = $null
+    Write-Progress -Id $script:BRAVOProgressId -Activity $script:BRAVOProgressActivity -Completed
 }
 
 function Format-BRAVOFileSize {
@@ -234,6 +309,10 @@ function Write-BRAVOSummary {
 
 Export-ModuleMember -Function @(
     'Initialize-BRAVOConsole',
+    'Initialize-BRAVOProgress',
+    'Write-BRAVOProgressPhase',
+    'Write-BRAVOProgressDetail',
+    'Complete-BRAVOProgress',
     'Format-BRAVOFileSize',
     'Write-BRAVOHeader',
     'Write-BRAVOStep',

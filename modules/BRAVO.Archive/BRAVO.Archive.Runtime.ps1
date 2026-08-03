@@ -567,6 +567,9 @@ function Write-Log {
     Write-BRAVOLog -Message $Message -Level $normalizedLevel -Component $component
 }
 
+# Усі три історичні хелпери прогресу тепер малюють одну смугу
+# (BRAVO.Console). Раніше загальна й покомпонентна смуги дублювали одна одну,
+# а індикатор 7-Zip додавав третій вкладений рівень.
 function Show-ScriptProgress {
     param(
         [string]$Status,
@@ -579,14 +582,16 @@ function Show-ScriptProgress {
     }
 
     if ($Completed) {
-        Write-Progress -Id 1 -Activity $progressSettings.Activity -Completed
+        Complete-BRAVOProgress
         return
     }
 
-    $safePercent = [Math]::Max(0, [Math]::Min(100, $PercentComplete))
-    Write-Progress -Id 1 -Activity $progressSettings.Activity -Status $Status -PercentComplete $safePercent
+    Write-BRAVOProgressPhase -Phase $Status -PercentComplete $PercentComplete
 }
 
+# Покомпонентна смуга повністю дублювала загальну ("MODEL (1 з 3)" в обох),
+# тому вона більше нічого не малює. Сигнатуру збережено, щоб не правити
+# десятки викликів у бізнес-логіці.
 function Show-ItemProgress {
     param(
         [int]$Id,
@@ -597,29 +602,7 @@ function Show-ItemProgress {
         [switch]$Completed
     )
 
-    if (-not $progressSettings.Enabled) {
-        return
-    }
-
-    if ($Completed) {
-        Write-Progress -Id $Id -Activity $Activity -Completed
-        return
-    }
-
-    $safeTotal = [Math]::Max(1, $Total)
-    $safeCurrent = [Math]::Max(0, [Math]::Min($safeTotal, $Current))
-    $percent = [Math]::Floor(($safeCurrent * 100.0) / $safeTotal)
-    $progressArguments = @{
-        Id = $Id
-        Activity = $Activity
-        Status = "$Item ($safeCurrent з $safeTotal)"
-        PercentComplete = $percent
-    }
-    if ($progressSettings.ShowOverallProgress) {
-        $progressArguments.ParentId = 1
-    }
-
-    Write-Progress @progressArguments
+    return
 }
 
 function Show-RunningProgress {
@@ -635,27 +618,14 @@ function Show-RunningProgress {
         return
     }
 
+    # Деталь операції дописується до поточної фази на тій самій смузі, тому
+    # завершення операції лише прибирає деталь, а не гасить увесь індикатор.
     if ($Completed) {
-        Write-Progress -Id $Id -Activity $Activity -Completed
+        Write-BRAVOProgressDetail -Detail ''
         return
     }
 
-    $safePercent = if ($PercentComplete -lt 0) {
-        -1
-    } else {
-        [Math]::Max(0, [Math]::Min(100, $PercentComplete))
-    }
-    $progressArguments = @{
-        Id = $Id
-        Activity = $Activity
-        Status = $Status
-        PercentComplete = $safePercent
-    }
-    if ($progressSettings.ShowOverallProgress) {
-        $progressArguments.ParentId = 1
-    }
-
-    Write-Progress @progressArguments
+    Write-BRAVOProgressDetail -Detail $Status
 }
 
 function Wait-ForManualExit {
@@ -3141,6 +3111,9 @@ function Main {
         -FileLevel $configuredFileLevel `
         -ConsoleLevel $configuredConsoleLevel)
     Initialize-BRAVOConsole -StepWidth $configuredStepWidth
+    Initialize-BRAVOProgress `
+        -Activity ([string]$progressSettings.Activity) `
+        -Enabled ([bool]$progressSettings.Enabled)
     Write-BRAVOHeader `
         -Title ("BRAVO ARCHIVE {0}" -f $ScriptVersion) `
         -Institution ([string]$bravoSettings.InstitutionName) `
