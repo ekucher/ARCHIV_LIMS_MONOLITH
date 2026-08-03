@@ -279,7 +279,8 @@ if ($credentialHelperLoaded -and $sftpCredentialRequired) {
         }
 
         $script:Login = ([string]$storedSftpLogin).Trim()
-        $configuredSftpHost = [string]$sftpHost
+        $legacySftpHostVariable = Get-Variable -Name 'sftpHost' -Scope Global -ErrorAction SilentlyContinue
+        $configuredSftpHost = if ($null -ne $legacySftpHostVariable) { [string]$legacySftpHostVariable.Value } else { $null }
         $script:resolvedSftpHost = Resolve-BRAVOSftpHostName `
             -UserName $script:Login `
             -HostTemplate ([string]$sftpHostTemplate) `
@@ -1104,6 +1105,43 @@ function Get-BRAVOVSSReturnCodeDescription {
     return "невідома помилка VSS"
 }
 
+function New-BRAVOVSSSnapshotLink {
+    param([Parameter(Mandatory = $true)][string]$DeviceObject)
+
+    # .NET/PowerShell (Test-Path, Get-ChildItem, 7-Zip тощо) не вміють
+    # напряму читати "\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN\" —
+    # це не звичайний шлях файлової системи. Каталогове симлінк-посилання
+    # (той самий прийом, що й diskshadow.exe EXPOSE) робить вміст знімка
+    # доступним через звичайний шлях.
+    $linkPath = Join-Path ([System.IO.Path]::GetTempPath()) ("BRAVO_VSS_" + [guid]::NewGuid().ToString("N"))
+    $target = $DeviceObject.TrimEnd("\", "/") + "\"
+
+    $mklinkOutput = & cmd.exe /c mklink /d $linkPath $target 2>&1
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $linkPath)) {
+        throw "Не вдалося створити символiчне посилання на VSS-знiмок ($target): $mklinkOutput"
+    }
+    return $linkPath
+}
+
+function Remove-BRAVOVSSSnapshotLink {
+    param([string]$LinkPath)
+
+    if ([string]::IsNullOrWhiteSpace($LinkPath)) {
+        return
+    }
+    # Directory.Delete(recursive=$false) знімає лише сам reparse-point і не
+    # торкається вмісту знімка. Перевірка через Test-Path тут не годиться:
+    # для висячого посилання (знімок уже зник) вона дає $false, і сміттєвий
+    # каталог залишався б у %TEMP% назавжди.
+    try {
+        [System.IO.Directory]::Delete($LinkPath, $false)
+    } catch [System.IO.DirectoryNotFoundException] {
+        # Посилання вже прибрано — нічого робити.
+    } catch {
+        Write-Log "Не вдалося прибрати символiчне посилання на VSS-знiмок: $LinkPath ($($_.Exception.Message))" -Level "WARNING"
+    }
+}
+
 function New-BRAVOVSSSnapshot {
     param([Parameter(Mandatory = $true)][string]$SourcePath)
 
@@ -1120,6 +1158,7 @@ function New-BRAVOVSSSnapshot {
     }
 
     $shadowId = $null
+    $snapshotLinkPath = $null
     try {
         Write-Log "Створення VSS-знімка тому $volumeRoot для узгодженої архівації" -Level "INFO"
         $shadowClass = [wmiclass]"\\.\root\cimv2:Win32_ShadowCopy"
@@ -1150,18 +1189,27 @@ function New-BRAVOVSSSnapshot {
             throw "створений VSS-знімок $shadowId не знайдено"
         }
 
+        $snapshotLinkPath = New-BRAVOVSSSnapshotLink -DeviceObject ([string]$shadow.DeviceObject)
         $snapshotSourcePath = Get-BRAVOVSSSnapshotSourcePath `
             -SourcePath $SourcePath `
-            -DeviceObject ([string]$shadow.DeviceObject)
+            -DeviceObject $snapshotLinkPath
         Write-Log "VSS-знімок створено: $shadowId" -Level "SUCCESS"
         return [pscustomobject]@{
             Id = $shadowId
             VolumeRoot = $volumeRoot
             DeviceObject = [string]$shadow.DeviceObject
+            LinkPath = $snapshotLinkPath
             SourcePath = $snapshotSourcePath
             WmiObject = $shadow
         }
     } catch {
+        if (-not [string]::IsNullOrWhiteSpace($snapshotLinkPath)) {
+            try {
+                Remove-BRAVOVSSSnapshotLink -LinkPath $snapshotLinkPath
+            } catch {
+                # Основна помилка створення VSS важливіша за помилку best-effort cleanup.
+            }
+        }
         if (-not [string]::IsNullOrWhiteSpace($shadowId)) {
             try {
                 $escapedShadowId = $shadowId.Replace("'", "''")
@@ -1184,6 +1232,12 @@ function New-BRAVOVSSSnapshot {
 
 function Remove-BRAVOVSSSnapshot {
     param([Parameter(Mandatory = $true)][object]$Snapshot)
+
+    try {
+        Remove-BRAVOVSSSnapshotLink -LinkPath $Snapshot.LinkPath
+    } catch {
+        Write-Log "Не вдалося прибрати символiчне посилання на VSS-знiмок $($Snapshot.Id): $($_.Exception.Message)" -Level "WARNING"
+    }
 
     try {
         $deleteResult = $Snapshot.WmiObject.Delete()
@@ -3427,13 +3481,17 @@ $script:logFile = Join-Path $logPath ($logFileNameTemplate -f $logTimestamp)
     # Видалення старих архівів: розділ логу з'являється лише перед фактичним видаленням.
     if ($enableArchiveDeletion) {
         $effectiveArchiveRetentionDays = 183
+        # archiveVersions є лише у старих конфігах, тому читаємо його безпечно:
+        # пряме звернення до неоголошеної змінної переривало б цю гілку.
+        $legacyArchiveVersionsVariable = Get-Variable -Name 'archiveVersions' -Scope Global -ErrorAction SilentlyContinue
+        $legacyArchiveVersions = if ($null -ne $legacyArchiveVersionsVariable) { $legacyArchiveVersionsVariable.Value } else { $null }
         try {
             if ($null -ne $archiveRetentionDays -and [int]$archiveRetentionDays -gt 0) {
                 $effectiveArchiveRetentionDays = [int]$archiveRetentionDays
-            } elseif ($null -ne $archiveVersions -and [int]$archiveVersions -gt 0) {
+            } elseif ($null -ne $legacyArchiveVersions -and [int]$legacyArchiveVersions -gt 0) {
                 # Сумісність із конфігами до archiveRetentionDays. Значення
                 # archiveVersions використовуємо як строк у днях лише під час міграції.
-                $effectiveArchiveRetentionDays = [int]$archiveVersions
+                $effectiveArchiveRetentionDays = [int]$legacyArchiveVersions
                 Write-Log "Застарілий archiveVersions=$effectiveArchiveRetentionDays застосовано як строк зберігання у днях; перенесіть значення до archiveRetentionDays" -Level "WARNING"
             } else {
                 Write-Log "archiveRetentionDays відсутній або некоректний; для безпеки застосовано $effectiveArchiveRetentionDays днів" -Level "WARNING"

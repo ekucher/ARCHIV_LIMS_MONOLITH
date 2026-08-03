@@ -340,11 +340,11 @@ function Resolve-SftpHost {
     if (-not [string]::IsNullOrWhiteSpace([string]$sftpHostTemplate)) {
         return ([string]$sftpHostTemplate) -f $Login
     }
-    if (-not [string]::IsNullOrWhiteSpace([string]$sftpHostName)) {
-        return [string]$sftpHostName
-    }
-    if (-not [string]::IsNullOrWhiteSpace([string]$sftpHost)) {
-        return [string]$sftpHost
+    foreach ($legacyVariableName in @('sftpHostName', 'sftpHost')) {
+        $legacyVariable = Get-Variable -Name $legacyVariableName -Scope Global -ErrorAction SilentlyContinue
+        if ($null -ne $legacyVariable -and -not [string]::IsNullOrWhiteSpace([string]$legacyVariable.Value)) {
+            return [string]$legacyVariable.Value
+        }
     }
     throw "SFTP host не налаштовано"
 }
@@ -788,7 +788,14 @@ try {
         $smbRoot = if (-not [string]::IsNullOrWhiteSpace([string]$smbSettings.RootPath)) {
             [string]$smbSettings.RootPath
         } else {
-            [string]$networkCopyConfig.NetworkPath
+            # Сумісність зі старими конфігами, де шлях лежав у networkCopyConfig.
+            # Змінної може не бути взагалі, тому читаємо її безпечно.
+            $legacyNetworkCopy = Get-Variable -Name 'networkCopyConfig' -Scope Global -ErrorAction SilentlyContinue
+            if ($null -ne $legacyNetworkCopy -and $null -ne $legacyNetworkCopy.Value) {
+                [string]$legacyNetworkCopy.Value.NetworkPath
+            } else {
+                ""
+            }
         }
         Add-DryRunResult PLAN "SMB" "Копіювання" "копіювання до '$smbRoot' не запускалося"
         if ($TestAccess -and $credentialValues.SMBLogin -and $credentialValues.SMBPassword) {

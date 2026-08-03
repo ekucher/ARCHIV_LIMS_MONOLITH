@@ -207,7 +207,8 @@ if ($sftpCredentialRequired -and $credentialHelperLoaded) {
             throw "запис Credential Manager '$sftpPasswordTarget' не знайдено або він порожній для $([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
         }
         $script:Login = ([string]$storedSftpLogin).Trim()
-        $configuredSftpHost = [string]$sftpHost
+        $legacySftpHostVariable = Get-Variable -Name 'sftpHost' -Scope Global -ErrorAction SilentlyContinue
+        $configuredSftpHost = if ($null -ne $legacySftpHostVariable) { [string]$legacySftpHostVariable.Value } else { $null }
         $script:resolvedSftpHost = Resolve-BRAVOSftpHostName `
             -UserName $script:Login `
             -HostTemplate ([string]$sftpHostTemplate) `

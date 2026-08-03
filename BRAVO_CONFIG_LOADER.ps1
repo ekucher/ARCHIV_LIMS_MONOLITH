@@ -26,7 +26,7 @@ function Get-BravoVersionMetadata {
     }
 
     try {
-        $rawVersion = Get-Content -LiteralPath $versionPath -Raw -ErrorAction Stop
+        $rawVersion = Get-Content -LiteralPath $versionPath -Raw -Encoding UTF8 -ErrorAction Stop
         $versionData = $rawVersion | ConvertFrom-Json -ErrorAction Stop
     }
     catch {
@@ -87,6 +87,15 @@ function Test-BravoLegacyConfiguration {
 
     if (-not (Test-Path -LiteralPath $ConfigRoot -PathType Container)) {
         throw "Не знайдено каталог конфігурації: $ConfigRoot"
+    }
+
+    $rootPrefix = $ConfigRoot.TrimEnd(
+        [System.IO.Path]::DirectorySeparatorChar,
+        [System.IO.Path]::AltDirectorySeparatorChar
+    ) + [System.IO.Path]::DirectorySeparatorChar
+
+    if (-not $ConfigPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Файл конфігурації повинен знаходитися в каталозі конфігурації '$ConfigRoot': $ConfigPath"
     }
 }
 
@@ -160,6 +169,7 @@ function Import-BravoConfiguration {
         $legacyConfigText = Get-Content `
             -LiteralPath $resolvedConfigPath `
             -Raw `
+            -Encoding UTF8 `
             -ErrorAction Stop
 
         $legacyConfigScript = [scriptblock]::Create($legacyConfigText)
@@ -188,6 +198,14 @@ function Import-BravoConfiguration {
                 [string]$versionMetadata.PackageVersion,
                 [System.StringComparison]::OrdinalIgnoreCase
             )
+
+            if (-not $versionMatches) {
+                Write-Warning (
+                    "VERSION.json ('$($versionMetadata.PackageVersion)') і BRAVO.config " +
+                    "('$legacyScriptVersion') містять різні версії пакета. " +
+                    'Це тимчасово допустимо, але вказує на розсинхронізовану конфігурацію.'
+                )
+            }
         }
     }
 
