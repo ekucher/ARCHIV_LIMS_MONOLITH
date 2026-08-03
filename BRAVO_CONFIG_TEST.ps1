@@ -57,7 +57,8 @@ Write-Host ('[INFO] LIMSRoot: {0}' -f $validation.LIMSRoot)
 Write-Host ('[INFO] ArchiveRoot: {0}' -f $validation.ArchiveRoot)
 Write-Host ('[INFO] BackupRoot: {0}' -f $validation.BackupRoot)
 
-if (-not $validation.PackageVersionMatchesLegacyConfig) {
+if (-not [string]::IsNullOrWhiteSpace([string]$validation.LegacyScriptVersion) -and
+    -not $validation.PackageVersionMatchesLegacyConfig) {
     Write-Warning (
         'Transitional state: VERSION.json and BRAVO.config have different versions. ' +
         'This is allowed only until loader integration into production scripts is complete.'

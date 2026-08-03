@@ -515,9 +515,14 @@ if (-not (Test-Path -Path $ConfigPath -PathType Leaf)) {
 $resolvedConfigPath = (Resolve-Path -Path $ConfigPath).Path
 try {
     $configRoot = Split-Path -Path $resolvedConfigPath -Parent
-    $configText = [System.IO.File]::ReadAllText($resolvedConfigPath, [System.Text.Encoding]::UTF8)
-    $configScript = [scriptblock]::Create($configText)
-    & $configScript -ConfigRoot $configRoot
+    $configurationLoaderPath = Join-Path $configRoot 'BRAVO_CONFIG_LOADER.ps1'
+    if (-not (Test-Path -LiteralPath $configurationLoaderPath -PathType Leaf)) {
+        throw "Configuration loader not found: $configurationLoaderPath"
+    }
+    . $configurationLoaderPath
+    Import-BravoConfiguration `
+        -ConfigRoot $configRoot `
+        -ConfigPath $resolvedConfigPath
 
     $bazaSftpEnabled = $false
     if ($null -ne $componentSettings -and

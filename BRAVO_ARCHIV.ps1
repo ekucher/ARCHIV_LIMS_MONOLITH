@@ -1715,8 +1715,8 @@ try {
     . $loaderPath
 
     Import-BravoConfiguration `
-        -ConfigPath $ConfigPath `
-        -ScriptRoot $bravoScriptDirectory
+        -ConfigRoot $bravoScriptDirectory `
+        -ConfigPath $ConfigPath
 
     $ConfigPath = [string]$global:BravoConfigurationMetadata.ConfigPath
     if ($null -ne $credentialSettings) {
@@ -5442,8 +5442,8 @@ try {
     . $loaderPath
 
     Import-BravoConfiguration `
-        -ConfigPath $ConfigPath `
-        -ScriptRoot $bravoScriptDirectory
+        -ConfigRoot $bravoScriptDirectory `
+        -ConfigPath $ConfigPath
 
     $configPath = [string]$global:BravoConfigurationMetadata.ConfigPath
     Write-Host "Конфiгурацiю завантажено успiшно: $configPath" -ForegroundColor $logColors.SUCCESS

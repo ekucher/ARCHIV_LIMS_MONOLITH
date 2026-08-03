@@ -261,16 +261,24 @@ try {
 
     $resolvedConfig = (Resolve-Path -LiteralPath $ConfigPath).Path
     $configRoot = Split-Path -Path $resolvedConfig -Parent
-    $configText = [IO.File]::ReadAllText($resolvedConfig, [Text.Encoding]::UTF8)
-    & ([scriptblock]::Create($configText)) -ConfigRoot $configRoot
+    $configurationLoaderPath = Join-Path $configRoot 'BRAVO_CONFIG_LOADER.ps1'
+    if (-not (Test-Path -LiteralPath $configurationLoaderPath -PathType Leaf)) {
+        throw "Configuration loader not found: $configurationLoaderPath"
+    }
+    . $configurationLoaderPath
+    $loadedConfiguration = Import-BravoConfiguration `
+        -ConfigRoot $configRoot `
+        -ConfigPath $resolvedConfig `
+        -PassThru
 
     Test-BRAVOCondition `
         -Condition (
-            -not [string]::IsNullOrWhiteSpace([string]$ScriptVersion) -and
+            -not [string]::IsNullOrWhiteSpace([string]$loadedConfiguration.Version.PackageVersion) -and
+            [string]$ScriptVersion -eq [string]$loadedConfiguration.Version.PackageVersion -and
             [string]$ScriptDate -match '^\d{4}-\d{2}-\d{2}$'
         ) `
-        -Name "Version/BRAVO_ARCHIV" `
-        -Failure "у BRAVO.config мають бути задані ScriptVersion і ScriptDate у форматі YYYY-MM-DD"
+        -Name "Version/AuthoritativeLoader" `
+        -Failure "VERSION.json має містити версію, loader має встановлювати ScriptVersion, а BRAVO.config — ScriptDate у форматі YYYY-MM-DD"
     Test-BRAVOCondition `
         -Condition ([string]$archiveParams -match '(?i)(^|\s)-ssw(\s|$)') `
         -Name "BackupAvailability/AllowOpenFiles" `
@@ -279,6 +287,16 @@ try {
         (Join-Path $root "BRAVO_ARCHIV.ps1"),
         [Text.Encoding]::UTF8
     )
+    $archiveLoaderCalls = @(
+        [regex]::Matches(
+            $archiveScriptText,
+            'Import-BravoConfiguration\s+`?\s*-ConfigRoot\s+\$bravoScriptDirectory\s+`?\s*-ConfigPath\s+\$ConfigPath'
+        )
+    ).Count
+    Test-BRAVOCondition `
+        -Condition ($archiveLoaderCalls -eq 2) `
+        -Name "ConfigurationLoader/ArchiveEntrypoints" `
+        -Failure "усі два entrypoint-и BRAVO_ARCHIV повинні передавати loader-у -ConfigRoot і -ConfigPath"
     $archiveRuntimeModule = New-BRAVOSelfTestRuntimeModule `
         -SourceText $archiveScriptText `
         -FunctionNames @(
