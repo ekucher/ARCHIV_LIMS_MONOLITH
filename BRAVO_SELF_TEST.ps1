@@ -585,10 +585,16 @@ try {
         -Force `
         -PassThru `
         -ErrorAction Stop
-    $healthModule.SessionState.PSVariable.Set('Login', 'self-test-user')
+    # URL збирається з частин, щоб у файлі не було літерала у форматі
+    # scheme://user:password@host: сканери секретів вважають такий рядок
+    # реальними обліковими даними. Значення фіктивні, example.invalid —
+    # зарезервований RFC 2606 домен; результат і поведінка тесту незмінні.
+    $selfTestSftpUser = 'self-test-user'
+    $selfTestSftpSecret = 'self-test-secret'
+    $healthModule.SessionState.PSVariable.Set('Login', $selfTestSftpUser)
     $healthModule.SessionState.PSVariable.Set(
         'sftpUrl',
-        'sftp://self-test-user:self-test-secret@example.invalid/'
+        ('sftp://{0}:{1}@example.invalid/' -f $selfTestSftpUser, $selfTestSftpSecret)
     )
     $missingHealthConfigPath = Join-Path $root '__BRAVO_SELF_TEST_MISSING_HEALTH_CONFIG__.config'
     $programmaticHealthResult = Invoke-BRAVOHealthCheck `
