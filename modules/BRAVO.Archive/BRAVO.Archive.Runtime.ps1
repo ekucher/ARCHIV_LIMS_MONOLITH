@@ -395,7 +395,7 @@ if ($consoleSettings.ClearOnStart) {
 # =============================================
 
 function Test-Compatibility {
-    Write-Log "Перевiрка сумiсностi системи..." -Level "INFO"
+    Write-BRAVOLog -Component 'STARTUP' -Message "Перевiрка сумiсностi системи..." -Level "INFO"
     $compatibility = Get-BRAVOCompatibilityInfo
     $powerShellUpdate = Get-BRAVOPowerShellUpdateRecommendation
     $script:BRAVOCompatibility = $compatibility
@@ -405,16 +405,16 @@ function Test-Compatibility {
     $script:hasNetConnection = $compatibility.NetworkProvider -eq "Test-NetConnection"
     $script:compatibilityMode = [bool]$compatibility.IsCompatibilityMode
 
-    Write-Log "Windows: $($BRAVOCompatibility.WindowsVersion); PowerShell: $($BRAVOCompatibility.PowerShellVersion)" -Level "DEBUG"
-    Write-Log "WMI: $($BRAVOCompatibility.WmiProvider); Hash: $($BRAVOCompatibility.FileHashProvider); Network: $($BRAVOCompatibility.NetworkProvider); Files: $($BRAVOCompatibility.ChildItemProvider)" -Level "DEBUG"
+    Write-BRAVOLog -Component 'STARTUP' -Message "Windows: $($BRAVOCompatibility.WindowsVersion); PowerShell: $($BRAVOCompatibility.PowerShellVersion)" -Level "DEBUG"
+    Write-BRAVOLog -Component 'STARTUP' -Message "WMI: $($BRAVOCompatibility.WmiProvider); Hash: $($BRAVOCompatibility.FileHashProvider); Network: $($BRAVOCompatibility.NetworkProvider); Files: $($BRAVOCompatibility.ChildItemProvider)" -Level "DEBUG"
 
     if ($script:compatibilityMode) {
-        Write-Log "Режим сумiсностi активний: несумiснi сучаснi API буде автоматично замiнено" -Level "INFO"
+        Write-BRAVOLog -Component 'STARTUP' -Message "Режим сумiсностi активний: несумiснi сучаснi API буде автоматично замiнено" -Level "INFO"
     } else {
-        Write-Log "Стандартний режим" -Level "INFO"
+        Write-BRAVOLog -Component 'STARTUP' -Message "Стандартний режим" -Level "INFO"
     }
     if ($powerShellUpdate.IsUpdateRecommended) {
-        Write-Log $powerShellUpdate.Message -Level "WARNING"
+        Write-BRAVOLog -Component 'STARTUP' -Message $powerShellUpdate.Message -Level "WARNING"
     }
 
     return $compatibility
@@ -426,10 +426,10 @@ function New-SHA512HashLegacy {
         [string]$HashFilePath
     )
     
-    Write-Log "Створення SHA512 хешу (сумiсний режим): $(Split-Path $FilePath -Leaf)"
+    Write-BRAVOLog -Component 'HASH' -Message "Створення SHA512 хешу (сумiсний режим): $(Split-Path $FilePath -Leaf)"
     
     if (-not (Test-Path $FilePath)) {
-        Write-Log "Файл не знайдено: $FilePath" -Level "ERROR"
+        Write-BRAVOLog -Component 'HASH' -Message "Файл не знайдено: $FilePath" -Level "ERROR"
         return $false
     }
     
@@ -447,10 +447,10 @@ function New-SHA512HashLegacy {
         # Виправлення для PowerShell 3.0: використовуємо .NET метод замiсть Out-File з -NoNewline
         [System.IO.File]::WriteAllText($HashFilePath, "${hash} *${fileName}", [System.Text.Encoding]::GetEncoding($hashFileEncoding))
         
-        Write-Log "Хеш створено (сумiсний режим): $HashFilePath" -Level "SUCCESS"
+        Write-BRAVOLog -Component 'HASH' -Message "Хеш створено (сумiсний режим): $HashFilePath" -Level "SUCCESS"
         return $true
     } catch {
-        Write-Log "Помилка створення хешу (сумiсний режим): $($_.Exception.Message)" -Level "ERROR"
+        Write-BRAVOLog -Component 'HASH' -Message "Помилка створення хешу (сумiсний режим): $($_.Exception.Message)" -Level "ERROR"
         return $false
     } finally {
         if ($fileStream) { $fileStream.Dispose() }
@@ -460,21 +460,21 @@ function New-SHA512HashLegacy {
 
 function Test-NetworkConnectionLegacy {
     try {
-        Write-Log "Перевiрка мережевого з'єднання (сумiсний режим)..." -Level "DEBUG"
+        Write-BRAVOLog -Component 'NETWORK' -Message "Перевiрка мережевого з'єднання (сумiсний режим)..." -Level "DEBUG"
         
         # Альтернативнi методи перевiрки мережi
         $ping = New-Object System.Net.NetworkInformation.Ping
         $result = $ping.Send($networkCheckHost, $networkPingTimeoutMilliseconds)
         
         if ($result.Status -eq "Success") {
-            Write-Log "Мережеве з'єднання доступне (сумiсний режим)" -Level "SUCCESS"
+            Write-BRAVOLog -Component 'NETWORK' -Message "Мережеве з'єднання доступне (сумiсний режим)" -Level "SUCCESS"
             return $true
         } else {
-            Write-Log "Мережеве з'єднання недоступне (сумiсний режим)" -Level "ERROR"
+            Write-BRAVOLog -Component 'NETWORK' -Message "Мережеве з'єднання недоступне (сумiсний режим)" -Level "ERROR"
             return $false
         }
     } catch {
-        Write-Log "Помилка перевiрки мережевого з'єднання (сумiсний режим): $($_.Exception.Message)" -Level "ERROR"
+        Write-BRAVOLog -Component 'NETWORK' -Message "Помилка перевiрки мережевого з'єднання (сумiсний режим): $($_.Exception.Message)" -Level "ERROR"
         return $false
     }
 }
@@ -491,6 +491,32 @@ function Set-BRAVOLogComponent {
     param([Parameter(Mandatory = $true)][string]$Component)
 
     $script:BRAVOLogComponent = $Component
+}
+
+# Main — лінійний оркестратор, поділений заголовками "=== СЕКЦІЯ ===".
+# Заголовок уже несе семантику етапу, тому компонент виводиться з нього:
+# так усі записи секції потрапляють у потрібну колонку без правки викликів.
+# Порядок перевірок важливий: "СИНХРОНIЗАЦIЯ BAZA НА SFTP" має дати SFTP,
+# а не BAZA. У текстах співіснують кирилична 'І' та латинська 'I'.
+function Resolve-BRAVOLogComponentFromHeader {
+    param([Parameter(Mandatory = $true)][string]$Header)
+
+    switch -regex ($Header) {
+        'SFTP|BAZA_APP'                 { return 'SFTP' }
+        'SMB|NAS'                       { return 'SMB' }
+        '(?i)АРХ[IІ]ВАЦ[IІ]Я'           { return 'ARCHIVE' }
+        '(?i)ХЕШУ'                      { return 'HASH' }
+        '(?i)ЛОГ[IІ]В'                  { return 'CLEANUP' }
+        '(?i)ШЛЯХ[IІ]В'                 { return 'PATHS' }
+        '(?i)ПАРОЛЯ'                    { return 'CREDENTIALS' }
+        '(?i)УЗГОДЖЕНОСТ[IІ]'           { return 'VSS' }
+        '(?i)СУМ[IІ]СНОСТ[IІ]'          { return 'STARTUP' }
+        '(?i)РЕЗЕРВНИХ КОП[IІ]Й'        { return 'HEALTH' }
+        '(?i)ЗАВЕРШЕННЯ РОБОТИ'         { return 'SUMMARY' }
+        '(?i)ПОЧАТОК РОБОТИ|ОПЦ[IІ]Ї'   { return 'STARTUP' }
+        '(?i)BAZA'                      { return 'BAZA' }
+    }
+    return 'ARCHIVE'
 }
 
 # Тимчасовий шим сумісності зі старим Write-Log. Делегує у BRAVO.Logging,
@@ -519,6 +545,8 @@ function Write-Log {
         return
     }
     if ($Message -match "^=== .* ===$") {
+        $component = Resolve-BRAVOLogComponentFromHeader -Header $Message
+        Set-BRAVOLogComponent -Component $component
         Write-BRAVOLog -Message $Message -Level 'INFO' -Component $component -NoConsole
         return
     }
@@ -649,7 +677,7 @@ function Wait-ForManualExit {
         try {
             [void](Read-Host)
         } catch {
-            Write-Log "Пауза завершення недоступна у цьому режимi PowerShell" -Level "DEBUG"
+            Write-BRAVOLog -Component 'GENERAL' -Message "Пауза завершення недоступна у цьому режимi PowerShell" -Level "DEBUG"
         }
     }
 }
@@ -662,21 +690,21 @@ function Test-PathWithLog {
     )
 
     if (Test-Path $Path) {
-        Write-Log "$Description знайдено: $Path" -Level "DEBUG"
+        Write-BRAVOLog -Component 'PATHS' -Message "$Description знайдено: $Path" -Level "DEBUG"
         return $true
     } else {
         # Створення дозволяється лише для явно позначених каталогів призначення.
         if ($CreateIfMissing) {
             try {
                 New-Item -ItemType Directory -Path $Path -Force | Out-Null
-                Write-Log "$Description не знайдено, створено автоматично: $Path" -Level "SUCCESS"
+                Write-BRAVOLog -Component 'PATHS' -Message "$Description не знайдено, створено автоматично: $Path" -Level "SUCCESS"
                 return $true
             } catch {
-                Write-Log "$Description не знайдено i не вдалося створити: $Path" -Level "ERROR"
+                Write-BRAVOLog -Component 'PATHS' -Message "$Description не знайдено i не вдалося створити: $Path" -Level "ERROR"
                 return $false
             }
         } else {
-            Write-Log "$Description не знайдено: $Path" -Level "ERROR"
+            Write-BRAVOLog -Component 'PATHS' -Message "$Description не знайдено: $Path" -Level "ERROR"
             return $false
         }
     }
@@ -689,9 +717,9 @@ function Show-PathCheckSummary {
     )
     
     if ($AllPathsExist) {
-        Write-Log "Всi необхiднi шляхи перевiрено успiшно" -Level "SUCCESS"
+        Write-BRAVOLog -Component 'PATHS' -Message "Всi необхiднi шляхи перевiрено успiшно" -Level "SUCCESS"
     } else {
-        Write-Log "Знайдено помилки в шляхах - див. вище" -Level "ERROR"
+        Write-BRAVOLog -Component 'PATHS' -Message "Знайдено помилки в шляхах - див. вище" -Level "ERROR"
     }
 }
 
@@ -699,8 +727,8 @@ function Show-ArchiveCleanupSection {
     param([ref]$SectionShown)
 
     if (-not $SectionShown.Value) {
-        Write-Log "==="
-        Write-Log "=== ОЧИЩЕННЯ СТАРИХ АРХIВIВ ==="
+        Write-BRAVOLog -Component 'CLEANUP' -Message "==="
+        Write-BRAVOLog -Component 'CLEANUP' -Message "=== ОЧИЩЕННЯ СТАРИХ АРХIВIВ ==="
         Show-ScriptProgress -Status "Очищення старих архiвiв" -PercentComplete 72
         $SectionShown.Value = $true
     }
@@ -719,7 +747,7 @@ function Remove-OldBackupSets {
         return $true
     }
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
-        Write-Log "Шлях архівів не знайдено: $Path" -Level "WARNING"
+        Write-BRAVOLog -Component 'CLEANUP' -Message "Шлях архівів не знайдено: $Path" -Level "WARNING"
         return $false
     }
 
@@ -771,13 +799,13 @@ function Remove-OldBackupSets {
                 }
             } elseif ($failedArchiveDeletionEnabled -and $archive.LastWriteTime -lt $invalidCutoff) {
                 Show-ArchiveCleanupSection -SectionShown $CleanupSectionShown
-                Write-Log "Видалення непридатного комплекту ${Component}, старшого за $invalidRetentionDays днів: $($archive.Name) — $invalidReason" -Level "WARNING"
+                Write-BRAVOLog -Component 'CLEANUP' -Message "Видалення непридатного комплекту ${Component}, старшого за $invalidRetentionDays днів: $($archive.Name) — $invalidReason" -Level "WARNING"
                 Remove-Item -LiteralPath $archive.FullName -Force -ErrorAction Stop
                 if (Test-Path -LiteralPath $hashPath -PathType Leaf) {
                     Remove-Item -LiteralPath $hashPath -Force -ErrorAction Stop
                 }
             } else {
-                Write-Log "Непридатний комплект збережено для діагностики: $($archive.Name) — $invalidReason" -Level "WARNING"
+                Write-BRAVOLog -Component 'CLEANUP' -Message "Непридатний комплект збережено для діагностики: $($archive.Name) — $invalidReason" -Level "WARNING"
             }
         }
         $validSets = @($validSets | Sort-Object { $_.Archive.LastWriteTime } -Descending)
@@ -789,7 +817,7 @@ function Remove-OldBackupSets {
                 $orphanHash.LastWriteTime -lt $invalidCutoff) {
                 Show-ArchiveCleanupSection -SectionShown $CleanupSectionShown
                 Remove-Item -LiteralPath $orphanHash.FullName -Force -ErrorAction Stop
-                Write-Log "Видалено застарілий hash-файл без архіву: $($orphanHash.Name)" -Level "WARNING"
+                Write-BRAVOLog -Component 'CLEANUP' -Message "Видалено застарілий hash-файл без архіву: $($orphanHash.Name)" -Level "WARNING"
             }
         }
 
@@ -810,13 +838,13 @@ function Remove-OldBackupSets {
             try {
                 Remove-Item -LiteralPath $set.HashPath -Force -ErrorAction Stop
             } catch {
-                Write-Log "Архів видалено, але не вдалося видалити його hash-файл $($set.HashPath): $($_.Exception.Message)" -Level "WARNING"
+                Write-BRAVOLog -Component 'CLEANUP' -Message "Архів видалено, але не вдалося видалити його hash-файл $($set.HashPath): $($_.Exception.Message)" -Level "WARNING"
             }
-            Write-Log "Видалено комплект ${Component}, старший за $validRetentionDays днів: $($set.Archive.Name)" -Level "SUCCESS"
+            Write-BRAVOLog -Component 'CLEANUP' -Message "Видалено комплект ${Component}, старший за $validRetentionDays днів: $($set.Archive.Name)" -Level "SUCCESS"
         }
         return $true
     } catch {
-        Write-Log "Помилка очищення комплектів ${Component}: $($_.Exception.Message)" -Level "ERROR"
+        Write-BRAVOLog -Component 'CLEANUP' -Message "Помилка очищення комплектів ${Component}: $($_.Exception.Message)" -Level "ERROR"
         return $false
     }
 }
@@ -829,7 +857,7 @@ function Remove-OldLunchArchives {
     )
 
     if (-not (Test-Path -LiteralPath $ArchiveRoot -PathType Container)) {
-        Write-Log "Каталог обідніх архівів не знайдено: $ArchiveRoot" -Level "ERROR"
+        Write-BRAVOLog -Component 'CLEANUP' -Message "Каталог обідніх архівів не знайдено: $ArchiveRoot" -Level "ERROR"
         return $false
     }
 
@@ -839,23 +867,23 @@ function Remove-OldLunchArchives {
     $failed = $false
     $deletedCount = 0
 
-    Write-Log "==="
-    Write-Log "=== ОЧИЩЕННЯ СТАРИХ ОБІДНІХ АРХІВІВ ==="
-    Write-Log "Дата відсічення: $cutoff; маркер імені: _1300." -Level "INFO"
+    Write-BRAVOLog -Component 'CLEANUP' -Message "==="
+    Write-BRAVOLog -Component 'CLEANUP' -Message "=== ОЧИЩЕННЯ СТАРИХ ОБІДНІХ АРХІВІВ ==="
+    Write-BRAVOLog -Component 'CLEANUP' -Message "Дата відсічення: $cutoff; маркер імені: _1300." -Level "INFO"
 
     foreach ($directory in @($Directories | Where-Object {
         -not [string]::IsNullOrWhiteSpace([string]$_)
     })) {
         $directoryPath = Join-Path -Path $resolvedArchiveRoot -ChildPath $directory
         if (-not (Test-Path -LiteralPath $directoryPath -PathType Container)) {
-            Write-Log "Каталог обідніх архівів не знайдено: $directoryPath" -Level "WARNING"
+            Write-BRAVOLog -Component 'CLEANUP' -Message "Каталог обідніх архівів не знайдено: $directoryPath" -Level "WARNING"
             $failed = $true
             continue
         }
         $resolvedDirectoryPath = (Resolve-Path -LiteralPath $directoryPath -ErrorAction Stop).Path.TrimEnd([char[]]"\\/")
         $archiveRootPrefix = $resolvedArchiveRoot + [IO.Path]::DirectorySeparatorChar
         if (-not $resolvedDirectoryPath.StartsWith($archiveRootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-            Write-Log "Небезпечний каталог очищення поза ArchiveRoot пропущено: $directory" -Level "ERROR"
+            Write-BRAVOLog -Component 'CLEANUP' -Message "Небезпечний каталог очищення поза ArchiveRoot пропущено: $directory" -Level "ERROR"
             $failed = $true
             continue
         }
@@ -883,7 +911,7 @@ function Remove-OldLunchArchives {
         foreach ($setName in @($archiveSets.Keys | Sort-Object)) {
             $archiveSet = $archiveSets[$setName]
             if (-not $archiveSet.ContainsKey("Archive") -or -not $archiveSet.ContainsKey("Hash")) {
-                Write-Log "Неповний обідній комплект залишено без змін: $setName" -Level "WARNING"
+                Write-BRAVOLog -Component 'CLEANUP' -Message "Неповний обідній комплект залишено без змін: $setName" -Level "WARNING"
                 continue
             }
             $setLastWriteTime = (@(
@@ -898,17 +926,17 @@ function Remove-OldLunchArchives {
                 Remove-Item -LiteralPath $archiveSet.Hash.FullName -Force -ErrorAction Stop
                 $directoryDeletedCount += 2
                 $deletedCount += 2
-                Write-Log "Видалено обідній комплект: $setName і $($archiveSet.Hash.Name)" -Level "SUCCESS"
+                Write-BRAVOLog -Component 'CLEANUP' -Message "Видалено обідній комплект: $setName і $($archiveSet.Hash.Name)" -Level "SUCCESS"
             } catch {
                 $failed = $true
-                Write-Log "Не вдалося видалити обідній комплект ${setName}: $($_.Exception.Message)" -Level "ERROR"
+                Write-BRAVOLog -Component 'CLEANUP' -Message "Не вдалося видалити обідній комплект ${setName}: $($_.Exception.Message)" -Level "ERROR"
             }
         }
 
-        Write-Log "Каталог ${directory}: видалено $directoryDeletedCount обідніх файлів" -Level "INFO"
+        Write-BRAVOLog -Component 'CLEANUP' -Message "Каталог ${directory}: видалено $directoryDeletedCount обідніх файлів" -Level "INFO"
     }
 
-    Write-Log "Усього видалено обідніх файлів: $deletedCount" -Level "INFO"
+    Write-BRAVOLog -Component 'CLEANUP' -Message "Усього видалено обідніх файлів: $deletedCount" -Level "INFO"
     return (-not $failed)
 }
 
@@ -920,10 +948,10 @@ function Sync-Folders {
         [string]$DestinationPath
     )
     
-    Write-Log "Синхронiзацiя: $SourcePath -> $DestinationPath"
+    Write-BRAVOLog -Component 'BAZA' -Message "Синхронiзацiя: $SourcePath -> $DestinationPath"
     
     if (-not (Test-Path $SourcePath)) {
-        Write-Log "Джерельна папка не знайдена: $SourcePath" -Level "ERROR"
+        Write-BRAVOLog -Component 'BAZA' -Message "Джерельна папка не знайдена: $SourcePath" -Level "ERROR"
         return $false
     }
     
@@ -931,7 +959,7 @@ function Sync-Folders {
         # Створюємо цільову папку, якщо не існує
         if (-not (Test-Path $DestinationPath)) {
             New-Item -ItemType Directory -Path $DestinationPath -Force | Out-Null
-            Write-Log "Створено цiльову папку: $DestinationPath" -Level "SUCCESS"
+            Write-BRAVOLog -Component 'BAZA' -Message "Створено цiльову папку: $DestinationPath" -Level "SUCCESS"
         }
         
         # Виконуємо синхронізацію за допомогою Robocopy
@@ -951,7 +979,7 @@ function Sync-Folders {
 
         $robocopyArgs = @("`"$SourcePath`"", "`"$DestinationPath`"") + $effectiveRobocopyOptions
         
-        Write-Log "Виконання: robocopy $robocopyArgs" -Level "DEBUG"
+        Write-BRAVOLog -Component 'BAZA' -Message "Виконання: robocopy $robocopyArgs" -Level "DEBUG"
 
         if ($showRobocopyProgress) {
             # Локалізований текст Robocopy використовує OEM-кодування і в деяких
@@ -986,15 +1014,15 @@ function Sync-Folders {
         
         # Коди виходу Robocopy: 0-7 = успіх, 8+ = помилка
         if ($exitCode -le $robocopyMaxSuccessExitCode) {
-            Write-Log "Синхронiзацiя успiшна (код: $exitCode)" -Level "DEBUG"
+            Write-BRAVOLog -Component 'BAZA' -Message "Синхронiзацiя успiшна (код: $exitCode)" -Level "DEBUG"
             return $true
         } else {
-            Write-Log "Помилка синхронiзацiї (код: $exitCode)" -Level "ERROR"
+            Write-BRAVOLog -Component 'BAZA' -Message "Помилка синхронiзацiї (код: $exitCode)" -Level "ERROR"
             return $false
         }
     }
     catch {
-        Write-Log "Помилка синхронiзацiї: $($_.Exception.Message)" -Level "ERROR"
+        Write-BRAVOLog -Component 'BAZA' -Message "Помилка синхронiзацiї: $($_.Exception.Message)" -Level "ERROR"
         return $false
     }
 }
@@ -1009,7 +1037,7 @@ function Write-SevenZipFailureDiagnostics {
     param([string]$Operation, [string]$StandardOutput, [string]$StandardError)
     foreach ($line in @($StandardOutput, $StandardError)) {
         if (-not [string]::IsNullOrWhiteSpace($line)) {
-            Write-Log "${Operation}: $($line.Trim().Substring(0, [math]::Min(4000, $line.Trim().Length)))" -Level 'DEBUG'
+            Write-BRAVOLog -Component 'ARCHIVE' -Message "${Operation}: $($line.Trim().Substring(0, [math]::Min(4000, $line.Trim().Length)))" -Level 'DEBUG'
         }
     }
 }
@@ -1096,7 +1124,7 @@ function Remove-BRAVOVSSSnapshotLink {
     } catch [System.IO.DirectoryNotFoundException] {
         # Посилання вже прибрано — нічого робити.
     } catch {
-        Write-Log "Не вдалося прибрати символiчне посилання на VSS-знiмок: $LinkPath ($($_.Exception.Message))" -Level "WARNING"
+        Write-BRAVOLog -Component 'VSS' -Message "Не вдалося прибрати символiчне посилання на VSS-знiмок: $LinkPath ($($_.Exception.Message))" -Level "WARNING"
     }
 }
 
@@ -1118,7 +1146,7 @@ function New-BRAVOVSSSnapshot {
     $shadowId = $null
     $snapshotLinkPath = $null
     try {
-        Write-Log "Створення VSS-знімка тому $volumeRoot для узгодженої архівації" -Level "INFO"
+        Write-BRAVOLog -Component 'VSS' -Message "Створення VSS-знімка тому $volumeRoot для узгодженої архівації" -Level "INFO"
         $shadowClass = [wmiclass]"\\.\root\cimv2:Win32_ShadowCopy"
         $createResult = $shadowClass.Create($volumeRoot, $snapshotContext)
         if ($null -eq $createResult) {
@@ -1151,7 +1179,7 @@ function New-BRAVOVSSSnapshot {
         $snapshotSourcePath = Get-BRAVOVSSSnapshotSourcePath `
             -SourcePath $SourcePath `
             -DeviceObject $snapshotLinkPath
-        Write-Log "VSS-знімок створено: $shadowId" -Level "SUCCESS"
+        Write-BRAVOLog -Component 'VSS' -Message "VSS-знімок створено: $shadowId" -Level "SUCCESS"
         return [pscustomobject]@{
             Id = $shadowId
             VolumeRoot = $volumeRoot
@@ -1194,7 +1222,7 @@ function Remove-BRAVOVSSSnapshot {
     try {
         Remove-BRAVOVSSSnapshotLink -LinkPath $Snapshot.LinkPath
     } catch {
-        Write-Log "Не вдалося прибрати символiчне посилання на VSS-знiмок $($Snapshot.Id): $($_.Exception.Message)" -Level "WARNING"
+        Write-BRAVOLog -Component 'VSS' -Message "Не вдалося прибрати символiчне посилання на VSS-знiмок $($Snapshot.Id): $($_.Exception.Message)" -Level "WARNING"
     }
 
     try {
@@ -1202,13 +1230,13 @@ function Remove-BRAVOVSSSnapshot {
         if ($null -ne $deleteResult -and [int]$deleteResult.ReturnValue -ne 0) {
             $returnCode = [int]$deleteResult.ReturnValue
             $description = Get-BRAVOVSSReturnCodeDescription -ReturnCode $returnCode
-            Write-Log "Не вдалося видалити VSS-знімок $($Snapshot.Id): код $returnCode ($description)" -Level "ERROR"
+            Write-BRAVOLog -Component 'VSS' -Message "Не вдалося видалити VSS-знімок $($Snapshot.Id): код $returnCode ($description)" -Level "ERROR"
             return $false
         }
-        Write-Log "VSS-знімок видалено: $($Snapshot.Id)" -Level "SUCCESS"
+        Write-BRAVOLog -Component 'VSS' -Message "VSS-знімок видалено: $($Snapshot.Id)" -Level "SUCCESS"
         return $true
     } catch {
-        Write-Log "Не вдалося видалити VSS-знімок $($Snapshot.Id): $($_.Exception.Message)" -Level "ERROR"
+        Write-BRAVOLog -Component 'VSS' -Message "Не вдалося видалити VSS-знімок $($Snapshot.Id): $($_.Exception.Message)" -Level "ERROR"
         return $false
     }
 }
@@ -1222,21 +1250,21 @@ function New-Archive {
         [string]$ArcParams
     )
     
-    Write-Log "Створення архiву: $ArchiveName"
+    Write-BRAVOLog -Component 'ARCHIVE' -Message "Створення архiву: $ArchiveName"
     
     $archiveDir = Split-Path $ArchivePath -Parent
     if (-not (Test-Path $archiveDir)) {
         try {
             New-Item -ItemType Directory -Path $archiveDir -Force | Out-Null
-            Write-Log "Каталог створено: $archiveDir" -Level "SUCCESS"
+            Write-BRAVOLog -Component 'ARCHIVE' -Message "Каталог створено: $archiveDir" -Level "SUCCESS"
         } catch {
-            Write-Log "Помилка при створеннi каталогу: $($_.Exception.Message)" -Level "ERROR"
+            Write-BRAVOLog -Component 'ARCHIVE' -Message "Помилка при створеннi каталогу: $($_.Exception.Message)" -Level "ERROR"
             return $false
         }
     }
     
     if (-not (Test-Path $SourcePath)) {
-        Write-Log "Джерело не знайдено: $SourcePath" -Level "ERROR"
+        Write-BRAVOLog -Component 'ARCHIVE' -Message "Джерело не знайдено: $SourcePath" -Level "ERROR"
         return $false
     }
     
@@ -1244,11 +1272,11 @@ function New-Archive {
     
     try {
         if ([string]::IsNullOrWhiteSpace($script:archivePassword)) {
-            Write-Log "Пароль архiву не завантажено з Windows Credential Manager" -Level "ERROR"
+            Write-BRAVOLog -Component 'ARCHIVE' -Message "Пароль архiву не завантажено з Windows Credential Manager" -Level "ERROR"
             return $false
         }
         if ($script:archivePassword.IndexOfAny([char[]]"`r`n") -ge 0) {
-            Write-Log "Пароль архiву не може мiстити символи нового рядка" -Level "ERROR"
+            Write-BRAVOLog -Component 'ARCHIVE' -Message "Пароль архiву не може мiстити символи нового рядка" -Level "ERROR"
             return $false
         }
 
@@ -1265,12 +1293,12 @@ function New-Archive {
         $staleHashPath = "$fullArchivePath$hashFileExtension"
         if (Test-Path -LiteralPath $staleHashPath -PathType Leaf) {
             Remove-Item -LiteralPath $staleHashPath -Force -ErrorAction Stop
-            Write-Log "Видалено попереднiй hash-файл перед повторним створенням архiву: $staleHashPath" -Level "WARNING"
+            Write-BRAVOLog -Component 'ARCHIVE' -Message "Видалено попереднiй hash-файл перед повторним створенням архiву: $staleHashPath" -Level "WARNING"
         }
 
         # -p без значення вмикає шифрування і читає пароль зі stdin.
         $arguments = "$effectiveArcParams -p `"$fullArchivePath`" `"$SourcePath`""
-        Write-Log "Команда: $ArcPath $arguments (пароль передається через stdin)" -Level "DEBUG"
+        Write-BRAVOLog -Component 'ARCHIVE' -Message "Команда: $ArcPath $arguments (пароль передається через stdin)" -Level "DEBUG"
         
         $processInfo = New-Object System.Diagnostics.ProcessStartInfo
         $processInfo.FileName = $ArcPath
@@ -1340,45 +1368,45 @@ function New-Archive {
         } | Select-Object -Last 1)
 
         if ($archiveTimedOut) {
-            Write-Log "Архiвацiю перервано: перевищено таймаут $archiveTimeoutSeconds сек.: $ArchiveName" -Level "ERROR"
+            Write-BRAVOLog -Component 'ARCHIVE' -Message "Архiвацiю перервано: перевищено таймаут $archiveTimeoutSeconds сек.: $ArchiveName" -Level "ERROR"
             if (Test-Path -LiteralPath $fullArchivePath -PathType Leaf) {
                 Remove-Item -LiteralPath $fullArchivePath -Force -ErrorAction SilentlyContinue
-                Write-Log "Неповний архiв видалено: $fullArchivePath" -Level "WARNING"
+                Write-BRAVOLog -Component 'ARCHIVE' -Message "Неповний архiв видалено: $fullArchivePath" -Level "WARNING"
             }
             return $false
         }
         
         if ($process.ExitCode -eq 0) {
-            Write-Log "Архiв створено; виконується контроль цiлiсностi: $fullArchivePath" -Level "INFO"
+            Write-BRAVOLog -Component 'ARCHIVE' -Message "Архiв створено; виконується контроль цiлiсностi: $fullArchivePath" -Level "INFO"
             if (Test-SevenZipArchiveIntegrity `
                 -SevenZipPath $ArcPath `
                 -ArchivePath $fullArchivePath `
                 -Password $script:archivePassword `
                 -TimeoutSeconds $integrityTestTimeoutSeconds `
-                -Logger { param($Message, $Level) Write-Log $Message -Level $Level }) {
-                Write-Log "Архiв створено та перевiрено: $fullArchivePath" -Level "SUCCESS"
+                -Logger { param($Message, $Level) Write-BRAVOLog -Component 'ARCHIVE' -Message $Message -Level $Level }) {
+                Write-BRAVOLog -Component 'ARCHIVE' -Message "Архiв створено та перевiрено: $fullArchivePath" -Level "SUCCESS"
                 return $true
             }
-            Write-Log "Пошкоджений або неперевiрений архiв залишено для дiагностики; hash i передача не виконуватимуться: $fullArchivePath" -Level "ERROR"
+            Write-BRAVOLog -Component 'ARCHIVE' -Message "Пошкоджений або неперевiрений архiв залишено для дiагностики; hash i передача не виконуватимуться: $fullArchivePath" -Level "ERROR"
             return $false
         } else {
             $exitDescription = Get-BRAVOSevenZipExitCodeDescription -ExitCode $process.ExitCode
-            Write-Log "Помилка архiвацiї 7-Zip (код: $($process.ExitCode) — $exitDescription): $fullArchivePath" -Level "ERROR"
+            Write-BRAVOLog -Component 'ARCHIVE' -Message "Помилка архiвацiї 7-Zip (код: $($process.ExitCode) — $exitDescription): $fullArchivePath" -Level "ERROR"
             Write-SevenZipFailureDiagnostics -Operation "Дiагностика 7-Zip create" -StandardOutput $standardOutput -StandardError $errorOutput
             if ($showSevenZipProgress) {
                 if (-not [string]::IsNullOrWhiteSpace($lastSevenZipOutput)) {
-                    Write-Log "Останнiй вивiд 7-Zip: $lastSevenZipOutput" -Level "DEBUG"
+                    Write-BRAVOLog -Component 'ARCHIVE' -Message "Останнiй вивiд 7-Zip: $lastSevenZipOutput" -Level "DEBUG"
                 }
                 if (-not [string]::IsNullOrWhiteSpace($errorOutput)) {
-                    Write-Log "Помилка 7-Zip: $errorOutput" -Level "DEBUG"
+                    Write-BRAVOLog -Component 'ARCHIVE' -Message "Помилка 7-Zip: $errorOutput" -Level "DEBUG"
                 }
             } else {
-                Write-Log "Деталi: $errorOutput" -Level "DEBUG"
+                Write-BRAVOLog -Component 'ARCHIVE' -Message "Деталi: $errorOutput" -Level "DEBUG"
             }
             return $false
         }
     } catch {
-        Write-Log "Помилка архiвацiї: $($_.Exception.Message)" -Level "ERROR"
+        Write-BRAVOLog -Component 'ARCHIVE' -Message "Помилка архiвацiї: $($_.Exception.Message)" -Level "ERROR"
         return $false
     }
 }
@@ -1393,10 +1421,10 @@ function New-SHA512Hash {
         # У режимі сумісності використовуємо тільки сумісну функцію
         return New-SHA512HashLegacy -FilePath $FilePath -HashFilePath $HashFilePath
     } else {
-        Write-Log "Створення SHA512 хешу: $(Split-Path $FilePath -Leaf)"
+        Write-BRAVOLog -Component 'HASH' -Message "Створення SHA512 хешу: $(Split-Path $FilePath -Leaf)"
         
         if (-not (Test-Path $FilePath)) {
-            Write-Log "Файл не знайдено: $FilePath" -Level "ERROR"
+            Write-BRAVOLog -Component 'HASH' -Message "Файл не знайдено: $FilePath" -Level "ERROR"
             return $false
         }
         
@@ -1404,7 +1432,7 @@ function New-SHA512Hash {
             # Використовуємо стандартний метод, якщо доступний
             if ($script:hasFileHash) {
                 $hash = (Get-BRAVOFileHash -Path $FilePath -Algorithm SHA512).Hash.ToLower()
-                Write-Log "Хеш створено (стандартний метод): $HashFilePath" -Level "SUCCESS"
+                Write-BRAVOLog -Component 'HASH' -Message "Хеш створено (стандартний метод): $HashFilePath" -Level "SUCCESS"
             } else {
                 # Використовуємо сумісний метод
                 return New-SHA512HashLegacy -FilePath $FilePath -HashFilePath $HashFilePath
@@ -1417,7 +1445,7 @@ function New-SHA512Hash {
             
             return $true
         } catch {
-            Write-Log "Помилка створення хешу: $($_.Exception.Message)" -Level "ERROR"
+            Write-BRAVOLog -Component 'HASH' -Message "Помилка створення хешу: $($_.Exception.Message)" -Level "ERROR"
             return $false
         }
     }
@@ -1480,12 +1508,12 @@ function Test-SFTPConfig {
 
     if ($configurationErrors.Count -gt 0) {
         foreach ($configurationError in $configurationErrors) {
-            Write-Log "Помилка конфiгурацiї SFTP: $configurationError" -Level "ERROR"
+            Write-BRAVOLog -Component 'SFTP' -Message "Помилка конфiгурацiї SFTP: $configurationError" -Level "ERROR"
         }
         return $false
     }
 
-    Write-Log "Доступ до SFTP налаштовано коректно" -Level "SUCCESS"
+    Write-BRAVOLog -Component 'SFTP' -Message "Доступ до SFTP налаштовано коректно" -Level "SUCCESS"
     return $true
 }
 
@@ -1516,12 +1544,12 @@ function Test-SMBConfig {
 
     if ($configurationErrors.Count -gt 0) {
         foreach ($configurationError in $configurationErrors) {
-            Write-Log "Помилка конфігурації NAS/SMB: $configurationError" -Level "ERROR"
+            Write-BRAVOLog -Component 'SMB' -Message "Помилка конфігурації NAS/SMB: $configurationError" -Level "ERROR"
         }
         return $false
     }
 
-    Write-Log "Доступ до NAS/SMB налаштовано коректно" -Level "SUCCESS"
+    Write-BRAVOLog -Component 'SMB' -Message "Доступ до NAS/SMB налаштовано коректно" -Level "SUCCESS"
     return $true
 }
 
@@ -1605,7 +1633,7 @@ function Copy-FileToSMBWithProgress {
             $sourceStream.Dispose()
             $sourceStream = $null
         }
-        Write-Log "Помилка копіювання на NAS/SMB: $($_.Exception.Message)" -Level "ERROR"
+        Write-BRAVOLog -Component 'SMB' -Message "Помилка копіювання на NAS/SMB: $($_.Exception.Message)" -Level "ERROR"
         if (Test-Path -LiteralPath $DestinationPath -PathType Leaf) {
             Remove-Item -LiteralPath $DestinationPath -Force -ErrorAction SilentlyContinue
         }
@@ -1658,7 +1686,7 @@ function Copy-ArchivesToSMB {
 
     try {
         $drive = New-BRAVOSMBDrive
-        Write-Log "Підключення до NAS/SMB успішне: $($smbSettings.RootPath)" -Level "SUCCESS"
+        Write-BRAVOLog -Component 'SMB' -Message "Підключення до NAS/SMB успішне: $($smbSettings.RootPath)" -Level "SUCCESS"
 
         $copyIndex = 0
         foreach ($copyItem in $copyQueue) {
@@ -1676,17 +1704,17 @@ function Copy-ArchivesToSMB {
             }
 
             $destinationPath = Join-Path $copyItem.DestinationDirectory $copyFileName
-            Write-Log "Копіювання на NAS/SMB: $copyFileName -> $($copyItem.DestinationDirectory)"
+            Write-BRAVOLog -Component 'SMB' -Message "Копіювання на NAS/SMB: $copyFileName -> $($copyItem.DestinationDirectory)"
             if (Copy-FileToSMBWithProgress `
                 -SourcePath $copyItem.SourcePath `
                 -DestinationPath $destinationPath `
                 -Component $copyItem.Component) {
                 $copySuccess++
-                Write-Log "Файл успішно скопійовано на NAS/SMB: $copyFileName" -Level "SUCCESS"
+                Write-BRAVOLog -Component 'SMB' -Message "Файл успішно скопійовано на NAS/SMB: $copyFileName" -Level "SUCCESS"
             }
         }
     } catch {
-        Write-Log "Помилка NAS/SMB: $($_.Exception.Message)" -Level "ERROR"
+        Write-BRAVOLog -Component 'SMB' -Message "Помилка NAS/SMB: $($_.Exception.Message)" -Level "ERROR"
     } finally {
         Show-ItemProgress -Id 14 -Activity "BRAVO_ARCHIV — копіювання на NAS/SMB" -Completed
         if ($drive) {
@@ -1702,21 +1730,21 @@ function Copy-ArchivesToSMB {
 
 function Test-NetworkConnection {
     try {
-        Write-Log "Перевiрка мережевого з'єднання..." -Level "DEBUG"
+        Write-BRAVOLog -Component 'NETWORK' -Message "Перевiрка мережевого з'єднання..." -Level "DEBUG"
         
         $connection = Test-BRAVOTcpConnection `
             -ComputerName $networkCheckHost `
             -Port $networkCheckPort `
             -TimeoutMilliseconds $networkPingTimeoutMilliseconds
         if ($connection) {
-            Write-Log "Мережеве з'єднання доступне ($($BRAVOCompatibility.NetworkProvider))" -Level "SUCCESS"
+            Write-BRAVOLog -Component 'NETWORK' -Message "Мережеве з'єднання доступне ($($BRAVOCompatibility.NetworkProvider))" -Level "SUCCESS"
             return $true
         } else {
-            Write-Log "Мережеве з'єднання недоступне" -Level "ERROR"
+            Write-BRAVOLog -Component 'NETWORK' -Message "Мережеве з'єднання недоступне" -Level "ERROR"
             return $false
         }
     } catch {
-        Write-Log "Помилка перевiрки мережевого з'єднання: $($_.Exception.Message)" -Level "ERROR"
+        Write-BRAVOLog -Component 'NETWORK' -Message "Помилка перевiрки мережевого з'єднання: $($_.Exception.Message)" -Level "ERROR"
         return $false
     }
 }
@@ -1828,10 +1856,10 @@ function Test-SFTPConnection {
         [string]$HostKey
     )
     
-    Write-Log "Перевiрка пiдключення до SFTP сервера" -Level "DEBUG"
+    Write-BRAVOLog -Component 'SFTP' -Message "Перевiрка пiдключення до SFTP сервера" -Level "DEBUG"
     
     if (-not (Test-Path $WinSCPPath)) {
-        Write-Log "WinSCP не знайдено: $WinSCPPath" -Level "ERROR"
+        Write-BRAVOLog -Component 'SFTP' -Message "WinSCP не знайдено: $WinSCPPath" -Level "ERROR"
         return $false
     }
     
@@ -1859,7 +1887,7 @@ exit
         $process.StartInfo = $processInfo
         $winSCPAvailability = Test-BRAVOWinSCPAvailable -WinSCPPath $WinSCPPath
         if (-not $winSCPAvailability.Available) {
-            Write-Log (Get-BRAVOWinSCPBusyMessage -Availability $winSCPAvailability -Operation "перевірка SFTP-з'єднання") -Level "ERROR"
+            Write-BRAVOLog -Component 'SFTP' -Message (Get-BRAVOWinSCPBusyMessage -Availability $winSCPAvailability -Operation "перевірка SFTP-з'єднання") -Level "ERROR"
             return $false
         }
         $outputCapture = Start-BRAVOProcessOutputCapture -Process $process
@@ -1878,12 +1906,12 @@ exit
         $errorOutput = $capturedOutput.StandardError
         
         if ($process.ExitCode -eq 0) {
-            Write-Log "Пiдключення до SFTP сервера успiшне" -Level "SUCCESS"
+            Write-BRAVOLog -Component 'SFTP' -Message "Пiдключення до SFTP сервера успiшне" -Level "SUCCESS"
             return $true
         } else {
-            Write-Log "Помилка пiдключення до SFTP сервера (код: $($process.ExitCode))" -Level "ERROR"
-            Write-Log "Вивiд: $(Get-SanitizedWinSCPDiagnostic -Text $output)" -Level "DEBUG"
-            Write-Log "Помилка: $(Get-SanitizedWinSCPDiagnostic -Text $errorOutput)" -Level "DEBUG"
+            Write-BRAVOLog -Component 'SFTP' -Message "Помилка пiдключення до SFTP сервера (код: $($process.ExitCode))" -Level "ERROR"
+            Write-BRAVOLog -Component 'SFTP' -Message "Вивiд: $(Get-SanitizedWinSCPDiagnostic -Text $output)" -Level "DEBUG"
+            Write-BRAVOLog -Component 'SFTP' -Message "Помилка: $(Get-SanitizedWinSCPDiagnostic -Text $errorOutput)" -Level "DEBUG"
             return $false
         }
 
@@ -2076,7 +2104,7 @@ function Write-BAZASFTPComparisonAudit {
     }
 
     if (-not $Comparison.Success) {
-        Write-Log "Аудит $ComponentName $stageText не виконано: $($Comparison.Error)" -Level "WARNING"
+        Write-BRAVOLog -Component 'SFTP' -Message "Аудит $ComponentName $stageText не виконано: $($Comparison.Error)" -Level "WARNING"
         return
     }
 
@@ -2089,7 +2117,7 @@ function Write-BAZASFTPComparisonAudit {
     $missingCount = @($pendingFiles | Where-Object { $_.Action -eq "UploadNew" }).Count
     $updateCount = @($pendingFiles | Where-Object { $_.Action -eq "UploadUpdate" }).Count
     if ($pendingFiles.Count -eq 0) {
-        Write-Log "Аудит $ComponentName ${stageText}: усi локальнi файли синхронiзованi" -Level "SUCCESS"
+        Write-BRAVOLog -Component 'SFTP' -Message "Аудит $ComponentName ${stageText}: усi локальнi файли синхронiзованi" -Level "SUCCESS"
         return
     }
 
@@ -2100,7 +2128,7 @@ function Write-BAZASFTPComparisonAudit {
     } else {
         "ERROR"
     }
-    Write-Log "Аудит $ComponentName ${stageText}: очiкують передачi: $($pendingFiles.Count) (вiдсутнi у хмарi: $missingCount; потребують оновлення: $updateCount; несумісні імена: $($incompatiblePendingFiles.Count))" -Level $summaryLevel
+    Write-BRAVOLog -Component 'SFTP' -Message "Аудит $ComponentName ${stageText}: очiкують передачi: $($pendingFiles.Count) (вiдсутнi у хмарi: $missingCount; потребують оновлення: $updateCount; несумісні імена: $($incompatiblePendingFiles.Count))" -Level $summaryLevel
     foreach ($pendingFile in $retryablePendingFiles) {
         $itemType = if ($pendingFile.IsDirectory) { "КАТАЛОГ" } else { "ФАЙЛ" }
         $sizeText = if ($null -ne $pendingFile.SizeBytes) {
@@ -2108,10 +2136,10 @@ function Write-BAZASFTPComparisonAudit {
         } else {
             ""
         }
-        Write-Log "AUDIT $ComponentName $stageText [$itemType] [$($pendingFile.Reason)] $($pendingFile.Path)$sizeText" -Level $summaryLevel -FileOnly
+        Write-BRAVOLog -Component 'SFTP' -Message "AUDIT $ComponentName $stageText [$itemType] [$($pendingFile.Reason)] $($pendingFile.Path)$sizeText" -Level $summaryLevel -FileOnly
     }
     foreach ($pendingFile in $incompatiblePendingFiles) {
-        Write-Log "AUDIT $ComponentName $stageText [ПРОПУЩЕНО: НЕСУМІСНЕ ІМ'Я] $($pendingFile.Path)" -Level "WARNING" -FileOnly
+        Write-BRAVOLog -Component 'SFTP' -Message "AUDIT $ComponentName $stageText [ПРОПУЩЕНО: НЕСУМІСНЕ ІМ'Я] $($pendingFile.Path)" -Level "WARNING" -FileOnly
     }
 }
 
@@ -2306,27 +2334,27 @@ function Write-BAZARemoteNameCompatibilityAudit {
     )
 
     if (-not $CompatibilityResult.Success) {
-        Write-Log "Не вдалося перевiрити сумiснiсть iмен $ComponentName з SFTP: $($CompatibilityResult.Error)" -Level "WARNING"
+        Write-BRAVOLog -Component 'SFTP' -Message "Не вдалося перевiрити сумiснiсть iмен $ComponentName з SFTP: $($CompatibilityResult.Error)" -Level "WARNING"
         return
     }
 
     $issues = @($CompatibilityResult.Issues)
     if ($issues.Count -eq 0) {
-        Write-Log "Перевiрка iмен ${ComponentName}: несумiсних iз SFTP iмен не знайдено" -Level "SUCCESS"
+        Write-BRAVOLog -Component 'SFTP' -Message "Перевiрка iмен ${ComponentName}: несумiсних iз SFTP iмен не знайдено" -Level "SUCCESS"
         return
     }
 
-    Write-Log "Перевiрка iмен ${ComponentName}: знайдено несумiсних iмен: $($issues.Count). Цi об'єкти буде пропущено; потрiбне скорочення локальних iмен" -Level "ERROR"
+    Write-BRAVOLog -Component 'SFTP' -Message "Перевiрка iмен ${ComponentName}: знайдено несумiсних iмен: $($issues.Count). Цi об'єкти буде пропущено; потрiбне скорочення локальних iмен" -Level "ERROR"
     foreach ($issue in $issues) {
         $itemType = if ($issue.IsDirectory) { "КАТАЛОГ" } else { "ФАЙЛ" }
-        Write-Log "AUDIT $ComponentName НЕСУМIСНЕ IМ'Я [$itemType] [довжина: $($issue.CharacterCount) символів; $($issue.Utf8ByteCount)/$($issue.MaximumUtf8Bytes) UTF-8 байт] $($issue.Path)" -Level "ERROR" -FileOnly
+        Write-BRAVOLog -Component 'SFTP' -Message "AUDIT $ComponentName НЕСУМIСНЕ IМ'Я [$itemType] [довжина: $($issue.CharacterCount) символів; $($issue.Utf8ByteCount)/$($issue.MaximumUtf8Bytes) UTF-8 байт] $($issue.Path)" -Level "ERROR" -FileOnly
     }
 
     # Notification failures must never stop the actual SFTP synchronization.
     try {
         Send-BAZAIncompatibleNameAlert -Issues $issues -ComponentName $ComponentName
     } catch {
-        Write-Log "Не вдалося підготувати сповіщення про несумісні імена ${ComponentName}: $($_.Exception.Message)" -Level "ERROR"
+        Write-BRAVOLog -Component 'SFTP' -Message "Не вдалося підготувати сповіщення про несумісні імена ${ComponentName}: $($_.Exception.Message)" -Level "ERROR"
     }
 }
 
@@ -2422,11 +2450,11 @@ function Send-BAZAIncompatibleNameAlert {
     )
 
     if ($NoSlack -or $script:notificationMode -eq "none") {
-        Write-Log "Сповіщення про несумісні імена $ComponentName вимкнено параметрами запуску або конфігурацією" -Level "INFO"
+        Write-BRAVOLog -Component 'SFTP' -Message "Сповіщення про несумісні імена $ComponentName вимкнено параметрами запуску або конфігурацією" -Level "INFO"
         return
     }
     if ([string]::IsNullOrWhiteSpace([string]$script:notificationWebhookUrl)) {
-        Write-Log (
+        Write-BRAVOLog -Component 'SFTP' -Message (
             "Сповіщення про несумісні імена $ComponentName не відправлено: " +
             "webhook для $($script:notificationProviderDisplayName) не налаштовано"
         ) -Level "INFO"
@@ -2522,9 +2550,9 @@ $examplesText
         } else {
             ""
         }
-        Write-Log "Сповіщення про $($Issues.Count) несумісних імен $ComponentName відправлено у $($script:notificationProviderDisplayName)$chunkText" -Level "SUCCESS"
+        Write-BRAVOLog -Component 'SFTP' -Message "Сповіщення про $($Issues.Count) несумісних імен $ComponentName відправлено у $($script:notificationProviderDisplayName)$chunkText" -Level "SUCCESS"
     } catch {
-        Write-Log "Не вдалося відправити сповіщення про несумісні імена $ComponentName у $($script:notificationProviderDisplayName): $($_.Exception.Message)" -Level "ERROR"
+        Write-BRAVOLog -Component 'SFTP' -Message "Не вдалося відправити сповіщення про несумісні імена $ComponentName у $($script:notificationProviderDisplayName): $($_.Exception.Message)" -Level "ERROR"
     }
 }
 
@@ -2537,15 +2565,15 @@ function Send-FileViaWinSCP {
         [string]$RemoteDirectory
     )
     
-    Write-Log "Завантаження через WinSCP: $(Split-Path $LocalFilePath -Leaf) -> $RemoteDirectory"
+    Write-BRAVOLog -Component 'SFTP' -Message "Завантаження через WinSCP: $(Split-Path $LocalFilePath -Leaf) -> $RemoteDirectory"
     
     if (-not (Test-Path $LocalFilePath)) {
-        Write-Log "Файл не знайдено: $LocalFilePath" -Level "ERROR"
+        Write-BRAVOLog -Component 'SFTP' -Message "Файл не знайдено: $LocalFilePath" -Level "ERROR"
         return $false
     }
     
     if (-not (Test-Path $WinSCPPath)) {
-        Write-Log "WinSCP не знайдено: $WinSCPPath" -Level "ERROR"
+        Write-BRAVOLog -Component 'SFTP' -Message "WinSCP не знайдено: $WinSCPPath" -Level "ERROR"
         return $false
     }
     
@@ -2565,7 +2593,7 @@ exit
     $transferActivity = "WinSCP — передача $transferFileName"
     try {
         $winscpCommand | Out-File -FilePath $tempScript -Encoding $winSCPScriptEncoding -Force
-        Write-Log "Створено тимчасовий скрипт WinSCP: $tempScript" -Level "DEBUG"
+        Write-BRAVOLog -Component 'SFTP' -Message "Створено тимчасовий скрипт WinSCP: $tempScript" -Level "DEBUG"
         
         $processInfo = New-Object System.Diagnostics.ProcessStartInfo
         $processInfo.FileName = $WinSCPPath
@@ -2579,10 +2607,10 @@ exit
         
         $process = New-Object System.Diagnostics.Process
         $process.StartInfo = $processInfo
-        Write-Log "Запуск WinSCP..." -Level "DEBUG"
+        Write-BRAVOLog -Component 'SFTP' -Message "Запуск WinSCP..." -Level "DEBUG"
         $winSCPAvailability = Test-BRAVOWinSCPAvailable -WinSCPPath $WinSCPPath
         if (-not $winSCPAvailability.Available) {
-            Write-Log (Get-BRAVOWinSCPBusyMessage -Availability $winSCPAvailability -Operation "передача $transferFileName") -Level "ERROR"
+            Write-BRAVOLog -Component 'SFTP' -Message (Get-BRAVOWinSCPBusyMessage -Availability $winSCPAvailability -Operation "передача $transferFileName") -Level "ERROR"
             return $false
         }
         $outputCapture = Start-BRAVOProcessOutputCapture -Process $process
@@ -2606,7 +2634,7 @@ exit
                     $process.Kill()
                     [void]$process.WaitForExit(5000)
                 } catch {
-                    Write-Log "Не вдалося завершити WinSCP після таймауту: $($_.Exception.Message)" -Level "WARNING"
+                    Write-BRAVOLog -Component 'SFTP' -Message "Не вдалося завершити WinSCP після таймауту: $($_.Exception.Message)" -Level "WARNING"
                 }
                 break
             }
@@ -2621,28 +2649,28 @@ exit
         $safeErrorOutput = Get-SanitizedWinSCPDiagnostic -Text $errorOutput
         
         if (-not [string]::IsNullOrWhiteSpace($safeOutput)) {
-            Write-Log "WinSCP вивiд: $safeOutput" -Level "DEBUG"
+            Write-BRAVOLog -Component 'SFTP' -Message "WinSCP вивiд: $safeOutput" -Level "DEBUG"
         }
         if ($transferTimedOut) {
-            Write-Log "Передача WinSCP перевищила таймаут $operationTimeoutSeconds сек.: $transferFileName" -Level "ERROR"
+            Write-BRAVOLog -Component 'SFTP' -Message "Передача WinSCP перевищила таймаут $operationTimeoutSeconds сек.: $transferFileName" -Level "ERROR"
             return $false
         }
         
         if ($process.ExitCode -eq 0) {
-            Write-Log "Файл успiшно завантажено: $(Split-Path $LocalFilePath -Leaf)" -Level "SUCCESS"
+            Write-BRAVOLog -Component 'SFTP' -Message "Файл успiшно завантажено: $(Split-Path $LocalFilePath -Leaf)" -Level "SUCCESS"
             return $true
         } else {
-            Write-Log "Помилка завантаження (код: $($process.ExitCode)): $(Split-Path $LocalFilePath -Leaf)" -Level "ERROR"
+            Write-BRAVOLog -Component 'SFTP' -Message "Помилка завантаження (код: $($process.ExitCode)): $(Split-Path $LocalFilePath -Leaf)" -Level "ERROR"
             if (-not [string]::IsNullOrEmpty($safeOutput)) {
-                Write-Log "Вивiд WinSCP: $safeOutput" -Level "DEBUG"
+                Write-BRAVOLog -Component 'SFTP' -Message "Вивiд WinSCP: $safeOutput" -Level "DEBUG"
             }
             if (-not [string]::IsNullOrEmpty($safeErrorOutput)) {
-                Write-Log "Помилка WinSCP: $safeErrorOutput" -Level "DEBUG"
+                Write-BRAVOLog -Component 'SFTP' -Message "Помилка WinSCP: $safeErrorOutput" -Level "DEBUG"
             }
             return $false
         }
     } catch {
-        Write-Log "Помилка пiд час завантаження через WinSCP: $($_.Exception.Message)" -Level "ERROR"
+        Write-BRAVOLog -Component 'SFTP' -Message "Помилка пiд час завантаження через WinSCP: $($_.Exception.Message)" -Level "ERROR"
         return $false
     } finally {
         if ($showWinSCPProgress) {
@@ -2651,9 +2679,9 @@ exit
         # Очищаємо тимчасовий файл із конфіденційними даними.
         try {
             Remove-BRAVOWinSCPSensitiveTemporaryScript -Path $tempScript
-            Write-Log "Тимчасовий скрипт видалено: $tempScript" -Level "DEBUG"
+            Write-BRAVOLog -Component 'SFTP' -Message "Тимчасовий скрипт видалено: $tempScript" -Level "DEBUG"
         } catch {
-            Write-Log "Не вдалося видалити тимчасовий скрипт: $($_.Exception.Message)" -Level "WARNING"
+            Write-BRAVOLog -Component 'SFTP' -Message "Не вдалося видалити тимчасовий скрипт: $($_.Exception.Message)" -Level "WARNING"
         }
     }
 }
@@ -2675,10 +2703,10 @@ function Sync-FolderToSFTP {
         "/$normalizedRemoteDirectory"
     }
 
-    Write-Log "Синхронiзацiя каталогу через WinSCP: $LocalDirectory -> $remotePath"
+    Write-BRAVOLog -Component 'SFTP' -Message "Синхронiзацiя каталогу через WinSCP: $LocalDirectory -> $remotePath"
 
     if (-not (Test-Path -Path $LocalDirectory -PathType Container)) {
-        Write-Log "Локальний каталог не знайдено: $LocalDirectory" -Level "ERROR"
+        Write-BRAVOLog -Component 'SFTP' -Message "Локальний каталог не знайдено: $LocalDirectory" -Level "ERROR"
         return $false
     }
 
@@ -2690,13 +2718,13 @@ function Sync-FolderToSFTP {
             |
             Select-Object -First 1
         if ($null -eq $firstSourceFile) {
-            Write-Log "SFTP-синхронiзацiю $ComponentName заблоковано: локальний каталог порожнiй або недоступний" -Level "ERROR"
+            Write-BRAVOLog -Component 'SFTP' -Message "SFTP-синхронiзацiю $ComponentName заблоковано: локальний каталог порожнiй або недоступний" -Level "ERROR"
             return $false
         }
     }
 
     if (-not (Test-Path -Path $WinSCPPath -PathType Leaf)) {
-        Write-Log "WinSCP не знайдено: $WinSCPPath" -Level "ERROR"
+        Write-BRAVOLog -Component 'SFTP' -Message "WinSCP не знайдено: $WinSCPPath" -Level "ERROR"
         return $false
     }
 
@@ -2761,14 +2789,14 @@ exit
             $processInfo.StandardOutputEncoding = $winSCPUtf8Encoding
             $processInfo.StandardErrorEncoding = $winSCPUtf8Encoding
         } catch {
-            Write-Log "Не вдалося встановити UTF-8 для виводу WinSCP: $($_.Exception.Message)" -Level "DEBUG"
+            Write-BRAVOLog -Component 'SFTP' -Message "Не вдалося встановити UTF-8 для виводу WinSCP: $($_.Exception.Message)" -Level "DEBUG"
         }
 
         $process = New-Object System.Diagnostics.Process
         $process.StartInfo = $processInfo
         $winSCPAvailability = Test-BRAVOWinSCPAvailable -WinSCPPath $WinSCPPath
         if (-not $winSCPAvailability.Available) {
-            Write-Log (Get-BRAVOWinSCPBusyMessage -Availability $winSCPAvailability -Operation "синхронізація $ComponentName") -Level "ERROR"
+            Write-BRAVOLog -Component 'SFTP' -Message (Get-BRAVOWinSCPBusyMessage -Availability $winSCPAvailability -Operation "синхронізація $ComponentName") -Level "ERROR"
             return $false
         }
         $outputCapture = Start-BRAVOProcessOutputCapture -Process $process
@@ -2787,7 +2815,7 @@ exit
                 [int]$backupMonitoring.SFTP.OperationTimeoutSeconds
             )
         }
-        Write-Log (
+        Write-BRAVOLog -Component 'SFTP' -Message (
             "Таймаут синхронiзацiї ${ComponentName}: " +
             "$operationTimeoutSeconds сек."
         ) -Level "INFO"
@@ -2806,7 +2834,7 @@ exit
                     $process.Kill()
                     [void]$process.WaitForExit(5000)
                 } catch {
-                    Write-Log "Не вдалося завершити WinSCP після таймауту синхронізації ${ComponentName}: $($_.Exception.Message)" -Level "WARNING"
+                    Write-BRAVOLog -Component 'SFTP' -Message "Не вдалося завершити WinSCP після таймауту синхронізації ${ComponentName}: $($_.Exception.Message)" -Level "WARNING"
                 }
                 break
             }
@@ -2821,26 +2849,26 @@ exit
         $sanitizedErrorOutput = Get-SanitizedWinSCPDiagnostic -Text $errorOutput
 
         if (-not [string]::IsNullOrWhiteSpace($sanitizedOutput)) {
-            Write-Log "WinSCP вивiд синхронiзацiї ${ComponentName}: $sanitizedOutput" -Level "DEBUG"
+            Write-BRAVOLog -Component 'SFTP' -Message "WinSCP вивiд синхронiзацiї ${ComponentName}: $sanitizedOutput" -Level "DEBUG"
         }
         if ($syncTimedOut) {
-            Write-Log "Синхронізація $ComponentName перевищила таймаут $operationTimeoutSeconds сек." -Level "ERROR"
-            Write-Log "Повторний запуск продовжить передачу файлів із використанням WinSCP resumesupport" -Level "INFO"
+            Write-BRAVOLog -Component 'SFTP' -Message "Синхронізація $ComponentName перевищила таймаут $operationTimeoutSeconds сек." -Level "ERROR"
+            Write-BRAVOLog -Component 'SFTP' -Message "Повторний запуск продовжить передачу файлів із використанням WinSCP resumesupport" -Level "INFO"
             return $false
         }
 
         $winSCPExitCode = $process.ExitCode
         if ($winSCPExitCode -ne 0) {
-            Write-Log "Помилка SFTP-синхронiзацiї $ComponentName (код: $winSCPExitCode)" -Level "ERROR"
+            Write-BRAVOLog -Component 'SFTP' -Message "Помилка SFTP-синхронiзацiї $ComponentName (код: $winSCPExitCode)" -Level "ERROR"
             if (-not [string]::IsNullOrWhiteSpace($sanitizedOutput)) {
-                Write-Log "Дiагностика WinSCP (stdout): $sanitizedOutput" -Level "ERROR"
+                Write-BRAVOLog -Component 'SFTP' -Message "Дiагностика WinSCP (stdout): $sanitizedOutput" -Level "ERROR"
             }
             if (-not [string]::IsNullOrWhiteSpace($sanitizedErrorOutput)) {
-                Write-Log "Дiагностика WinSCP (stderr): $sanitizedErrorOutput" -Level "ERROR"
+                Write-BRAVOLog -Component 'SFTP' -Message "Дiагностика WinSCP (stderr): $sanitizedErrorOutput" -Level "ERROR"
             }
             if ([string]::IsNullOrWhiteSpace($sanitizedOutput) -and
                 [string]::IsNullOrWhiteSpace($sanitizedErrorOutput)) {
-                Write-Log "WinSCP не повернув тексту помилки; перевiрте права доступу до $remotePath" -Level "ERROR"
+                Write-BRAVOLog -Component 'SFTP' -Message "WinSCP не повернув тексту помилки; перевiрте права доступу до $remotePath" -Level "ERROR"
             }
         }
 
@@ -2865,7 +2893,7 @@ exit
             -IncompatibleIssues $(if ($nameCompatibility.Success) { @($nameCompatibility.Issues) } else { @() })
 
         if (-not $syncOutcome.VerificationSucceeded) {
-            Write-Log "Не вдалося пiдтвердити результат синхронiзацiї $ComponentName повторним порiвнянням; результат вважається помилкою" -Level "ERROR"
+            Write-BRAVOLog -Component 'SFTP' -Message "Не вдалося пiдтвердити результат синхронiзацiї $ComponentName повторним порiвнянням; результат вважається помилкою" -Level "ERROR"
             return $false
         }
 
@@ -2875,24 +2903,24 @@ exit
             } else {
                 "WARNING"
             }
-            Write-Log "Результат ${ComponentName}: передано або оновлено сумісних об'єктiв: $($syncOutcome.CompletedCount); залишилося несинхронiзованих: $($syncOutcome.RemainingCount)" -Level $resultLevel
+            Write-BRAVOLog -Component 'SFTP' -Message "Результат ${ComponentName}: передано або оновлено сумісних об'єктiв: $($syncOutcome.CompletedCount); залишилося несинхронiзованих: $($syncOutcome.RemainingCount)" -Level $resultLevel
         }
 
         if ($syncOutcome.IsComplete) {
             if ($syncOutcome.IsDegraded) {
-                Write-Log "Каталог $ComponentName синхронізовано для всіх сумісних імен; $($syncOutcome.IncompatibleRemainingCount) об'єктів пропущено через незмінювані несумісні імена. Повторний запуск не потрібен." -Level "WARNING"
+                Write-BRAVOLog -Component 'SFTP' -Message "Каталог $ComponentName синхронізовано для всіх сумісних імен; $($syncOutcome.IncompatibleRemainingCount) об'єктів пропущено через незмінювані несумісні імена. Повторний запуск не потрібен." -Level "WARNING"
             } else {
-                Write-Log "Каталог $ComponentName повнiстю синхронiзовано з $remotePath" -Level "SUCCESS"
+                Write-BRAVOLog -Component 'SFTP' -Message "Каталог $ComponentName повнiстю синхронiзовано з $remotePath" -Level "SUCCESS"
             }
             return $true
         }
 
         if ($winSCPExitCode -eq 0 -and $syncOutcome.IsPartial) {
-            Write-Log "WinSCP повернув код 0, але синхронiзацiя $ComponentName часткова: залишилося об'єктiв: $($syncOutcome.RemainingCount)" -Level "ERROR"
+            Write-BRAVOLog -Component 'SFTP' -Message "WinSCP повернув код 0, але синхронiзацiя $ComponentName часткова: залишилося об'єктiв: $($syncOutcome.RemainingCount)" -Level "ERROR"
         }
         return $false
     } catch {
-        Write-Log "Помилка пiд час SFTP-синхронiзацiї ${ComponentName}: $($_.Exception.Message)" -Level "ERROR"
+        Write-BRAVOLog -Component 'SFTP' -Message "Помилка пiд час SFTP-синхронiзацiї ${ComponentName}: $($_.Exception.Message)" -Level "ERROR"
         $comparisonAfterException = Get-BAZASFTPComparison `
             -LocalPath $LocalDirectory `
             -RemotePath $remotePath `
@@ -2915,9 +2943,9 @@ exit
 }
 
 function Invoke-ManualBAZASFTPSynchronization {
-    Write-Log "==="
-    Write-Log "=== РУЧНА СИНХРОНIЗАЦIЯ BAZA_APP / BAZA_WWW НА SFTP ==="
-    Write-Log "Режим -SyncBAZA: синхронізуються всі увімкнені BAZA_APP/BAZA_WWW; архiвацiю, очищення архiвiв, NAS/SMB та health-check пропущено" -Level "INFO"
+    Write-BRAVOLog -Component 'SFTP' -Message "==="
+    Write-BRAVOLog -Component 'SFTP' -Message "=== РУЧНА СИНХРОНIЗАЦIЯ BAZA_APP / BAZA_WWW НА SFTP ==="
+    Write-BRAVOLog -Component 'SFTP' -Message "Режим -SyncBAZA: синхронізуються всі увімкнені BAZA_APP/BAZA_WWW; архiвацiю, очищення архiвiв, NAS/SMB та health-check пропущено" -Level "INFO"
     Show-ScriptProgress -Status "Ручна синхронiзацiя BAZA_APP / BAZA_WWW на SFTP" -PercentComplete 20
 
     $syncTargets = @()
@@ -2931,7 +2959,7 @@ function Invoke-ManualBAZASFTPSynchronization {
             }
         } else {
             $sourceConfigurationFailed = $true
-            Write-Log "Ручну синхронізацію BAZA_APP пропущено: локальний каталог недоступний" -Level "ERROR"
+            Write-BRAVOLog -Component 'SFTP' -Message "Ручну синхронізацію BAZA_APP пропущено: локальний каталог недоступний" -Level "ERROR"
         }
     }
     if ([bool]$componentSettings.Synchronization.BAZAWWWSFTP) {
@@ -2946,22 +2974,22 @@ function Invoke-ManualBAZASFTPSynchronization {
         } else {
             $sourceConfigurationFailed = $true
             $detectionReason = if ($bazaWWWDetection.Success) { "локальний каталог недоступний" } else { [string]$bazaWWWDetection.Reason }
-            Write-Log "Ручну синхронізацію BAZA_WWW пропущено: $detectionReason" -Level "ERROR"
+            Write-BRAVOLog -Component 'SFTP' -Message "Ручну синхронізацію BAZA_WWW пропущено: $detectionReason" -Level "ERROR"
         }
     }
     if ($syncTargets.Count -eq 0) {
-        Write-Log "Ручну синхронізацію скасовано: BAZASFTP і BAZAWWWSFTP вимкнені або їхні джерела недоступні" -Level "ERROR"
+        Write-BRAVOLog -Component 'SFTP' -Message "Ручну синхронізацію скасовано: BAZASFTP і BAZAWWWSFTP вимкнені або їхні джерела недоступні" -Level "ERROR"
         return $false
     }
 
     if (-not (Test-SFTPConfig -SynchronizationOnly)) {
-        Write-Log "Ручну синхронiзацiю BAZA_APP / BAZA_WWW зупинено через помилки конфiгурацiї SFTP" -Level "ERROR"
+        Write-BRAVOLog -Component 'SFTP' -Message "Ручну синхронiзацiю BAZA_APP / BAZA_WWW зупинено через помилки конфiгурацiї SFTP" -Level "ERROR"
         return $false
     }
 
     Show-ScriptProgress -Status "Перевiрка з'єднання з SFTP" -PercentComplete 35
     if (-not (Test-NetworkConnection)) {
-        Write-Log "Ручну синхронiзацiю BAZA_APP / BAZA_WWW зупинено: мережеве з'єднання недоступне" -Level "ERROR"
+        Write-BRAVOLog -Component 'SFTP' -Message "Ручну синхронiзацiю BAZA_APP / BAZA_WWW зупинено: мережеве з'єднання недоступне" -Level "ERROR"
         return $false
     }
 
@@ -2969,7 +2997,7 @@ function Invoke-ManualBAZASFTPSynchronization {
         -WinSCPPath $winSCPPath `
         -RepositorySFTPUrl $sftpUrl `
         -HostKey $sftpHostKey)) {
-        Write-Log "Ручну синхронiзацiю BAZA_APP / BAZA_WWW зупинено: не вдалося пiдключитися до SFTP" -Level "ERROR"
+        Write-BRAVOLog -Component 'SFTP' -Message "Ручну синхронiзацiю BAZA_APP / BAZA_WWW зупинено: не вдалося пiдключитися до SFTP" -Level "ERROR"
         return $false
     }
 
@@ -2987,10 +3015,10 @@ function Invoke-ManualBAZASFTPSynchronization {
             -RemoteDirectory $syncTarget.Destination `
             -ComponentName $syncTarget.Name
         if ($syncSuccess) {
-            Write-Log "Ручну синхронiзацiю $($syncTarget.Name) на SFTP завершено успiшно" -Level "SUCCESS"
+            Write-BRAVOLog -Component 'SFTP' -Message "Ручну синхронiзацiю $($syncTarget.Name) на SFTP завершено успiшно" -Level "SUCCESS"
         } else {
             $syncFailed = $true
-            Write-Log "Ручна синхронiзацiя $($syncTarget.Name) на SFTP завершилася з помилкою" -Level "ERROR"
+            Write-BRAVOLog -Component 'SFTP' -Message "Ручна синхронiзацiя $($syncTarget.Name) на SFTP завершилася з помилкою" -Level "ERROR"
         }
     }
 
