@@ -24,7 +24,7 @@ param(
 $bravoScriptDirectory = $RuntimeRoot
 
 # Спільні PowerShell-модулі runtime.
-foreach ($moduleName in @('BRAVO.Compatibility', 'BRAVO.Credentials', 'BRAVO.ArchiveRuntime')) {
+foreach ($moduleName in @('BRAVO.Compatibility', 'BRAVO.Credentials', 'BRAVO.ArchiveRuntime', 'BRAVO.Logging', 'BRAVO.Console')) {
     $modulePath = Join-Path $bravoScriptDirectory "modules\$moduleName\$moduleName.psd1"
     if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) {
         throw "Не знайдено спільний PowerShell-модуль: $modulePath"
@@ -483,102 +483,60 @@ function Test-NetworkConnectionLegacy {
 # ДОПОМІЖНІ ФУНКЦІЇ
 # =============================================
 
+# Поточний компонент журналу. Секції головного потоку виставляють його, щоб
+# записи потрапляли у правильну колонку [COMPONENT] без правки кожного виклику.
+$script:BRAVOLogComponent = 'ARCHIVE'
+
+function Set-BRAVOLogComponent {
+    param([Parameter(Mandatory = $true)][string]$Component)
+
+    $script:BRAVOLogComponent = $Component
+}
+
+# Тимчасовий шим сумісності зі старим Write-Log. Делегує у BRAVO.Logging,
+# який сам вирішує, що потрапить у файл, а що — в консоль.
+# Прибрати, коли всі виклики перейдуть на Write-BRAVOLog напряму.
 function Write-Log {
     param(
         [string]$Message,
         [string]$Level = $defaultLogLevel,
         [int]$SeparatorLength = $logSeparatorLength,
-        [switch]$NoTimestamp,  # Новий параметр для вiдключення timestamp
+        [switch]$NoTimestamp,
         [switch]$FileOnly
     )
-    
-    # Отримуємо поточний рівень логування з глобальної змінної
-    $currentLogLevel = if ($global:LogLevel -and $logLevels.ContainsKey($global:LogLevel)) { 
-        $logLevels[$global:LogLevel] 
-    } else { 
-        $logLevels[$defaultLogLevel]
-    }
-    
-    $messageLevel = if ($logLevels.ContainsKey($Level)) { 
-        $logLevels[$Level] 
-    } else { 
-        $logLevels[$defaultLogLevel]
-    }
-    
-    # Пропускаємо повідомлення нижчого рівня
-    # FileOnly використовується для обов'язкового файлового аудиту:
-    # такі записи зберігаються незалежно від поточного рівня журналу.
-    if ($messageLevel -lt $currentLogLevel -and -not $FileOnly) {
-        return
-    }
-    
-    # Обробка спеціальних повідомлень-роздільників
+
+    $component = $script:BRAVOLogComponent
+
+    # Роздільники й заголовки формували структуру старої консолі. Тепер її
+    # задають етапи (Write-BRAVOStepResult), тому в консоль вони не йдуть,
+    # але лишаються в журналі, щоб хронологія читалася як раніше.
     if ($Message -eq "=" -or $Message -eq "===") {
-        # Генеруємо роздільник з вказаною кількістю знаків
-        $separator = "=" * $SeparatorLength
-        Write-Host $separator -ForegroundColor $logColors.Default
-        try {
-            if (-not (Test-Path $logPath)) {
-                New-Item -ItemType Directory -Path $logPath -Force | Out-Null
-            }
-        $separator | Out-File -FilePath $script:logFile -Append -Encoding $logFileEncoding
-        } catch {
-            Write-Host "Помилка запису у файл логу: $($_.Exception.Message)" -ForegroundColor $logColors.ERROR
-        }
+        Write-BRAVOLog `
+            -Message ("=" * $SeparatorLength) `
+            -Level 'INFO' `
+            -Component $component `
+            -NoConsole
         return
     }
-    
-    # Обробка заголовків
     if ($Message -match "^=== .* ===$") {
-        # Для заголовків виводимо без timestamp та рівня
-        Write-Host $Message -ForegroundColor $logColors.Header
-        try {
-            if (-not (Test-Path $logPath)) {
-                New-Item -ItemType Directory -Path $logPath -Force | Out-Null
-            }
-    $Message | Out-File -FilePath $script:logFile -Append -Encoding $logFileEncoding
-        } catch {
-            Write-Host "Помилка запису у файл логу: $($_.Exception.Message)" -ForegroundColor $logColors.ERROR
-        }
+        Write-BRAVOLog -Message $Message -Level 'INFO' -Component $component -NoConsole
         return
     }
-    
-    # Звичайні повідомлення
-    if ($NoTimestamp) {
-        # Повідомлення без timestamp (для інформаційних блоків)
-        $logEntry = $Message
-        if (-not $FileOnly) {
-            Write-Host $logEntry -ForegroundColor $logColors.Default
-        }
+
+    $normalizedLevel = if ([string]::IsNullOrWhiteSpace($Level)) {
+        'INFO'
     } else {
-        # Звичайні повідомлення з timestamp
-        $timestamp = Get-Date -Format $logTimestampFormat
-        $logEntry = "[$timestamp] [$Level] $Message"
-        $consoleEntry = if ($consoleSettings.ShowTimestampsInConsole) {
-            $logEntry
-        } else {
-            "[$Level] $Message"
-        }
-        
-        if (-not $FileOnly) {
-            switch ($Level) {
-                "SUCCESS" { Write-Host $consoleEntry -ForegroundColor $logColors.SUCCESS }
-                "ERROR"   { Write-Host $consoleEntry -ForegroundColor $logColors.ERROR }
-                "WARNING" { Write-Host $consoleEntry -ForegroundColor $logColors.WARNING }
-                "DEBUG"   { Write-Host $consoleEntry -ForegroundColor $logColors.DEBUG }
-                default   { Write-Host $consoleEntry -ForegroundColor $logColors.Default }
-            }
-        }
+        $Level.Trim().ToUpperInvariant()
     }
-    
-    try {
-        if (-not (Test-Path $logPath)) {
-            New-Item -ItemType Directory -Path $logPath -Force | Out-Null
-        }
-        $logEntry | Out-File -FilePath $script:logFile -Append -Encoding $logFileEncoding
-    } catch {
-        Write-Host "Помилка запису у файл логу: $($_.Exception.Message)" -ForegroundColor $logColors.ERROR
+    if (@('TRACE', 'DEBUG', 'INFO', 'SUCCESS', 'WARNING', 'ERROR', 'FATAL') -notcontains $normalizedLevel) {
+        $normalizedLevel = 'INFO'
     }
+
+    if ($FileOnly) {
+        Write-BRAVOLog -Message $Message -Level $normalizedLevel -Component $component -NoConsole
+        return
+    }
+    Write-BRAVOLog -Message $Message -Level $normalizedLevel -Component $component
 }
 
 function Show-ScriptProgress {
@@ -3132,7 +3090,35 @@ function Main {
     $scriptStartTime = Get-Date
     $now = $scriptStartTime.ToString($archiveTimestampFormat)
     $logTimestamp = $scriptStartTime.ToString($logFileDateFormat)
-$script:logFile = Join-Path $logPath ($logFileNameTemplate -f $logTimestamp)
+    $script:logFile = Join-Path $logPath ($logFileNameTemplate -f $logTimestamp)
+
+    # Журнал і консоль — два незалежні канали з власними порогами.
+    $configuredFileLevel = if ($null -ne $consoleSettings.FileLevel) {
+        [string]$consoleSettings.FileLevel
+    } else {
+        'INFO'
+    }
+    $configuredConsoleLevel = if ($null -ne $consoleSettings.ConsoleLevel) {
+        [string]$consoleSettings.ConsoleLevel
+    } else {
+        'SUCCESS'
+    }
+    $configuredStepWidth = if ($null -ne $consoleSettings.StepWidth) {
+        [int]$consoleSettings.StepWidth
+    } else {
+        58
+    }
+    [void](Initialize-BRAVOLog `
+        -LogFile $script:logFile `
+        -FileLevel $configuredFileLevel `
+        -ConsoleLevel $configuredConsoleLevel)
+    Initialize-BRAVOConsole -StepWidth $configuredStepWidth
+    Write-BRAVOHeader `
+        -Title ("BRAVO ARCHIVE {0}" -f $ScriptVersion) `
+        -Institution ([string]$bravoSettings.InstitutionName) `
+        -InstitutionCode ([string]$bravoSettings.InstitutionCode) `
+        -StartedAt $scriptStartTime
+
     $processLockResult = Enter-BRAVOArchiveProcessLock
     if (-not $processLockResult.Success) {
         Write-Log (
