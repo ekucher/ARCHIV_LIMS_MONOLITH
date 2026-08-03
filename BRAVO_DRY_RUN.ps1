@@ -508,31 +508,19 @@ try {
 
     $resolvedConfigPath = (Resolve-Path -LiteralPath $ConfigPath).Path
     $configRoot = Split-Path $resolvedConfigPath -Parent
-    $isVetOfficeConfiguration = (
-        (Split-Path $resolvedConfigPath -Leaf) -ieq "ARCHIV_VETOFFICE.config.ps1"
-    )
-    if ($isVetOfficeConfiguration) {
-        # VETOFFICE — окремий legacy-комплект із власним форматом config.
-        $configText = [IO.File]::ReadAllText($resolvedConfigPath, [Text.Encoding]::UTF8)
-        & ([scriptblock]::Create($configText)) -ConfigRoot $configRoot
-    } else {
-        $configurationLoaderPath = Join-Path $configRoot 'BRAVO_CONFIG_LOADER.ps1'
-        if (-not (Test-Path -LiteralPath $configurationLoaderPath -PathType Leaf)) {
-            throw "Configuration loader not found: $configurationLoaderPath"
-        }
-        . $configurationLoaderPath
-        Import-BravoConfiguration -ConfigRoot $configRoot -ConfigPath $resolvedConfigPath
+    $configurationLoaderPath = Join-Path $configRoot 'BRAVO_CONFIG_LOADER.ps1'
+    if (-not (Test-Path -LiteralPath $configurationLoaderPath -PathType Leaf)) {
+        throw "Configuration loader not found: $configurationLoaderPath"
     }
+    . $configurationLoaderPath
+    Import-BravoConfiguration -ConfigRoot $configRoot -ConfigPath $resolvedConfigPath
     Add-DryRunResult PASS "Конфігурація" "Завантаження" $resolvedConfigPath
 
-    $requiredScriptNames = if ($isVetOfficeConfiguration) {
-        @("ARCHIV_VETOFFICE.ps1")
-    } else {
-        @(
-            "BRAVO_ARCHIV.ps1",
-            "BRAVO_MAINTENANCE.ps1"
-        )
-    }
+    $requiredScriptNames = @(
+        "BRAVO_ARCHIV.ps1",
+        "BRAVO_MAINTENANCE.ps1",
+        "BRAVO_HEALTH.ps1"
+    )
     foreach ($scriptName in $requiredScriptNames) {
         $scriptFile = Join-Path $configRoot $scriptName
         if (Test-Path -LiteralPath $scriptFile -PathType Leaf) {

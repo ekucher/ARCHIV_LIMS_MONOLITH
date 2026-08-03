@@ -481,25 +481,18 @@ try {
         (Join-Path $root "BRAVO_COMPATIBILITY.ps1"),
         [Text.Encoding]::UTF8
     )
-    $vetOfficeScriptText = [IO.File]::ReadAllText(
-        (Join-Path $root "ARCHIV_VETOFFICE.ps1"),
-        [Text.Encoding]::UTF8
-    )
-    $sevenZipPasswordInArgumentsPattern = '(?im)^.*(?:^|\s)-p(?:\$|"|\{).*(?:archivePassword|vetArchivePassword).*$'
+    $sevenZipPasswordInArgumentsPattern = '(?im)^.*(?:^|\s)-p(?:\$|"|\{).*archivePassword.*$'
     Test-BRAVOCondition `
         -Condition (
             $archiveScriptText.Contains("RedirectStandardInput = `$true") -and
             $maintenanceScriptText.Contains("StandardInputText") -and
             $compatibilityScriptText.Contains("StandardInput.WriteLine(`$Password)") -and
-            $vetOfficeScriptText.Contains("StandardInput.WriteLine(`$script:vetArchivePassword)") -and
             $archiveScriptText -notmatch '(?i)-p`"\{0\}`"' -and
             $maintenanceScriptText -notmatch '(?i)-p\$\(' -and
             $compatibilityScriptText -notmatch '(?i)-p`"\{0\}`"' -and
-            $vetOfficeScriptText -notmatch '(?i)-p\$\(' -and
             $archiveScriptText -notmatch $sevenZipPasswordInArgumentsPattern -and
             $maintenanceScriptText -notmatch $sevenZipPasswordInArgumentsPattern -and
-            $compatibilityScriptText -notmatch $sevenZipPasswordInArgumentsPattern -and
-            $vetOfficeScriptText -notmatch $sevenZipPasswordInArgumentsPattern
+            $compatibilityScriptText -notmatch $sevenZipPasswordInArgumentsPattern
         ) `
         -Name "Secrets/SevenZipPasswordUsesStdin" `
         -Failure "пароль 7-Zip не повинен потрапляти до командного рядка процесу"
@@ -675,6 +668,21 @@ try {
         -Condition (-not $credentialsSetupText.Contains('function Import-BRAVOConfiguration')) `
         -Name "ConfigurationLoader/CredentialsSetupNoNameCollision" `
         -Failure "локальний wrapper credentials-утиліти не повинен збігатися за ім'ям із Import-BravoConfiguration"
+
+    $legacyEntryPoints = @(
+        'ARCHIV_VETOFFICE.ps1',
+        'ARCHIV_VETOFFICE.config.ps1',
+        'ARCHIV_VETOFFICE.cmd'
+    )
+    Test-BRAVOCondition `
+        -Condition (-not ($legacyEntryPoints | Where-Object { Test-Path -LiteralPath (Join-Path $root $_) -PathType Leaf })) `
+        -Name "Legacy/VetOfficeRemoved" `
+        -Failure "legacy VETOFFICE entrypoints не мають повертатися до runtime"
+    $legacyCommandWrappers = @(Get-ChildItem -LiteralPath $root -File -Filter 'BRAVO_*.cmd')
+    Test-BRAVOCondition `
+        -Condition ($legacyCommandWrappers.Count -eq 0) `
+        -Name "Legacy/CommandWrappersRemoved" `
+        -Failure "BRAVO .cmd-обгортки не мають повертатися до runtime"
 
     foreach ($fileName in @(
             "BRAVO_ARCHIV.ps1",

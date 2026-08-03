@@ -19,8 +19,6 @@ function Enter-BRAVOWinSCPProcessLock {
     }
 }
 
-
-
 function Test-BRAVOWinSCPAvailable {
     [CmdletBinding()]
     param(
@@ -81,5 +79,4 @@ function Get-BRAVOWinSCPBusyMessage {
     }) -join ", "
     return "Запуск WinSCP для ${Operation} заблоковано: виявлено активний WinSCP.com ($processDetails)"
 }
-
 

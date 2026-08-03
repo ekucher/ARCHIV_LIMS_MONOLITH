@@ -1133,6 +1133,19 @@ function Send-BRAVOWebhookNotification {
     }
 }
 
+function Get-BRAVOTaskStateName {
+    param([int]$State)
+
+    switch ($State) {
+        0 { return "UNKNOWN" }
+        1 { return "DISABLED" }
+        2 { return "QUEUED" }
+        3 { return "READY" }
+        4 { return "RUNNING" }
+        default { return [string]$State }
+    }
+}
+
 Assert-BRAVOPowerShellCompatibility
 [void](Initialize-BRAVOConsoleEncoding -CodePage 65001)
 $script:BRAVOCompatibility = Get-BRAVOCompatibilityInfo

@@ -17,7 +17,11 @@ $scriptRoot = if ($PSCommandPath) {
 } else {
     [Environment]::CurrentDirectory
 }
-. (Join-Path $scriptRoot 'BRAVO_SYSTEM_HELPERS.ps1')
+$systemHelpersPath = Join-Path $scriptRoot 'BRAVO_SYSTEM_HELPERS.ps1'
+if (-not (Test-Path -LiteralPath $systemHelpersPath -PathType Leaf)) {
+    throw "Не знайдено системні helper-функції: $systemHelpersPath"
+}
+. $systemHelpersPath
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $scriptRoot "BRAVO.config"
 }

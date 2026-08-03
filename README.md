@@ -11,7 +11,7 @@
 - створення й діагностику завдань Планувальника Windows.
 
 Для звичайного встановлення не потрібно запускати всі скрипти окремо. Основна
-точка входу — **`BRAVO_SETUP.cmd`**.
+точка входу — **`.\BRAVO_SETUP.ps1`**.
 
 > **Важливо:** production-комплект для завдань від `SYSTEM` не можна запускати з
 > `Desktop`, `Documents`, `Downloads` або іншого каталогу профілю користувача.
@@ -22,16 +22,16 @@
 
 | Що потрібно зробити | Команда |
 |---|---|
-| Перша інсталяція або повне оновлення | `BRAVO_SETUP.cmd` |
-| Перевірити все без постійних змін | `BRAVO_SETUP.cmd -ValidateOnly` |
-| Симулювати production-операції | `BRAVO_DRY_RUN.cmd` |
-| Перевірити реєстрацію завдань без UAC | `BRAVO_TASKS_DIAGNOSE.cmd -InspectOnly` |
-| Перевірити завдання та доступ від `SYSTEM` | `BRAVO_TASKS_DIAGNOSE.cmd -TestAccess` |
-| Оновити лише параметри установи | `BRAVO_SETUP.cmd -Action Credentials -CredentialComponent Institution` |
-| Запустити архівацію вручну | `BRAVO_ARCHIV.cmd -NoPause` |
-| Запустити обслуговування вручну | `BRAVO_MAINTENANCE.cmd` |
-| Запустити health-check вручну | `BRAVO_HEALTH.cmd` |
-| Виконати тести коду | `BRAVO_SELF_TEST.cmd` |
+| Перша інсталяція або повне оновлення | `.\BRAVO_SETUP.ps1` |
+| Перевірити все без постійних змін | `.\BRAVO_SETUP.ps1 -ValidateOnly` |
+| Симулювати production-операції | `.\BRAVO_DRY_RUN.ps1` |
+| Перевірити реєстрацію завдань без UAC | `.\BRAVO_TASKS_DIAGNOSE.ps1 -InspectOnly` |
+| Перевірити завдання та доступ від `SYSTEM` | `.\BRAVO_TASKS_DIAGNOSE.ps1 -TestAccess` |
+| Оновити лише параметри установи | `.\BRAVO_SETUP.ps1 -Action Credentials -CredentialComponent Institution` |
+| Запустити архівацію вручну | `.\BRAVO_ARCHIV.ps1 -NoPause` |
+| Запустити обслуговування вручну | `.\BRAVO_MAINTENANCE.ps1` |
+| Запустити health-check вручну | `.\BRAVO_HEALTH.ps1` |
+| Виконати тести коду | `.\BRAVO_SELF_TEST.ps1` |
 
 Усі команди в цій інструкції потрібно виконувати з каталогу `ARCHIV`. Для
 інсталяції, зміни Credential Manager для `SYSTEM` і Планувальника відкрийте
@@ -68,7 +68,7 @@ C:\LIMS\
     ├── README.md
     ├── BRAVO.config
     ├── BRAVO_*.ps1
-    ├── BRAVO_*.cmd
+    ├── BRAVO_*.ps1
     ├── Tools\
     │   ├── 7za.exe
     │   ├── WinSCP.com
@@ -166,9 +166,9 @@ Credential Manager є прив'язаним до облікового запис
 
 ### Крок 2. Виконати локальні тести
 
-```bat
+```powershell
 cd /d C:\LIMS\ARCHIV
-BRAVO_SELF_TEST.cmd
+.\BRAVO_SELF_TEST.ps1
 ```
 
 Self-test перевіряє синтаксис усіх PowerShell-файлів, узгодженість версій,
@@ -177,8 +177,8 @@ Self-test перевіряє синтаксис усіх PowerShell-файлів
 
 ### Крок 3. Перевірити конфігурацію без змін
 
-```bat
-BRAVO_SETUP.cmd -ValidateOnly
+```powershell
+.\BRAVO_SETUP.ps1 -ValidateOnly
 ```
 
 Цей режим не створює постійні credentials або production-завдання і не
@@ -187,8 +187,8 @@ BRAVO_SETUP.cmd -ValidateOnly
 
 ### Крок 4. Запустити комплексне налаштування
 
-```bat
-BRAVO_SETUP.cmd
+```powershell
+.\BRAVO_SETUP.ps1
 ```
 
 Стандартний режим `Full`:
@@ -206,21 +206,21 @@ BRAVO_SETUP.cmd
 
 Якщо зовнішня мережа тимчасово недоступна:
 
-```bat
-BRAVO_SETUP.cmd -SkipAccessTest
+```powershell
+.\BRAVO_SETUP.ps1 -SkipAccessTest
 ```
 
 Якщо потрібно перевірити SFTP/SMB, але не надсилати повідомлення:
 
-```bat
-BRAVO_SETUP.cmd -SkipTestNotification
+```powershell
+.\BRAVO_SETUP.ps1 -SkipTestNotification
 ```
 
 ### Крок 5. Перевірити створені завдання
 
-```bat
-BRAVO_TASKS_DIAGNOSE.cmd -InspectOnly
-BRAVO_TASKS_DIAGNOSE.cmd -TestAccess
+```powershell
+.\BRAVO_TASKS_DIAGNOSE.ps1 -InspectOnly
+.\BRAVO_TASKS_DIAGNOSE.ps1 -TestAccess
 ```
 
 Перший виклик лише читає реєстрацію. Другий запускає end-to-end dry-run від
@@ -230,20 +230,20 @@ BRAVO_TASKS_DIAGNOSE.cmd -TestAccess
 
 Лише перевірка конфігурації, файлів, каталогів, tools і плану операцій:
 
-```bat
-BRAVO_DRY_RUN.cmd -ConfigPath ".\BRAVO.config"
+```powershell
+.\BRAVO_DRY_RUN.ps1 -ConfigPath ".\BRAVO.config"
 ```
 
 Додатково перевірити реальну автентифікацію та read-only доступ:
 
-```bat
-BRAVO_DRY_RUN.cmd -ConfigPath ".\BRAVO.config" -TestAccess
+```powershell
+.\BRAVO_DRY_RUN.ps1 -ConfigPath ".\BRAVO.config" -TestAccess
 ```
 
 End-to-end тест із одним реальним Slack/Discord повідомленням:
 
-```bat
-BRAVO_DRY_RUN.cmd -ConfigPath ".\BRAVO.config" -TestAccess -SendTestNotification
+```powershell
+.\BRAVO_DRY_RUN.ps1 -ConfigPath ".\BRAVO.config" -TestAccess -SendTestNotification
 ```
 
 `-TestAccess` виконує:
@@ -265,24 +265,24 @@ Dry-run їх не запускає.
 
 Комплексний setup можна обмежити одним етапом:
 
-```bat
-BRAVO_SETUP.cmd -Action Credentials
-BRAVO_SETUP.cmd -Action Scheduler
-BRAVO_SETUP.cmd -Action Test -ValidateOnly
+```powershell
+.\BRAVO_SETUP.ps1 -Action Credentials
+.\BRAVO_SETUP.ps1 -Action Scheduler
+.\BRAVO_SETUP.ps1 -Action Test -ValidateOnly
 ```
 
 Оновлення лише назви установи, коду і префікса:
 
-```bat
-BRAVO_SETUP.cmd -Action Credentials -CredentialComponent Institution
+```powershell
+.\BRAVO_SETUP.ps1 -Action Credentials -CredentialComponent Institution
 ```
 
 Розширене керування credentials:
 
-```bat
-BRAVO_CREDENTIALS_SETUP.cmd -Action Ensure -Component Required -StoreFor Both
-BRAVO_CREDENTIALS_SETUP.cmd -Action Test -Component Required -StoreFor Both
-BRAVO_CREDENTIALS_SETUP.cmd -Action Set -Component Institution -StoreFor Both
+```powershell
+.\BRAVO_CREDENTIALS_SETUP.ps1 -Action Ensure -Component Required -StoreFor Both
+.\BRAVO_CREDENTIALS_SETUP.ps1 -Action Test -Component Required -StoreFor Both
+.\BRAVO_CREDENTIALS_SETUP.ps1 -Action Set -Component Institution -StoreFor Both
 ```
 
 Основні дії:
@@ -302,7 +302,7 @@ BRAVO_CREDENTIALS_SETUP.cmd -Action Set -Component Institution -StoreFor Both
 
 ## 8. Планувальник завдань
 
-`BRAVO_TASKS_INSTALL.cmd` створює завдання у `\BRAVO\`:
+`.\BRAVO_TASKS_INSTALL.ps1` створює завдання у `\BRAVO\`:
 
 | Завдання | Типовий розклад | Призначення |
 |---|---|---|
@@ -326,20 +326,20 @@ health-check пропускає перевірку під час активно�
 
 Встановити або оновити лише завдання:
 
-```bat
-BRAVO_TASKS_INSTALL.cmd -ConfigPath ".\BRAVO.config"
+```powershell
+.\BRAVO_TASKS_INSTALL.ps1 -ConfigPath ".\BRAVO.config"
 ```
 
 Перевірити визначення без встановлення:
 
-```bat
-BRAVO_TASKS_INSTALL.cmd -ConfigPath ".\BRAVO.config" -ValidateOnly
+```powershell
+.\BRAVO_TASKS_INSTALL.ps1 -ConfigPath ".\BRAVO.config" -ValidateOnly
 ```
 
 Видалити завдання:
 
-```bat
-BRAVO_TASKS_UNINSTALL.cmd -ConfigPath ".\BRAVO.config"
+```powershell
+.\BRAVO_TASKS_UNINSTALL.ps1 -ConfigPath ".\BRAVO.config"
 ```
 
 Перед реальним встановленням скрипт:
@@ -354,24 +354,24 @@ BRAVO_TASKS_UNINSTALL.cmd -ConfigPath ".\BRAVO.config"
 
 Архівація:
 
-```bat
-BRAVO_ARCHIV.cmd -NoPause
+```powershell
+.\BRAVO_ARCHIV.ps1 -NoPause
 ```
 
 Maintenance:
 
-```bat
-BRAVO_MAINTENANCE.cmd
+```powershell
+.\BRAVO_MAINTENANCE.ps1
 ```
 
 Health-check:
 
-```bat
-BRAVO_HEALTH.cmd
+```powershell
+.\BRAVO_HEALTH.ps1
 ```
 
 Ці команди виконують **фактичні операції**. Перед першим production-запуском
-обов'язково виконайте `BRAVO_SETUP.cmd` або щонайменше dry-run.
+обов'язково виконайте `.\BRAVO_SETUP.ps1` або щонайменше dry-run.
 
 Додатковий параметр архівації `-SyncBAZA` примусово запитує синхронізацію BAZA,
 якщо її дозволяє конфігурація. Для maintenance доступні службові перемикачі
@@ -382,20 +382,20 @@ BRAVO_HEALTH.cmd
 ## 10. Оновлення в установі
 
 1. Зробіть копію поточного `BRAVO.config`.
-2. Замініть `.ps1`, `.cmd` і документацію новою версією.
+2. Замініть `.ps1` і документацію новою версією.
 3. Порівняйте та перенесіть локальні значення шляхів, компонентів, служб,
    SFTP/SMB і розкладу у новий `BRAVO.config`.
 4. Не переносіть у config секрети, назву установи, код або префікс — вони вже
    зберігаються у Credential Manager.
 5. Запустіть:
 
-```bat
-BRAVO_SELF_TEST.cmd
-BRAVO_SETUP.cmd -ValidateOnly
-BRAVO_SETUP.cmd
+```powershell
+.\BRAVO_SELF_TEST.ps1
+.\BRAVO_SETUP.ps1 -ValidateOnly
+.\BRAVO_SETUP.ps1
 ```
 
-Повторний `BRAVO_SETUP.cmd` використовує режим `Ensure`: наявні credentials не
+Повторний `.\BRAVO_SETUP.ps1` використовує режим `Ensure`: наявні credentials не
 запитуються і не перезаписуються. Завдання оновлюються відповідно до поточного
 `schedulerSettings`.
 
@@ -406,15 +406,15 @@ BRAVO_SETUP.cmd
 
 Виконайте від адміністратора:
 
-```bat
-BRAVO_TASKS_DIAGNOSE.cmd -ConfigPath ".\BRAVO.config" -InspectOnly
-BRAVO_TASKS_DIAGNOSE.cmd -ConfigPath ".\BRAVO.config" -TestAccess
+```powershell
+.\BRAVO_TASKS_DIAGNOSE.ps1 -ConfigPath ".\BRAVO.config" -InspectOnly
+.\BRAVO_TASKS_DIAGNOSE.ps1 -ConfigPath ".\BRAVO.config" -TestAccess
 ```
 
 Для перевірки webhook одним реальним повідомленням:
 
-```bat
-BRAVO_TASKS_DIAGNOSE.cmd -ConfigPath ".\BRAVO.config" -TestAccess -SendTestNotification
+```powershell
+.\BRAVO_TASKS_DIAGNOSE.ps1 -ConfigPath ".\BRAVO.config" -TestAccess -SendTestNotification
 ```
 
 Діагностика показує:
@@ -442,11 +442,11 @@ BRAVO_TASKS_DIAGNOSE.cmd -ConfigPath ".\BRAVO.config" -TestAccess -SendTestNotif
 stdout/stderr. Зазвичай вони містять точний недоступний, заблокований або
 пропущений файл.
 
-Якщо tasks відсутні, запустіть `BRAVO_SETUP.cmd -Action Scheduler`. Якщо
+Якщо tasks відсутні, запустіть `.\BRAVO_SETUP.ps1 -Action Scheduler`. Якщо
 діагностика не читає credentials від `SYSTEM`, повторіть:
 
-```bat
-BRAVO_CREDENTIALS_SETUP.cmd -Action Ensure -Component Required -StoreFor Both
+```powershell
+.\BRAVO_CREDENTIALS_SETUP.ps1 -Action Ensure -Component Required -StoreFor Both
 ```
 
 На локалізованій Windows Task Scheduler може показувати `SYSTEM` як `СИСТЕМА`
@@ -491,81 +491,42 @@ code. Це дозволяє окремо бачити батьківський s
 - `Last Run Result` і час наступного запуску.
 
 Для dry-run код завершення `0` означає відсутність критичних проблем, `1` —
-щонайменше одну критичну проблему. `.cmd` wrappers повертають код PowerShell
+щонайменше одну критичну проблему. PowerShell-скрипти повертають код PowerShell
 скрипта, тому результат можна використовувати в автоматичних перевірках.
 
-## 13. ARCHIV_VETOFFICE
-
-`ARCHIV_VETOFFICE` є окремим сумісним сценарієм зі своїм
-`ARCHIV_VETOFFICE.config.ps1`. Він може використовувати спільні credentials і
-dry-run, але не має повної секції `schedulerSettings` для
-`BRAVO_TASKS_INSTALL.ps1`.
-
-Налаштувати потрібні credentials для поточного користувача та `SYSTEM`:
-
-```bat
-BRAVO_CREDENTIALS_SETUP.cmd -ConfigPath ".\ARCHIV_VETOFFICE.config.ps1" -Action Ensure -Component Required -StoreFor Both
-```
-
-Безпечна перевірка:
-
-```bat
-BRAVO_DRY_RUN.cmd -ConfigPath ".\ARCHIV_VETOFFICE.config.ps1" -TestAccess
-```
-
-Команди самого VETOFFICE:
-
-```bat
-ARCHIV_VETOFFICE.cmd -Help
-ARCHIV_VETOFFICE.cmd -Schedule
-ARCHIV_VETOFFICE.cmd -ShowTasks
-ARCHIV_VETOFFICE.cmd -RemoveTask
-```
-
-Запуск без параметрів виконує фактичну архівацію:
-
-```bat
-ARCHIV_VETOFFICE.cmd
-```
-
-Для VETOFFICE назва/код установи не винесені у Credential Manager, бо його
-конфігурація їх не використовує. Префікс VETOFFICE поки що задається у
-`ARCHIV_VETOFFICE.config.ps1`.
-
-## 14. Призначення файлів
+## 13. Призначення файлів
 
 ### Основні точки входу
 
 | Файл | Призначення |
 |---|---|
-| `BRAVO_SETUP.cmd/.ps1` | комплексна інсталяція, credentials, tasks і тест |
-| `BRAVO_DRY_RUN.cmd/.ps1` | симуляція без production-операцій |
-| `BRAVO_ARCHIV.cmd/.ps1` | production-архівація |
-| `BRAVO_MAINTENANCE.cmd/.ps1` | production-обслуговування |
-| `BRAVO_HEALTH.cmd/.ps1` | контроль резервних копій і служб |
-| `BRAVO_TASKS_DIAGNOSE.cmd/.ps1` | діагностика Планувальника і запуск від `SYSTEM` |
+| `BRAVO_SETUP.ps1` | комплексна інсталяція, credentials, tasks і тест |
+| `BRAVO_DRY_RUN.ps1` | симуляція без production-операцій |
+| `BRAVO_ARCHIV.ps1` | production-архівація |
+| `BRAVO_MAINTENANCE.ps1` | production-обслуговування |
+| `BRAVO_HEALTH.ps1` | контроль резервних копій і служб |
+| `BRAVO_TASKS_DIAGNOSE.ps1` | діагностика Планувальника і запуск від `SYSTEM` |
 
 ### Службові файли
 
 | Файл | Призначення |
 |---|---|
 | `BRAVO.config` | головна конфігурація BRAVO |
-| `BRAVO_CREDENTIALS_SETUP.cmd/.ps1` | керування записами Credential Manager |
+| `BRAVO_CREDENTIALS_SETUP.ps1` | керування записами Credential Manager |
 | `BRAVO_CREDENTIALS.ps1` | внутрішня бібліотека читання/запису credentials |
 | `BRAVO_HELPER_LOGGING.ps1` | спільне transcript-журналювання допоміжних скриптів |
-| `BRAVO_TASKS_INSTALL.cmd/.ps1` | встановлення завдань |
-| `BRAVO_TASKS_UNINSTALL.cmd/.ps1` | видалення завдань |
+| `BRAVO_TASKS_INSTALL.ps1` | встановлення завдань |
+| `BRAVO_TASKS_UNINSTALL.ps1` | видалення завдань |
 | `BRAVO_COMPATIBILITY.ps1` | сумісність зі старими Windows/PowerShell |
-| `BRAVO_SELF_TEST.cmd/.ps1` | автоматичні регресійні тести |
-| `ARCHIV_VETOFFICE.*` | окремий сценарій VETOFFICE |
+| `BRAVO_SELF_TEST.ps1` | автоматичні регресійні тести |
 
 Детальні параметри комплексного setup наведені у
 [BRAVO_SETUP.md](BRAVO_SETUP.md), а історія версій — у
 [CHANGELOG.md](CHANGELOG.md).
 
-## 15. Правила безпеки
+## 14. Правила безпеки
 
-- не записуйте паролі, webhook URL або логіни у `.config`, `.ps1`, `.cmd` чи
+- не записуйте паролі, webhook URL або логіни у `.config`, `.ps1` чи
   логи;
 - не розміщуйте SYSTEM runtime у каталозі, доступному звичайним користувачам
   на запис;

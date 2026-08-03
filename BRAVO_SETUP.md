@@ -8,8 +8,8 @@ transcript у `LOGS\HELPERS`. Ім'я містить назву скрипта, 
 
 Запустіть від адміністратора:
 
-```bat
-BRAVO_SETUP.cmd
+```powershell
+.\BRAVO_SETUP.ps1
 ```
 
 Стандартний режим `Full` послідовно:
@@ -54,14 +54,14 @@ dry-run повідомляє про відсутні записи Credential Man
 
 Окреме оновлення лише цих параметрів:
 
-```bat
-BRAVO_SETUP.cmd -Action Credentials -CredentialComponent Institution
+```powershell
+.\BRAVO_SETUP.ps1 -Action Credentials -CredentialComponent Institution
 ```
 
 Або без комплексного оркестратора:
 
-```bat
-BRAVO_CREDENTIALS_SETUP.cmd -Action Set -Component Institution -StoreFor Both
+```powershell
+.\BRAVO_CREDENTIALS_SETUP.ps1 -Action Set -Component Institution -StoreFor Both
 ```
 
 `ArchivePrefix` обмежено латинськими літерами, цифрами, `.`, `_` і `-`, тому
@@ -69,14 +69,14 @@ BRAVO_CREDENTIALS_SETUP.cmd -Action Set -Component Institution -StoreFor Both
 Після зміни префікса старі архіви залишаються на диску, але health-check і
 retention нового запуску шукають уже новий префікс.
 
-Повторний `BRAVO_SETUP.cmd` працює в режимі `Ensure`: якщо записи вже наявні
+Повторний `.\BRAVO_SETUP.ps1` працює в режимі `Ensure`: якщо записи вже наявні
 для поточного користувача та `SYSTEM`, значення не запитуються і не
 перезаписуються. Якщо компонент відсутній, запитується лише він.
 
 ## Спочатку лише перевірка
 
-```bat
-BRAVO_SETUP.cmd -ValidateOnly
+```powershell
+.\BRAVO_SETUP.ps1 -ValidateOnly
 ```
 
 Цей режим не створює і не змінює постійні записи Credential Manager та
@@ -88,83 +88,72 @@ BRAVO_SETUP.cmd -ValidateOnly
 
 Якщо зовнішня мережа під час інсталяції недоступна:
 
-```bat
-BRAVO_SETUP.cmd -SkipAccessTest
+```powershell
+.\BRAVO_SETUP.ps1 -SkipAccessTest
 ```
 
 Щоб виконати read-only тести SFTP/SMB, але не надсилати тестове повідомлення:
 
-```bat
-BRAVO_SETUP.cmd -SkipTestNotification
+```powershell
+.\BRAVO_SETUP.ps1 -SkipTestNotification
 ```
 
 ## Окремі етапи
 
 Лише credentials:
 
-```bat
-BRAVO_SETUP.cmd -Action Credentials
+```powershell
+.\BRAVO_SETUP.ps1 -Action Credentials
 ```
 
 Лише Планувальник:
 
-```bat
-BRAVO_SETUP.cmd -Action Scheduler
+```powershell
+.\BRAVO_SETUP.ps1 -Action Scheduler
 ```
 
 Діагностика реєстрації, `LastTaskResult` і end-to-end доступу від `SYSTEM`:
 
-```bat
-BRAVO_TASKS_DIAGNOSE.cmd -ConfigPath ".\BRAVO.config" -TestAccess
+```powershell
+.\BRAVO_TASKS_DIAGNOSE.ps1 -ConfigPath ".\BRAVO.config" -TestAccess
 ```
 
 Лише перегляд реєстрації без UAC і без тимчасового SYSTEM-завдання:
 
-```bat
-BRAVO_TASKS_DIAGNOSE.cmd -ConfigPath ".\BRAVO.config" -InspectOnly
+```powershell
+.\BRAVO_TASKS_DIAGNOSE.ps1 -ConfigPath ".\BRAVO.config" -InspectOnly
 ```
 
 З одним тестовим повідомленням від `SYSTEM`:
 
-```bat
-BRAVO_TASKS_DIAGNOSE.cmd -ConfigPath ".\BRAVO.config" -TestAccess -SendTestNotification
+```powershell
+.\BRAVO_TASKS_DIAGNOSE.ps1 -ConfigPath ".\BRAVO.config" -TestAccess -SendTestNotification
 ```
 
 Тільки комплексна перевірка без змін:
 
-```bat
-BRAVO_SETUP.cmd -Action Test -ValidateOnly
+```powershell
+.\BRAVO_SETUP.ps1 -Action Test -ValidateOnly
 ```
-
-Інший config:
-
-```bat
-BRAVO_SETUP.cmd -ConfigPath ".\ARCHIV_VETOFFICE.config.ps1" -Action Credentials
-```
-
-`ARCHIV_VETOFFICE.config.ps1` підтримує credentials і dry-run, але не містить
-повної секції `schedulerSettings` для `BRAVO_TASKS_INSTALL.ps1`. Тому для нього
-потрібно використовувати `-Action Credentials` або `-Action Test`; старий
-інтерактивний планувальник VETOFFICE залишається окремим.
 
 ## Окремий dry-run
 
 Без мережевої автентифікації:
 
-```bat
-BRAVO_DRY_RUN.cmd -ConfigPath ".\BRAVO.config"
+```powershell
+.\BRAVO_DRY_RUN.ps1 -ConfigPath ".\BRAVO.config"
 ```
 
 З read-only перевіркою доступів:
 
-```bat
-BRAVO_DRY_RUN.cmd -ConfigPath ".\BRAVO.config" -TestAccess
+```powershell
+.\BRAVO_DRY_RUN.ps1 -ConfigPath ".\BRAVO.config" -TestAccess
 ```
 
 З end-to-end надсиланням одного тестового повідомлення:
 
-```bat
-BRAVO_DRY_RUN.cmd -ConfigPath ".\BRAVO.config" -TestAccess -SendTestNotification
+```powershell
+.\BRAVO_DRY_RUN.ps1 -ConfigPath ".\BRAVO.config" -TestAccess -SendTestNotification
 ```
 
 `-TestAccess` виконує:
