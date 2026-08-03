@@ -133,6 +133,10 @@ $notificationCredentialError = $null
 $sftpCredentialError = $null
 $smbCredentialError = $null
 $script:smbCredential = $null
+# Кеш каталогу тимчасових файлів WinSCP. Get-BRAVOHealthTemporaryRoot читає
+# його ще до першого присвоєння, а Set-StrictMode (успадкований від
+# конфігураційного завантажувача) робить читання неоголошеної змінної помилкою.
+$script:bravoHealthTemporaryRoot = $null
 try {
     if ($null -eq $credentialSettings -or $null -eq (Get-Command -Name Initialize-BRAVOCredentialManager -ErrorAction SilentlyContinue)) {
         throw 'вбудований Credential Manager недоступний'

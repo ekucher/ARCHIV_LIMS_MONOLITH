@@ -78,6 +78,13 @@ If (-not $isLocalSystem -and -not $currentPrincipal.IsInRole([Security.Principal
 # Очистка терміналу
 clear
 
+# Стан lock-а операції обслуговування. Exit-BRAVOMaintenanceOperationLock
+# читає ці змінні у шляхах очищення, які можуть спрацювати ще до захоплення
+# lock-а, а Set-StrictMode (успадкований від конфігураційного завантажувача)
+# робить читання неоголошеної змінної помилкою.
+$script:maintenanceOperationLock = $null
+$script:maintenanceOperationLockPath = $null
+
 # ===== ЗАВАНТАЖЕННЯ НАЛАШТУВАНЬ =====
 if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
     Write-Host "ПОМИЛКА: Не знайдено конфігураційний файл: $ConfigPath" -ForegroundColor Red
