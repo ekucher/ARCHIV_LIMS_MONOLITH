@@ -212,6 +212,56 @@ try {
     Write-Host "Config: $($setup.ConfigPath)"
     Write-Host "Режим: $Action$(if ($ValidateOnly) { ' (лише перевірка)' } else { '' })"
 
+    # Discovery джерел (CLAUDE_CODE_TZ_ARCHIV_LIMS_MONOLITH.md): показуємо
+    # завжди, це лише read-only читання вже обчисленого
+    # $global:bravoDiscoveryResult з BRAVO.config — жодних нових операцій.
+    if ($null -ne $global:bravoDiscoveryResult) {
+        Write-Host ""
+        Write-Host "=== DISCOVERY ДЖЕРЕЛ ===" -ForegroundColor Cyan
+        Write-Host "BRAVO_ROOT: $($bravoDiscoveryResult.BRAVO_ROOT) ($($bravoDiscoveryResult.Reasons.BravoRoot))"
+        Write-Host "bravo.ini: $(if ([string]::IsNullOrWhiteSpace([string]$bravoDiscoveryResult.BravoIniPath)) { 'не знайдено' } else { [string]$bravoDiscoveryResult.BravoIniPath }) ($($bravoDiscoveryResult.Reasons.BravoIniPath))"
+        Write-Host "MODEL_SOURCE: $($bravoDiscoveryResult.MODEL_SOURCE) ($($bravoDiscoveryResult.Reasons.MODEL))"
+        Write-Host "BLOG_SOURCE: $($bravoDiscoveryResult.BLOG_SOURCE) ($($bravoDiscoveryResult.Reasons.BLOG))"
+        Write-Host "BRAVOEXCH_SOURCE: $($bravoDiscoveryResult.BRAVOEXCH_SOURCE) ($($bravoDiscoveryResult.Reasons.BRAVOEXCH))"
+        Write-Host "BAZA_APP: $($bravoDiscoveryResult.BAZA_APP) ($($bravoDiscoveryResult.Reasons.BAZA_APP))"
+        Write-Host "WEB_ROOT: $(if ([string]::IsNullOrWhiteSpace([string]$bravoDiscoveryResult.WEB_ROOT)) { 'не визначено' } else { [string]$bravoDiscoveryResult.WEB_ROOT }) ($($bravoDiscoveryResult.Reasons.WebRoot))"
+        Write-Host "BAZA_WWW: $(if ([string]::IsNullOrWhiteSpace([string]$bravoDiscoveryResult.BAZA_WWW)) { 'не визначено' } else { [string]$bravoDiscoveryResult.BAZA_WWW }) ($($bravoDiscoveryResult.Reasons.BAZA_WWW))"
+        if ($bravoDiscoveryResult.Services.Count -gt 0) {
+            Write-Host "Знайдені служби: $(($bravoDiscoveryResult.Services | ForEach-Object { "$($_.Name) [$($_.State)]" }) -join ', ')"
+        } else {
+            Write-Host "Знайдені служби: жодної (усі значення — legacy fallback або override)"
+        }
+        if ($bravoDiscoveryResult.Overrides.Count -gt 0) {
+            Write-Host "Явні override з discoverySettings: $($bravoDiscoveryResult.Overrides.Keys -join ', ')"
+        }
+
+        if ($ValidateOnly) {
+            $discoveryValidationErrors = @(Test-BRAVODiscoveryResult `
+                -DiscoveryResult $bravoDiscoveryResult `
+                -EnabledComponents @{
+                    MODEL = [bool]$componentSettings.Archive.MODEL
+                    BLOG = [bool]$componentSettings.Archive.BLOG
+                    BRAVOEXCH = [bool]$componentSettings.Archive.BRAVOEXCH
+                    BAZA_APP = ([bool]$componentSettings.Synchronization.BAZALocal -or [bool]$componentSettings.Synchronization.BAZASFTP)
+                    BAZA_WWW = [bool]$componentSettings.Synchronization.BAZAWWWSFTP
+                } `
+                -DestinationPaths @{
+                    MODEL = $archiveDirs.Model
+                    BLOG = $archiveDirs.Blog
+                    BRAVOEXCH = $archiveDirs.BravoExch
+                    BAZA_APP = $bazaPaths.Destination
+                })
+            if ($discoveryValidationErrors.Count -gt 0) {
+                Write-Host "Результат перевірки discovery: ПОМИЛКИ" -ForegroundColor Red
+                foreach ($validationError in $discoveryValidationErrors) {
+                    Write-Host "  - $validationError" -ForegroundColor Red
+                }
+            } else {
+                Write-Host "Результат перевірки discovery: OK" -ForegroundColor Green
+            }
+        }
+    }
+
     # Preflight не читає секрети й ніколи не робить мережеві або production-операції.
     Invoke-ChildPowerShell `
         -ScriptPath $setup.DryRunScript `
