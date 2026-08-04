@@ -1460,11 +1460,29 @@ try {
 
         Test-BRAVOCondition `
             -Condition (
-                $ciWorkflowText.Contains('PSScriptAnalyzerSettings.psd1') -and
-                $ciWorkflowText.Contains('Заборонені патерни')
+                $ciWorkflowText.Contains('Invoke-BRAVOSecurityAnalysis.ps1') -and
+                $ciWorkflowText.Contains('Test-BRAVOForbiddenPattern.ps1')
             ) `
             -Name "StaticAnalysis/CiUsesSettingsAndForbiddenPatterns" `
-            -Failure "ci.yml має використовувати PSScriptAnalyzerSettings.psd1 і містити крок заборонених патернів"
+            -Failure "ci.yml має викликати tools\ci\Invoke-BRAVOSecurityAnalysis.ps1 і tools\ci\Test-BRAVOForbiddenPattern.ps1"
+
+        # GitHub Actions записує вміст `run:` у тимчасовий .ps1 БЕЗ BOM,
+        # і Windows PowerShell 5.1 читає його в системній ANSI-кодовій
+        # сторінці — кирилиця там декодується в сміття, а окремі байти
+        # стають control-символами, що ламають парсер ще до виконання
+        # кроку. Реальне падіння CI сталося саме через це. Логіку з
+        # кирилицею тримаємо у файлах репозиторію (мають BOM), а `run:`
+        # лишається ASCII-only.
+        $ciRunBlockLines = @(
+            $ciWorkflowText -split '\r?\n' |
+                Where-Object { $_ -match '[Ѐ-ӿ]' } |
+                Where-Object { $_ -notmatch '^\s*#' } |
+                Where-Object { $_ -notmatch '^\s*-?\s*name:' }
+        )
+        Test-BRAVOCondition `
+            -Condition ($ciRunBlockLines.Count -eq 0) `
+            -Name "StaticAnalysis/CiRunBlocksAreAsciiOnly" `
+            -Failure "ci.yml: виконуваний рядок з кирилицею поза коментарем/name (GitHub Actions пише run: без BOM, PowerShell 5.1 ламається): $($ciRunBlockLines -join ' | ')"
     }
 
     # P2.6 аудиту: RELEASE_CHECKLIST.md.
