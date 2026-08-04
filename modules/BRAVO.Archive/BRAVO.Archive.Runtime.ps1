@@ -1159,7 +1159,13 @@ function New-BRAVOVSSSnapshotLink {
     $linkPath = Join-Path ([System.IO.Path]::GetTempPath()) ("BRAVO_VSS_" + [guid]::NewGuid().ToString("N"))
     $target = $DeviceObject.TrimEnd("\", "/") + "\"
 
-    $mklinkOutput = & cmd.exe /c mklink /d $linkPath $target 2>&1
+    # Явне квотування обох шляхів усередині рядка, який отримує cmd.exe /c
+    # — $linkPath (%TEMP%) і $target (VSS DeviceObject) на практиці не
+    # містять пробілів, але без лапок cmd.exe розбив би аргумент на кілька
+    # токенів, якби це колись змінилось (інший профіль/мапований диск).
+    $quotedLinkPath = '"' + $linkPath + '"'
+    $quotedTarget = '"' + $target + '"'
+    $mklinkOutput = & cmd.exe /c mklink /d $quotedLinkPath $quotedTarget 2>&1
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $linkPath)) {
         throw "Не вдалося створити символiчне посилання на VSS-знiмок ($target): $mklinkOutput"
     }

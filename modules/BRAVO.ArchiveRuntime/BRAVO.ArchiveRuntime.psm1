@@ -51,10 +51,33 @@ function Get-BRAVOWinSCPDotNetComponents {
 }
 
 function Enter-BRAVOWinSCPProcessLock {
-    $lockPath = Join-Path $logPath "BRAVO_WINSCP.lock"
+    [CmdletBinding()]
+    param(
+        [string]$LogPath
+    )
+
+    # Явний параметр з fallback на $global:logPath (для зворотної
+    # сумісності з існуючими викликами без -LogPath). Раніше функція
+    # читала лише $logPath без параметра — якщо модуль колись
+    # імпортується до того, як BRAVO.config встановить $global:logPath,
+    # lock-файл мовчки створювався у відносному шляху поточної теки,
+    # ламаючи атомарність serialize-механізму для WinSCP.com.
+    if (-not $PSBoundParameters.ContainsKey('LogPath') -or [string]::IsNullOrWhiteSpace($LogPath)) {
+        $LogPath = $global:logPath
+    }
+    if ([string]::IsNullOrWhiteSpace($LogPath)) {
+        return [pscustomobject]@{
+            Success = $false
+            Stream = $null
+            Path = $null
+            Error = "Enter-BRAVOWinSCPProcessLock: LogPath не задано і `$global:logPath не ініціалізовано"
+        }
+    }
+
+    $lockPath = Join-Path $LogPath "BRAVO_WINSCP.lock"
     try {
-        if (-not (Test-Path -LiteralPath $logPath -PathType Container)) {
-            New-Item -ItemType Directory -Path $logPath -Force -ErrorAction Stop | Out-Null
+        if (-not (Test-Path -LiteralPath $LogPath -PathType Container)) {
+            New-Item -ItemType Directory -Path $LogPath -Force -ErrorAction Stop | Out-Null
         }
         $stream = [System.IO.File]::Open(
             $lockPath,

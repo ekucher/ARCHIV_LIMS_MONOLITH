@@ -2,6 +2,23 @@
 
 ## 4.3.0 — 2026-08-04
 
+- Внутрішній код-рев'ю (не з формального аудиту, точкові виправлення):
+  - `Enter-BRAVOWinSCPProcessLock` (`BRAVO.ArchiveRuntime`) тепер приймає
+    явний параметр `-LogPath` замість мовчазного покладання на
+    `$global:logPath` — якщо модуль колись імпортується до ініціалізації
+    конфігу, функція явно повертає помилку замість створення lock-файлу
+    у непередбачуваному відносному шляху.
+  - `Get-HostInformation` (`BRAVO.Notifications`) логує `WARNING`, якщо
+    `$global:hostInformationSettings` взагалі не ініціалізовано — раніше
+    public IP lookup тихо трактувався як вимкнений без жодного сліду.
+  - `New-BRAVOVSSSnapshotLink` (`BRAVO.Archive.Runtime.ps1`): шляхи для
+    `cmd.exe /c mklink` тепер явно квотуються.
+  - `BRAVO_ARCHIV.ps1`/`BRAVO_HEALTH.ps1`/`BRAVO_MAINTENANCE.ps1`:
+    невдалий `Import-Module` на старті (пошкоджене розгортання) тепер
+    завершує процес кодом `90` (`InternalError`) замість довільного
+    коду виключення PowerShell — дотримання контракту кодів завершення
+    навіть на найранішому етапі entrypoint.
+
 - AUD-001 з ARCHIV_LIMS_MONOLITH_FULL_AUDIT.md (P0.1): доданий CI —
   `.github/workflows/ci.yml`, `windows-latest` (проєкт цільово Windows
   PowerShell 5.1, не PowerShell 7 — між ними вже траплялись реальні
