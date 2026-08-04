@@ -1,0 +1,167 @@
+name: CI
+
+# AUD-001 (аудит P0.1): обов'язковий CI gate. Раніше "self-test PASSED"
+# у PR-описі був лише твердженням автора — GitHub це ніяк не підтверджував
+# незалежно. Проєкт цільово Windows PowerShell 5.1 (не PowerShell 7/pwsh —
+# у цій репозиторії вже траплялись реальні поведінкові розбіжності між
+# 5.1 і 7, наприклад .Count на String), тому раннер — windows-latest, а
+# кроки виконуються через `shell: powershell` (вбудований alias на
+# Windows PowerShell 5.1 у GitHub Actions), а не `pwsh`.
+
+on:
+  push:
+    branches: [master, developer]
+  pull_request:
+    branches: [master, developer]
+  workflow_dispatch:
+
+jobs:
+  static-checks:
+    name: Parser / BOM / JSON
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: PowerShell parser (усі .ps1/.psm1/.psd1)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = Get-ChildItem -Recurse -File | Where-Object { $_.Extension -in @('.ps1', '.psm1', '.psd1') }
+          $failed = $false
+          foreach ($file in $files) {
+              $parseErrors = $null
+              [void][System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$parseErrors)
+              if ($parseErrors.Count -gt 0) {
+                  Write-Host "::error file=$($file.FullName)::$(($parseErrors | ForEach-Object { $_.Message }) -join ' | ')"
+                  $failed = $true
+              }
+          }
+          if ($failed) { exit 1 }
+
+      - name: UTF-8 BOM (обов'язковий для .ps1/.psm1/.psd1 з кирилицею)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = Get-ChildItem -Recurse -File | Where-Object { $_.Extension -in @('.ps1', '.psm1', '.psd1') }
+          $failed = $false
+          foreach ($file in $files) {
+              $bytes = [IO.File]::ReadAllBytes($file.FullName)
+              $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+              if (-not $hasBom) {
+                  Write-Host "::error file=$($file.FullName)::Відсутній UTF-8 BOM"
+                  $failed = $true
+              }
+          }
+          if ($failed) { exit 1 }
+
+      - name: JSON коректний (VERSION.json, TOOLS_INTEGRITY.json тощо)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $failed = $false
+          $jsonFiles = Get-ChildItem -Recurse -File -Filter '*.json' |
+              Where-Object { $_.FullName -notmatch '\\LOGS\\' }
+          foreach ($file in $jsonFiles) {
+              try {
+                  [void](Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop)
+              } catch {
+                  Write-Host "::error file=$($file.FullName)::Некоректний JSON: $($_.Exception.Message)"
+                  $failed = $true
+              }
+          }
+          if ($failed) { exit 1 }
+
+      - name: Markdown-документи не мають BOM
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $failed = $false
+          $mdFiles = Get-ChildItem -Recurse -File -Filter '*.md'
+          foreach ($file in $mdFiles) {
+              $bytes = [IO.File]::ReadAllBytes($file.FullName)
+              $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+              if ($hasBom) {
+                  Write-Host "::error file=$($file.FullName)::Markdown не повинен мати BOM (усталена конвенція репозиторію)"
+                  $failed = $true
+              }
+          }
+          if ($failed) { exit 1 }
+
+  psscriptanalyzer:
+    name: PSScriptAnalyzer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Invoke-ScriptAnalyzer
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser -SkipPublisherCheck -Repository PSGallery
+
+          # Виключені правила навмисно суперечать їхнім рекомендаціям, бо
+          # відповідають усталеній архітектурі цього репозиторію
+          # (Write-Host для інтерактивної консолі допоміжних скриптів,
+          # $global: як спільний контракт між BRAVO.config і runtime-
+          # модулями — задокументовано й відомо, не забутий недогляд).
+          $excludeRules = @(
+              'PSAvoidUsingWriteHost',
+              'PSAvoidGlobalVars',
+              'PSUseShouldProcessForStateChangingFunctions',
+              'PSUseDeclaredVarsMoreThanAssignments',
+              'PSAvoidUsingInvokeExpression'
+          )
+          $results = Invoke-ScriptAnalyzer -Path . -Recurse -ExcludeRule $excludeRules
+
+          $warnings = @($results | Where-Object { $_.Severity -eq 'Warning' -or $_.Severity -eq 'Information' })
+          $errors = @($results | Where-Object { $_.Severity -eq 'Error' })
+
+          if ($warnings.Count -gt 0) {
+              Write-Host "::warning::PSScriptAnalyzer: $($warnings.Count) попередження (інформаційно, не блокує білд)"
+              $warnings | ForEach-Object {
+                  Write-Host "::warning file=$($_.ScriptPath),line=$($_.Line)::$($_.RuleName): $($_.Message)"
+              }
+          }
+          if ($errors.Count -gt 0) {
+              $errors | ForEach-Object {
+                  Write-Host "::error file=$($_.ScriptPath),line=$($_.Line)::$($_.RuleName): $($_.Message)"
+              }
+              exit 1
+          }
+
+  self-test:
+    name: BRAVO_SELF_TEST.ps1
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Запуск повного self-test
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\BRAVO_SELF_TEST.ps1
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "::error::BRAVO_SELF_TEST.ps1 завершився з кодом $LASTEXITCODE"
+              exit 1
+          }
+
+      - name: Лог self-test (артефакт при падінні)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: self-test-log
+          path: LOGS/HELPERS/BRAVO_SELF_TEST_*.log
+          if-no-files-found: ignore
+
+  secret-scan:
+    name: Secret scanning (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

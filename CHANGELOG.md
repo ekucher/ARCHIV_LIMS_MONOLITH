@@ -2,6 +2,26 @@
 
 ## 4.3.0 — 2026-08-04
 
+- AUD-001 з ARCHIV_LIMS_MONOLITH_FULL_AUDIT.md (P0.1): доданий CI —
+  `.github/workflows/ci.yml`, `windows-latest` (проєкт цільово Windows
+  PowerShell 5.1, не PowerShell 7 — між ними вже траплялись реальні
+  поведінкові розбіжності в цьому репозиторії, тому раннер саме
+  Windows, кроки через `shell: powershell`). Запускається на кожен
+  push і PR у `master`/`developer`: парсинг усіх `.ps1`/`.psm1`/`.psd1`,
+  UTF-8 BOM (обов'язковий для PowerShell-файлів, заборонений для
+  `.md`), валідність JSON, `PSScriptAnalyzer` (блокує на
+  `Severity=Error`, `Warning`/`Information` — інформаційно, кілька
+  правил навмисно виключено як такі, що суперечать усталеній
+  архітектурі — `PSAvoidUsingWriteHost`/`PSAvoidGlobalVars`), повний
+  `BRAVO_SELF_TEST.ps1`, сканування секретів (`gitleaks`, окрема
+  Linux-джоба).
+
+  **Явно НЕ зроблено:** GitHub branch protection (required status
+  checks, заборона прямого push у `master`) — CI лише показує статус,
+  технічно ще не блокує merge, доки власник репозиторію не ввімкне це
+  вручну в налаштуваннях GitHub. `SECURITY.md`/`RELEASE_CHECKLIST.md`
+  оновлені, щоб чесно відображати цей проміжний стан.
+
 - AUD-016 з ARCHIV_LIMS_MONOLITH_FULL_AUDIT.md: усунено структурну
   причину повторюваного бага з `releaseChannel`. Раніше значення
   зберігалося як буквальний рядок, що вручну підтримувався різним на
