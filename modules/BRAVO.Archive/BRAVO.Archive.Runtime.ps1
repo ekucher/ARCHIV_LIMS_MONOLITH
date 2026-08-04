@@ -3908,6 +3908,12 @@ function Main {
             -Details $(if ($healthStepFailed) { 'Деталі записано у журнал.' } else { '' })
     }
 
+    # Секція health-check (якщо вона виконувалась) залишає компонент журналу
+    # на "HEALTH" — без явного повернення на "SUMMARY" підсумковий рядок
+    # хибно тегувався б [HEALTH] навіть тоді, коли сам health-check пройшов
+    # успішно, а $operationFailed стало $true через щось раніше (наприклад
+    # провалену перевірку цілісності архіву).
+    Set-BRAVOLogComponent -Component 'SUMMARY'
     Write-Log "Результат: $(if ($operationFailed) {'ПОМИЛКА'} else {'УСПIШНО'})" -NoTimestamp
     Write-Log "==="
     if (-not $operationFailed) {

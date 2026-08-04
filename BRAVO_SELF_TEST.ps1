@@ -327,6 +327,13 @@ try {
         ) `
         -Name "Runtime/MaintenanceDistinguishesArchiveVsIntegrityFailure" `
         -Failure "Maintenance має розрізняти локальну архівацію (40) і перевірку цілісності (41) відновлення, а не зводити все до 60"
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveRuntimeTextForExitCodes -match
+                "Set-BRAVOLogComponent -Component 'SUMMARY'\s*\r?\n\s*Write-Log `"Результат:"
+        ) `
+        -Name "Runtime/FinalSummaryUsesSummaryLogComponent" `
+        -Failure "підсумковий рядок 'Результат:' має явно повертати компонент журналу на SUMMARY, інакше після виконаного health-check він хибно тегується [HEALTH], навіть якщо сам health-check пройшов успішно"
 
     $insecureWebhookRejected = $false
     try {
