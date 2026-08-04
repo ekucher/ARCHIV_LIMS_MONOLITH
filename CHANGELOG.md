@@ -2,6 +2,32 @@
 
 ## 4.3.0 — 2026-08-04
 
+- AUD-004 з ARCHIV_LIMS_MONOLITH_FULL_AUDIT.md (P0.4): доданий restore
+  drill — `BRAVO_RESTORE_TEST.ps1`. Читабельний і навіть SHA-512/7za-
+  перевірений архів доводить лише незмінність байтів, не відновлюваність
+  системи; новий скрипт бере найновіший локальний backup із коректним
+  `.sha512` для кожного увімкненого компонента (`MODEL`/`BLOG`/`BRAVOEXCH`,
+  `-Component` для одного або всіх), запускає `7za t` (перевикористано
+  `Test-SevenZipArchiveIntegrity`), розпаковує в ІЗОЛЬОВАНИЙ тимчасовий
+  каталог (не production-шлях, ACL SYSTEM+Administrators+поточний
+  користувач, видаляється одразу після перевірки — навіть при помилці,
+  через `finally`), звіряє кількість розпакованих файлів проти
+  `-MinimumFileCount` і повертає контрактний exit code (`0`/`10`/`41`)
+  та машинно-читаний JSON (`-ResultPath`/`-AsJson`). Сповіщення в
+  Slack/Discord — лише при `WARN`/`FAIL`, якщо не задано
+  `-SkipNotification`. Read-only діагностика: не видаляє, не переміщує й
+  не змінює жоден існуючий backup, елевація не потрібна.
+
+  Новий спільний компонент `Invoke-BRAVOSevenZipExtraction`
+  (`modules\BRAVO.Compatibility`) — розпакування архіву, дзеркалить уже
+  наявний `Invoke-BRAVOSevenZipIntegrityTest` (той самий
+  ProcessStartInfo/stdin-пароль патерн, пароль ніколи не потрапляє до
+  командного рядка чи логів).
+
+  Restore drill НЕ входить до типового набору завдань
+  `BRAVO_TASKS_INSTALL.ps1` — рекомендовано (розділ 6.1 README.md)
+  додати окреме щотижневе/щомісячне завдання Планувальника вручну.
+
 - AUD-007 з ARCHIV_LIMS_MONOLITH_FULL_AUDIT.md (P1.1/P1.2): захист від
   неоднозначного й дрейфового discovery. `Resolve-BRAVOInstallationDiscovery`
   тепер позначає `Ambiguous.BravoRoot`/`Ambiguous.WebRoot`, якщо знайдено

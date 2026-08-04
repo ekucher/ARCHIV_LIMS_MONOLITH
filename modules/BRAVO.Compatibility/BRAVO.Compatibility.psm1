@@ -1431,6 +1431,129 @@ function Invoke-BRAVOSevenZipIntegrityTest {
     }
 }
 
+function Invoke-BRAVOSevenZipExtraction {
+    # AUD-004 (аудит P0.4): розпакування архіву в ізольований каталог для
+    # restore drill. Дзеркалить Invoke-BRAVOSevenZipIntegrityTest один в
+    # один (той самий ProcessStartInfo/stdin-пароль патерн), лише команда
+    # "x" (extract, повна структура шляхів) замість "t" (test) і
+    # -o<ExtractDirectory> замість цільового архіву як єдиного аргументу.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$SevenZipPath,
+        [Parameter(Mandatory = $true)][string]$ArchivePath,
+        [Parameter(Mandatory = $true)][string]$Password,
+        [Parameter(Mandatory = $true)][string]$ExtractDirectory,
+        [int]$TimeoutSeconds = 43200
+    )
+
+    $process = $null
+    $capture = $null
+    $timedOut = $false
+    $exitCode = $null
+    $standardOutput = ""
+    $standardError = ""
+
+    try {
+        if (-not (Test-Path -LiteralPath $SevenZipPath -PathType Leaf)) {
+            throw "7-Zip не знайдено: $SevenZipPath"
+        }
+        if (-not (Test-Path -LiteralPath $ArchivePath -PathType Leaf)) {
+            throw "архів не знайдено: $ArchivePath"
+        }
+        if ([string]::IsNullOrWhiteSpace($Password)) {
+            throw "пароль архіву не задано"
+        }
+        if ($Password.IndexOfAny([char[]]"`r`n") -ge 0) {
+            throw "пароль архіву не може містити символи нового рядка"
+        }
+        if (-not (Test-Path -LiteralPath $ExtractDirectory -PathType Container)) {
+            throw "каталог для розпакування не існує: $ExtractDirectory"
+        }
+
+        $processInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $processInfo.FileName = $SevenZipPath
+        # Без параметра -p 7-Zip запитує пароль зашифрованого архіву зі
+        # стандартного вводу — секрет не потрапляє до командного рядка.
+        $processInfo.Arguments = "x -y -bb1 -o`"$ExtractDirectory`" `"$ArchivePath`""
+        $processInfo.RedirectStandardInput = $true
+        $processInfo.RedirectStandardOutput = $true
+        $processInfo.RedirectStandardError = $true
+        $processInfo.UseShellExecute = $false
+        $processInfo.CreateNoWindow = $true
+
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $processInfo
+        $capture = Start-BRAVOProcessOutputCapture -Process $process
+        $process.StandardInput.WriteLine($Password)
+        $process.StandardInput.Close()
+
+        if ($TimeoutSeconds -gt 0) {
+            $timeoutMilliseconds = [int][math]::Min(
+                [double][int]::MaxValue,
+                [double]$TimeoutSeconds * 1000
+            )
+            $completed = $process.WaitForExit($timeoutMilliseconds)
+        } else {
+            $process.WaitForExit()
+            $completed = $true
+        }
+
+        if (-not $completed) {
+            $timedOut = $true
+            try {
+                $process.Kill()
+                [void]$process.WaitForExit(5000)
+            } catch {
+                # Процес міг завершитися між перевіркою таймауту та Kill().
+            }
+        }
+
+        if ($null -ne $capture) {
+            $capturedOutput = Complete-BRAVOProcessOutputCapture -Capture $capture
+            $capture = $null
+            $standardOutput = [string]$capturedOutput.StandardOutput
+            $standardError = [string]$capturedOutput.StandardError
+        }
+        if ($process.HasExited) {
+            $exitCode = [int]$process.ExitCode
+        }
+
+        $description = Get-BRAVOSevenZipExitCodeDescription `
+            -ExitCode $exitCode `
+            -TimedOut:$timedOut
+        return New-Object PSObject -Property @{
+            Success = (-not $timedOut -and $exitCode -eq 0)
+            ExitCode = $exitCode
+            Description = $description
+            TimedOut = $timedOut
+            StandardOutput = $standardOutput
+            StandardError = $standardError
+            Error = $null
+        }
+    } catch {
+        return New-Object PSObject -Property @{
+            Success = $false
+            ExitCode = $exitCode
+            Description = $_.Exception.Message
+            TimedOut = $timedOut
+            StandardOutput = $standardOutput
+            StandardError = $standardError
+            Error = $_.Exception.Message
+        }
+    } finally {
+        if ($null -ne $capture) {
+            try {
+                [void](Complete-BRAVOProcessOutputCapture -Capture $capture)
+            } catch {
+                # Збір виводу не повинен приховувати основний результат тесту.
+            }
+        }
+        if ($null -ne $process) {
+            $process.Dispose()
+        }
+    }
+}
+
 function Send-BRAVOWebhookNotification {
     [CmdletBinding()]
     param(

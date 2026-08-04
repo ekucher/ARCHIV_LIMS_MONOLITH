@@ -105,6 +105,7 @@ try {
         "BRAVO_TASKS_INSTALL.ps1",
         "BRAVO_TASKS_UNINSTALL.ps1",
         "BRAVO_TASKS_DIAGNOSE.ps1",
+        "BRAVO_RESTORE_TEST.ps1",
         "BRAVO_SELF_TEST.ps1"
     )
     foreach ($fileName in $helperEntryPoints) {
@@ -1322,7 +1323,8 @@ try {
             [pscustomobject]@{ Name = "BRAVO_TASKS_DIAGNOSE.ps1"; Path = "BRAVO_TASKS_DIAGNOSE.ps1" },
             [pscustomobject]@{ Name = "BRAVO_TASKS_UNINSTALL.ps1"; Path = "BRAVO_TASKS_UNINSTALL.ps1" },
             [pscustomobject]@{ Name = "BRAVO_CREDENTIALS_SETUP.ps1"; Path = "BRAVO_CREDENTIALS_SETUP.ps1" },
-            [pscustomobject]@{ Name = "BRAVO_TASKS_INSTALL.ps1"; Path = "BRAVO_TASKS_INSTALL.ps1" }
+            [pscustomobject]@{ Name = "BRAVO_TASKS_INSTALL.ps1"; Path = "BRAVO_TASKS_INSTALL.ps1" },
+            [pscustomobject]@{ Name = "BRAVO_RESTORE_TEST.ps1"; Path = "BRAVO_RESTORE_TEST.ps1" }
         )) {
         $utilityText = [IO.File]::ReadAllText(
             (Join-Path $root $utility.Path),
@@ -1630,6 +1632,90 @@ try {
         ) `
         -Name "Discovery/WiredIntoConfigLoaderAndSetup" `
         -Failure "BRAVO_CONFIG_LOADER.ps1 має імпортувати BRAVO.Discovery, BRAVO.config має викликати Resolve-BRAVOInstallationDiscovery для sourcePaths, а BRAVO_SETUP.ps1 -ValidateOnly має показувати й перевіряти discovery-результат і дрейф відносно baseline"
+
+    # AUD-004 (аудит P0.4): restore drill. Читабельний і навіть SHA512/7za-
+    # перевірений архів не доводить відновлюваність — Invoke-BRAVOSevenZipExtraction
+    # (modules\BRAVO.Compatibility) — новий компонент, яким
+    # BRAVO_RESTORE_TEST.ps1 користується для фактичного розпакування в
+    # ізольований каталог. Функціональний round-trip: стиснути реальним
+    # Tools\7za.exe, розпакувати назад, підтвердити, що вміст і кількість
+    # файлів збігаються.
+    Remove-Module -Name 'BRAVO.Compatibility' -Force -ErrorAction SilentlyContinue
+    Import-Module -Name (Join-Path $root "modules\BRAVO.Compatibility\BRAVO.Compatibility.psd1") -Force -ErrorAction Stop
+    $sevenZipToolPath = Join-Path $root "Tools\7za.exe"
+    if (Test-Path -LiteralPath $sevenZipToolPath -PathType Leaf) {
+        $restoreDrillTestRoot = Join-Path `
+            -Path ([IO.Path]::GetTempPath()) `
+            -ChildPath ("BRAVO_RESTORE_DRILL_SELF_TEST_{0}" -f [guid]::NewGuid().ToString("N"))
+        try {
+            $restoreDrillSourceDir = Join-Path $restoreDrillTestRoot "source"
+            [void][IO.Directory]::CreateDirectory($restoreDrillSourceDir)
+            1..4 | ForEach-Object {
+                [IO.File]::WriteAllText((Join-Path $restoreDrillSourceDir "file$_.txt"), "restore drill self-test $_")
+            }
+            $restoreDrillArchivePath = Join-Path $restoreDrillTestRoot "test.mdz"
+            $compressPsi = New-Object System.Diagnostics.ProcessStartInfo
+            $compressPsi.FileName = $sevenZipToolPath
+            $compressPsi.Arguments = "a -mmt -mx1 -r -y -p `"$restoreDrillArchivePath`" `"$restoreDrillSourceDir`""
+            $compressPsi.RedirectStandardInput = $true
+            $compressPsi.RedirectStandardOutput = $true
+            $compressPsi.RedirectStandardError = $true
+            $compressPsi.UseShellExecute = $false
+            $compressProcess = New-Object System.Diagnostics.Process
+            $compressProcess.StartInfo = $compressPsi
+            [void]$compressProcess.Start()
+            $compressProcess.StandardInput.WriteLine("RestoreDrillSelfTestPass")
+            $compressProcess.StandardInput.Close()
+            $compressProcess.WaitForExit()
+
+            $restoreDrillExtractDir = Join-Path $restoreDrillTestRoot "extract"
+            [void][IO.Directory]::CreateDirectory($restoreDrillExtractDir)
+            $extractionResult = Invoke-BRAVOSevenZipExtraction `
+                -SevenZipPath $sevenZipToolPath `
+                -ArchivePath $restoreDrillArchivePath `
+                -Password "RestoreDrillSelfTestPass" `
+                -ExtractDirectory $restoreDrillExtractDir
+            $extractedFiles = @(Get-ChildItem -LiteralPath $restoreDrillExtractDir -Recurse -File -ErrorAction SilentlyContinue)
+            Test-BRAVOCondition `
+                -Condition (
+                    [bool]$extractionResult.Success -and
+                    $extractionResult.ExitCode -eq 0 -and
+                    $extractedFiles.Count -eq 4
+                ) `
+                -Name "RestoreDrill/ExtractionRoundTripSucceeds" `
+                -Failure "Invoke-BRAVOSevenZipExtraction має успішно розпакувати стиснутий 7za.exe архів і повернути ту саму кількість файлів, що й у джерелі"
+
+            $wrongPasswordResult = Invoke-BRAVOSevenZipExtraction `
+                -SevenZipPath $sevenZipToolPath `
+                -ArchivePath $restoreDrillArchivePath `
+                -Password "DefinitelyWrongPassword" `
+                -ExtractDirectory $restoreDrillExtractDir
+            Test-BRAVOCondition `
+                -Condition (-not [bool]$wrongPasswordResult.Success) `
+                -Name "RestoreDrill/ExtractionFailsWithWrongPassword" `
+                -Failure "Invoke-BRAVOSevenZipExtraction має повертати Success=false для архіву з неправильним паролем"
+        } finally {
+            if (Test-Path -LiteralPath $restoreDrillTestRoot) {
+                Remove-Item -LiteralPath $restoreDrillTestRoot -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    $restoreTestScriptText = [IO.File]::ReadAllText(
+        (Join-Path $root "BRAVO_RESTORE_TEST.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    Test-BRAVOCondition `
+        -Condition (
+            $restoreTestScriptText.Contains("Find-BRAVOLatestVerifiedArchive") -and
+            $restoreTestScriptText.Contains("Test-SevenZipArchiveIntegrity") -and
+            $restoreTestScriptText.Contains("Invoke-BRAVOSevenZipExtraction") -and
+            $restoreTestScriptText.Contains("MinimumFileCount") -and
+            $restoreTestScriptText.Contains("Resolve-BRAVOExitCode") -and
+            $restoreTestScriptText.Contains("Remove-Item -LiteralPath `$workingDirectory -Recurse -Force")
+        ) `
+        -Name "RestoreDrill/ScriptImplementsFullDrillCycle" `
+        -Failure "BRAVO_RESTORE_TEST.ps1 має знаходити найновіший верифікований backup, перевіряти цілісність 7za, розпаковувати в ізольований каталог, звіряти мінімальну кількість файлів, повертати контрактний exit code і прибирати за собою"
 
     $legacyEntryPoints = @(
         'ARCHIV_VETOFFICE.ps1',
