@@ -2,6 +2,36 @@
 
 ## 4.3.0 — 2026-08-04
 
+- AUD-007 з ARCHIV_LIMS_MONOLITH_FULL_AUDIT.md (P1.1/P1.2): захист від
+  неоднозначного й дрейфового discovery. `Resolve-BRAVOInstallationDiscovery`
+  тепер позначає `Ambiguous.BravoRoot`/`Ambiguous.WebRoot`, якщо знайдено
+  кілька служб BRAVO/Apache із РІЗНИМИ виконуваними файлами (ознака
+  stale/дублюючої інсталяції) — `Test-BRAVODiscoveryResult` блокує
+  валідацію для будь-якого увімкненого компонента, що залежить від
+  неоднозначного кореня. Додано `Save-BRAVODiscoveryBaseline` і
+  `Compare-BRAVODiscoveryBaseline`: `BRAVO_SETUP.ps1 -ValidateOnly`
+  порівнює поточний discovery-результат зі збереженим
+  `LOGS\DISCOVERY_BASELINE.json` (поза git) і повідомляє про дрейф
+  джерел відносно останнього підтвердженого запуску (лише попередження,
+  не блокує); новий switch `-ConfirmDiscoveryBaseline` явно фіксує
+  поточний результат як baseline.
+
+  Під час розробки виявлено й виправлено реальний баг у самому модулі
+  `BRAVO.Discovery`: ідіома `return ,@($collection.ToArray())`
+  (застосована раніше для фіксу розгортання 1-елементного масиву в
+  скаляр під Set-StrictMode -Version 2.0 на Windows PowerShell 5.1) при
+  ПОРОЖНІЙ колекції створює масив з ОДНИМ елементом-порожнім-масивом, а
+  не порожній масив — той самий клас бага, лише в інший бік. Спроба
+  виправити через `Write-Output -NoEnumerate` натомість ламала виклики,
+  де результат додатково обгортається `@(...)` на боці клієнта
+  (подвійне обгортання). Остаточне рішення: звичайний `return
+  $collection.ToArray()` у `Test-BRAVODiscoveryResult` і
+  `Compare-BRAVODiscoveryBaseline`, а всі точки виклику (в
+  `BRAVO_SETUP.ps1` і `BRAVO_SELF_TEST.ps1`) уніфіковано завжди
+  обгортають виклик `@(...)` — єдиний послідовний контракт, який
+  коректно повертає масив для 0, 1 і N елементів незалежно від стилю
+  виклику.
+
 - AUD-017 з ARCHIV_LIMS_MONOLITH_FULL_AUDIT.md: виправлено застарілий
   рядок у `SECURITY.md` (розділ 8), який стверджував, що
   `RELEASE_CHECKLIST.md` "наразі не існує" — файл вже доданий раніше

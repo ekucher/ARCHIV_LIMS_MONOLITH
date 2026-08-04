@@ -265,6 +265,16 @@ function Resolve-BRAVOInstallationDiscovery {
         -ServiceCandidates @($BravoServiceName) `
         -Services $Services
     $bravoServiceMatch = $bravoServices | Select-Object -First 1
+    # AUD-007 (аудит P1.1): кілька служб BRAVO з РІЗНИМИ виконуваними
+    # файлами — ознака stale/дублюючої інсталяції. Обираємо перший
+    # (running-first), як і раніше, але позначаємо неоднозначність, щоб
+    # Test-BRAVODiscoveryResult міг її заблокувати для enabled-компонентів.
+    $distinctBravoExecutables = @(
+        $bravoServices |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_.ExecutablePath) } |
+            Select-Object -ExpandProperty ExecutablePath -Unique
+    )
+    $bravoRootAmbiguous = $distinctBravoExecutables.Count -gt 1
     $bravoRoot = $null
     $bravoRootReason = $null
     if (-not [string]::IsNullOrWhiteSpace($bravoRootOverride)) {
@@ -275,6 +285,9 @@ function Resolve-BRAVOInstallationDiscovery {
         -not [string]::IsNullOrWhiteSpace($bravoServiceMatch.ExecutablePath)) {
         $bravoRoot = Split-Path -Path $bravoServiceMatch.ExecutablePath -Parent
         $bravoRootReason = "служба '$($bravoServiceMatch.Name)' -> $($bravoServiceMatch.ExecutablePath)"
+        if ($bravoRootAmbiguous) {
+            $bravoRootReason += " [УВАГА: знайдено кілька служб BRAVO з різними виконуваними файлами, обрано першу]"
+        }
     } else {
         $bravoRoot = $LimsRoot
         $bravoRootReason = "legacy fallback: LIMSRoot (службу BRAVO не знайдено)"
@@ -376,6 +389,12 @@ function Resolve-BRAVOInstallationDiscovery {
         @()
     }
     $webServiceMatch = $webServices | Select-Object -First 1
+    $distinctWebExecutables = @(
+        $webServices |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_.ExecutablePath) } |
+            Select-Object -ExpandProperty ExecutablePath -Unique
+    )
+    $webRootAmbiguous = $distinctWebExecutables.Count -gt 1
     $webRoot = $null
     $webRootReason = $null
     if (-not [string]::IsNullOrWhiteSpace($webRootOverride)) {
@@ -390,6 +409,9 @@ function Resolve-BRAVOInstallationDiscovery {
         $apacheDir = Split-Path -Path $binDir -Parent
         $webRoot = Split-Path -Path $apacheDir -Parent
         $webRootReason = "служба '$($webServiceMatch.Name)' -> $($webServiceMatch.ExecutablePath)"
+        if ($webRootAmbiguous) {
+            $webRootReason += " [УВАГА: знайдено кілька Apache-подібних служб з різними виконуваними файлами, обрано першу]"
+        }
     } else {
         $webRootReason = "Apache-службу не знайдено; BAZA_WWW недоступний"
     }
@@ -433,6 +455,10 @@ function Resolve-BRAVOInstallationDiscovery {
         BAZA_WWW = $bazaWwwResolved.Value
         Services = $allServices
         Overrides = $overrides
+        Ambiguous = @{
+            BravoRoot = $bravoRootAmbiguous
+            WebRoot = $webRootAmbiguous
+        }
         Reasons = @{
             BravoRoot = $reasons["BravoRoot"]
             WebRoot = $reasons["WebRoot"]
@@ -461,6 +487,23 @@ function Test-BRAVODiscoveryResult {
     )
 
     $errors = New-Object System.Collections.Generic.List[string]
+
+    # AUD-007 (аудит P1.1): неоднозначний BRAVO_ROOT/WEB_ROOT (кілька служб
+    # із різними виконуваними файлами) не має мовчки давати "успішний"
+    # backup не того джерела — блокуємо лише для реально увімкнених
+    # компонентів, які від цього кореня залежать.
+    if ($DiscoveryResult.PSObject.Properties['Ambiguous'] -and
+        $DiscoveryResult.Ambiguous -is [System.Collections.IDictionary]) {
+        $bravoRootDependents = @('MODEL', 'BLOG', 'BRAVOEXCH', 'BAZA_APP') |
+            Where-Object { $EnabledComponents.Contains($_) -and [bool]$EnabledComponents[$_] }
+        if ([bool]$DiscoveryResult.Ambiguous['BravoRoot'] -and @($bravoRootDependents).Count -gt 0) {
+            $errors.Add("Знайдено кілька служб BRAVO з різними виконуваними файлами — BRAVO_ROOT неоднозначний (впливає на: $($bravoRootDependents -join ', ')). Задайте discoverySettings.BravoRoot вручну або приберіть зайву службу.")
+        }
+        if ([bool]$DiscoveryResult.Ambiguous['WebRoot'] -and
+            $EnabledComponents.Contains('BAZA_WWW') -and [bool]$EnabledComponents['BAZA_WWW']) {
+            $errors.Add("Знайдено кілька Apache-подібних служб з різними виконуваними файлами — WEB_ROOT неоднозначний (впливає на: BAZA_WWW). Задайте discoverySettings.WebRoot вручну або приберіть зайву службу.")
+        }
+    }
 
     $sourceFieldsByComponent = @{
         MODEL = "MODEL_SOURCE"
@@ -515,11 +558,94 @@ function Test-BRAVODiscoveryResult {
         }
     }
 
-    # ",": без унарної коми масив з 1 елементом розгортається пайплайном у
-    # скаляр при виклику через просте присвоєння — і .Count падає під
-    # Set-StrictMode -Version 2.0 на Windows PowerShell 5.1 (немає .Count
-    # на String до PS 7). Кома гарантує, що завжди повертається масив.
-    return ,@($errors.ToArray())
+    # Звичайний масив, БЕЗ унарної коми і БЕЗ -NoEnumerate: обидва
+    # трюки ламають один із двох стилів виклику (пряме присвоєння vs
+    # виклик, обгорнутий у @(...) на боці клієнта). Контракт цієї функції
+    # — виклик ЗАВЖДИ обгортається @(...) на боці клієнта (як і
+    # BRAVO_SETUP.ps1 та BRAVO_SELF_TEST.ps1 уже роблять); це коректно
+    # відновлює масив для 0, 1 і N елементів під Set-StrictMode -Version 2.0
+    # на Windows PowerShell 5.1.
+    return $errors.ToArray()
+}
+
+$script:BRAVODiscoveryBaselineFields = @(
+    'BRAVO_ROOT', 'WEB_ROOT', 'MODEL_SOURCE', 'BLOG_SOURCE',
+    'BRAVOEXCH_SOURCE', 'BAZA_APP', 'BAZA_WWW'
+)
+
+function Save-BRAVODiscoveryBaseline {
+    # AUD-007 (аудит P1.1/P1.2): зберігає останній підтверджений discovery-
+    # результат на диск (JSON, без BOM — узгоджено з VERSION.json), щоб
+    # Compare-BRAVODiscoveryBaseline міг виявити дрейф джерел між запусками.
+    # Явне збереження (не автоматичне при кожному запуску) — за задумом:
+    # baseline підтверджує адміністратор через BRAVO_SETUP.ps1
+    # -ConfirmDiscoveryBaseline, після ручної перевірки виводу DISCOVERY.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object]$DiscoveryResult,
+        [Parameter(Mandatory = $true)][string]$BaselinePath
+    )
+
+    $snapshot = [ordered]@{ SavedAt = (Get-Date).ToString("o") }
+    foreach ($fieldName in $script:BRAVODiscoveryBaselineFields) {
+        $snapshot[$fieldName] = [string]$DiscoveryResult.$fieldName
+    }
+
+    $parentDir = Split-Path -Path $BaselinePath -Parent
+    if (-not [string]::IsNullOrWhiteSpace($parentDir) -and
+        -not (Test-Path -LiteralPath $parentDir -PathType Container)) {
+        [void](New-Item -ItemType Directory -Path $parentDir -Force)
+    }
+
+    $json = [pscustomobject]$snapshot | ConvertTo-Json
+    [IO.File]::WriteAllText($BaselinePath, $json, (New-Object System.Text.UTF8Encoding($false)))
+}
+
+function Compare-BRAVODiscoveryBaseline {
+    # Повертає масив рядків-попереджень про дрейф джерел відносно
+    # останнього збереженого baseline (порожній масив == дрейфу немає або
+    # baseline ще не існує — перший запуск не є дрейфом). -Baseline
+    # дозволяє self-test підставити синтетичний baseline без файлу на
+    # диску (той самий injectable-патерн, що й -Services).
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object]$DiscoveryResult,
+        [string]$BaselinePath,
+        [object]$Baseline
+    )
+
+    if ($null -eq $Baseline) {
+        if ([string]::IsNullOrWhiteSpace($BaselinePath) -or
+            -not (Test-Path -LiteralPath $BaselinePath -PathType Leaf)) {
+            return @()
+        }
+        try {
+            $rawBaseline = Get-Content -LiteralPath $BaselinePath -Raw -Encoding UTF8
+            $Baseline = $rawBaseline | ConvertFrom-Json
+        } catch {
+            return @("Не вдалося прочитати збережений discovery baseline '$BaselinePath': $($_.Exception.Message)")
+        }
+    }
+
+    $drift = New-Object System.Collections.Generic.List[string]
+    foreach ($fieldName in $script:BRAVODiscoveryBaselineFields) {
+        $baselineValue = if ($Baseline.PSObject.Properties[$fieldName]) {
+            [string]$Baseline.$fieldName
+        } else {
+            $null
+        }
+        if ([string]::IsNullOrWhiteSpace($baselineValue)) {
+            continue
+        }
+        $currentValue = [string]$DiscoveryResult.$fieldName
+        if ([string]::IsNullOrWhiteSpace($currentValue)) {
+            $drift.Add("Discovery drift: '$fieldName' раніше було '$baselineValue', зараз не визначено.")
+        } elseif (-not [string]::Equals($baselineValue, $currentValue, [StringComparison]::OrdinalIgnoreCase)) {
+            $drift.Add("Discovery drift: '$fieldName' змінився з '$baselineValue' на '$currentValue' відносно збереженого baseline.")
+        }
+    }
+
+    return $drift.ToArray()
 }
 
 Export-ModuleMember -Function @(
@@ -527,5 +653,7 @@ Export-ModuleMember -Function @(
     'Find-BRAVOServiceByCandidates',
     'ConvertFrom-BRAVOIniFile',
     'Resolve-BRAVOInstallationDiscovery',
-    'Test-BRAVODiscoveryResult'
+    'Test-BRAVODiscoveryResult',
+    'Save-BRAVODiscoveryBaseline',
+    'Compare-BRAVODiscoveryBaseline'
 )

@@ -1520,9 +1520,9 @@ try {
             BAZA_APP = $null
             BAZA_WWW = $null
         }
-        $validationErrors = Test-BRAVODiscoveryResult `
+        $validationErrors = @(Test-BRAVODiscoveryResult `
             -DiscoveryResult $missingSourceResult `
-            -EnabledComponents @{ MODEL = $true; BLOG = $true; BRAVOEXCH = $false }
+            -EnabledComponents @{ MODEL = $true; BLOG = $true; BRAVOEXCH = $false })
         Test-BRAVOCondition `
             -Condition (
                 $validationErrors.Count -eq 1 -and
@@ -1530,6 +1530,74 @@ try {
             ) `
             -Name "Discovery/ValidationDetectsMissingEnabledSourceOnly" `
             -Failure "Test-BRAVODiscoveryResult має повідомляти лише про увімкнені компоненти з відсутнім/непорожнім шляхом і не чіпати вимкнені"
+
+        # AUD-007 (аудит P1.1): кілька служб BRAVO з РІЗНИМИ виконуваними
+        # файлами — неоднозначний BRAVO_ROOT має позначатися й блокувати
+        # валідацію для enabled-компонентів, що від нього залежать.
+        $ambiguousExePathA = Join-Path $discoveryTestRoot "bravo_instance_a.exe"
+        [IO.File]::WriteAllText($ambiguousExePathA, "stub")
+        $ambiguousExePathB = Join-Path $discoveryTestRoot "bravo_instance_b.exe"
+        [IO.File]::WriteAllText($ambiguousExePathB, "stub")
+        $ambiguousBravoServices = @(
+            [pscustomobject]@{ Name = "BRAVO"; DisplayName = "BRAVO"; State = "Running"; StartMode = "Auto"; PathName = ('"{0}"' -f $ambiguousExePathA) },
+            [pscustomobject]@{ Name = "BRAVO"; DisplayName = "BRAVO"; State = "Running"; StartMode = "Auto"; PathName = ('"{0}"' -f $ambiguousExePathB) }
+        )
+        $ambiguousDiscovery = Resolve-BRAVOInstallationDiscovery `
+            -LimsRoot $discoveryTestRoot `
+            -BravoServiceName "BRAVO" `
+            -Services $ambiguousBravoServices
+        Test-BRAVOCondition `
+            -Condition (
+                [bool]$ambiguousDiscovery.Ambiguous["BravoRoot"] -and
+                -not [bool]$ambiguousDiscovery.Ambiguous["WebRoot"]
+            ) `
+            -Name "Discovery/AmbiguousBravoServiceIsDetected" `
+            -Failure "Resolve-BRAVOInstallationDiscovery має позначати Ambiguous.BravoRoot=true, якщо знайдено кілька служб BRAVO з різними виконуваними файлами"
+        $ambiguousValidationErrors = @(Test-BRAVODiscoveryResult `
+            -DiscoveryResult $ambiguousDiscovery `
+            -EnabledComponents @{ MODEL = $true; BLOG = $false; BRAVOEXCH = $false })
+        Test-BRAVOCondition `
+            -Condition (
+                @($ambiguousValidationErrors | Where-Object { $_.Contains("BRAVO_ROOT") -and $_.Contains("неоднозначний") }).Count -eq 1
+            ) `
+            -Name "Discovery/ValidationBlocksAmbiguousBravoRootForEnabledComponent" `
+            -Failure "Test-BRAVODiscoveryResult має повідомляти про неоднозначний BRAVO_ROOT, лише якщо від нього залежить увімкнений компонент"
+        $ambiguousValidationErrorsAllDisabled = @(Test-BRAVODiscoveryResult `
+            -DiscoveryResult $ambiguousDiscovery `
+            -EnabledComponents @{ MODEL = $false; BLOG = $false; BRAVOEXCH = $false })
+        Test-BRAVOCondition `
+            -Condition (
+                @($ambiguousValidationErrorsAllDisabled | Where-Object { $_.Contains("неоднозначний") }).Count -eq 0
+            ) `
+            -Name "Discovery/ValidationIgnoresAmbiguousBravoRootWhenNoDependentComponentEnabled" `
+            -Failure "неоднозначний BRAVO_ROOT не повинен генерувати помилку, якщо жоден залежний компонент не увімкнено"
+
+        # AUD-007 (аудит P1.2): baseline snapshot і виявлення дрейфу джерел
+        # між запусками.
+        $baselineTestPath = Join-Path $discoveryTestRoot "discovery_baseline.json"
+        Save-BRAVODiscoveryBaseline -DiscoveryResult $autoDiscovery -BaselinePath $baselineTestPath
+        $noDriftResult = @(Compare-BRAVODiscoveryBaseline -DiscoveryResult $autoDiscovery -BaselinePath $baselineTestPath)
+        $driftedDiscovery = [pscustomobject]@{
+            BRAVO_ROOT = $autoDiscovery.BRAVO_ROOT
+            WEB_ROOT = $autoDiscovery.WEB_ROOT
+            MODEL_SOURCE = "C:\Completely\Different\Model"
+            BLOG_SOURCE = $autoDiscovery.BLOG_SOURCE
+            BRAVOEXCH_SOURCE = $autoDiscovery.BRAVOEXCH_SOURCE
+            BAZA_APP = $autoDiscovery.BAZA_APP
+            BAZA_WWW = $autoDiscovery.BAZA_WWW
+        }
+        $driftResult = @(Compare-BRAVODiscoveryBaseline -DiscoveryResult $driftedDiscovery -BaselinePath $baselineTestPath)
+        $noBaselineYetResult = @(Compare-BRAVODiscoveryBaseline -DiscoveryResult $autoDiscovery -BaselinePath (Join-Path $discoveryTestRoot "__NO_SUCH_BASELINE__.json"))
+        Test-BRAVOCondition `
+            -Condition (
+                (Test-Path -LiteralPath $baselineTestPath -PathType Leaf) -and
+                $noDriftResult.Count -eq 0 -and
+                $driftResult.Count -eq 1 -and
+                $driftResult[0].Contains("MODEL_SOURCE") -and
+                $noBaselineYetResult.Count -eq 0
+            ) `
+            -Name "Discovery/BaselineSaveAndDriftDetection" `
+            -Failure "Save-BRAVODiscoveryBaseline має зберігати JSON-знімок, Compare-BRAVODiscoveryBaseline — виявляти зміну поля відносно нього й не повідомляти про дрейф, якщо baseline ще не існує"
     } finally {
         if (Test-Path -LiteralPath $discoveryTestRoot) {
             Remove-Item -LiteralPath $discoveryTestRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -1555,10 +1623,13 @@ try {
             $bravoConfigTextForDiscovery.Contains("`$global:discoverySettings") -and
             $bravoConfigTextForDiscovery.Contains("`$global:sourcePaths") -and
             $setupTextForDiscovery.Contains("Test-BRAVODiscoveryResult") -and
-            $setupTextForDiscovery.Contains("DISCOVERY")
+            $setupTextForDiscovery.Contains("DISCOVERY") -and
+            $setupTextForDiscovery.Contains("Compare-BRAVODiscoveryBaseline") -and
+            $setupTextForDiscovery.Contains("Save-BRAVODiscoveryBaseline") -and
+            $setupTextForDiscovery.Contains("ConfirmDiscoveryBaseline")
         ) `
         -Name "Discovery/WiredIntoConfigLoaderAndSetup" `
-        -Failure "BRAVO_CONFIG_LOADER.ps1 має імпортувати BRAVO.Discovery, BRAVO.config має викликати Resolve-BRAVOInstallationDiscovery для sourcePaths, а BRAVO_SETUP.ps1 -ValidateOnly має показувати й перевіряти discovery-результат"
+        -Failure "BRAVO_CONFIG_LOADER.ps1 має імпортувати BRAVO.Discovery, BRAVO.config має викликати Resolve-BRAVOInstallationDiscovery для sourcePaths, а BRAVO_SETUP.ps1 -ValidateOnly має показувати й перевіряти discovery-результат і дрейф відносно baseline"
 
     $legacyEntryPoints = @(
         'ARCHIV_VETOFFICE.ps1',
