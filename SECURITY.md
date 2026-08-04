@@ -163,8 +163,11 @@ manifest із хешами файлів — цілісність самого re
 - GitHub branch protection (required status checks, заборона прямого
   push у `master`) — CI (розділ нижче) існує й запускається на кожен
   push/PR, але поки що нічого не заважає змержити чи запушити повз
-  зелений статус, доки власник репозиторію не увімкне branch protection
-  вручну в налаштуваннях GitHub.
+  зелений статус. Спробу ввімкнути через `gh api
+  .../branches/master/protection` заблоковано самим GitHub: ця функція
+  на приватних репозиторіях вимагає GitHub Pro
+  (`403 Upgrade to GitHub Pro or make this repository public`) — не
+  забутий крок, а обмеження поточного тарифного плану.
 
 ## 8.1. CI (аудит AUD-001)
 
@@ -191,7 +194,8 @@ GitHub Actions (`.github/workflows/ci.yml`), раннер `windows-latest`
 
 **Явно НЕ ввімкнено:** required status checks і заборона прямого push у
 `master` (GitHub branch protection) — CI лише запускається й показує
-статус, але поки не блокує merge технічно.
+статус, але поки не блокує merge технічно. Причина — не забутий крок, а
+обмеження тарифного плану GitHub (розділ 8 вище).
 
 ## 9. Пов'язані документи
 
