@@ -247,6 +247,76 @@ try {
         -Name "Runtime/HealthAndMaintenanceMaskSecretsInLogs" `
         -Failure "Write-HealthLog і Write-Log (Maintenance) мають маскувати секрети так само, як Write-BRAVOLog в Archive"
 
+    Remove-Module -Name 'BRAVO.ExitCodes' -Force -ErrorAction SilentlyContinue
+    Import-Module -Name (Join-Path $root "modules\BRAVO.ExitCodes\BRAVO.ExitCodes.psd1") -Force -ErrorAction Stop
+    Test-BRAVOCondition `
+        -Condition (
+            (Resolve-BRAVOExitCode) -eq 0 -and
+            (Resolve-BRAVOExitCode -HasWarnings) -eq 10 -and
+            (Resolve-BRAVOExitCode -LockBusy) -eq 20 -and
+            (Resolve-BRAVOExitCode -InvalidConfiguration) -eq 30 -and
+            (Resolve-BRAVOExitCode -CredentialsUnavailable) -eq 31 -and
+            (Resolve-BRAVOExitCode -LocalArchiveFailed) -eq 40 -and
+            (Resolve-BRAVOExitCode -IntegrityTestFailed) -eq 41 -and
+            (Resolve-BRAVOExitCode -SftpFailed) -eq 50 -and
+            (Resolve-BRAVOExitCode -SmbFailed) -eq 51 -and
+            (Resolve-BRAVOExitCode -MaintenanceFailed) -eq 60 -and
+            (Resolve-BRAVOExitCode -HealthCritical) -eq 70 -and
+            (Resolve-BRAVOExitCode -InternalError) -eq 90
+        ) `
+        -Name "ExitCodes/ResolveSingleCategory" `
+        -Failure "кожна окрема категорія відмови має повертати свій код із контракту"
+    Test-BRAVOCondition `
+        -Condition (
+            (Resolve-BRAVOExitCode -SftpFailed -SmbFailed) -eq 50 -and
+            (Resolve-BRAVOExitCode -LockBusy -InvalidConfiguration) -eq 20 -and
+            (Resolve-BRAVOExitCode -InternalError -SftpFailed -HasWarnings) -eq 90 -and
+            (Resolve-BRAVOExitCode -LocalArchiveFailed -IntegrityTestFailed) -eq 40 -and
+            (Resolve-BRAVOExitCode -MaintenanceFailed -HealthCritical) -eq 60 -and
+            (Resolve-BRAVOExitCode -InvalidConfiguration -CredentialsUnavailable) -eq 30
+        ) `
+        -Name "ExitCodes/ResolvePriorityOrder" `
+        -Failure "при одночасних відмовах має перемагати найвищий пріоритет (lock>config>creds>local>integrity>sftp>smb>maintenance>health>warnings), InternalError — найвищий за все"
+    Test-BRAVOCondition `
+        -Condition (
+            (Get-BRAVOExitCodeName -Code 0) -eq "Success" -and
+            (Get-BRAVOExitCodeName -Code 50) -eq "SftpFailed" -and
+            (Get-BRAVOExitCodeName -Code 999) -eq "Unknown(999)"
+        ) `
+        -Name "ExitCodes/GetExitCodeName" `
+        -Failure "зворотний пошук назви коду має працювати для відомих і невідомих значень"
+    $archiveRuntimeTextForExitCodes = [IO.File]::ReadAllText(
+        (Join-Path $root "modules\BRAVO.Archive\BRAVO.Archive.Runtime.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    $maintenanceRuntimeTextForExitCodes = [IO.File]::ReadAllText(
+        (Join-Path $root "modules\BRAVO.Maintenance\BRAVO.Maintenance.Runtime.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    $healthRuntimeTextForExitCodes = [IO.File]::ReadAllText(
+        (Join-Path $root "modules\BRAVO.Health\BRAVO.Health.Runtime.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveRuntimeTextForExitCodes.Contains("'BRAVO.ExitCodes'") -and
+            $archiveRuntimeTextForExitCodes.Contains("Resolve-BRAVOExitCode") -and
+            $maintenanceRuntimeTextForExitCodes.Contains("'BRAVO.ExitCodes'") -and
+            $maintenanceRuntimeTextForExitCodes.Contains("Resolve-BRAVOExitCode") -and
+            $healthRuntimeTextForExitCodes.Contains("'BRAVO.ExitCodes'") -and
+            $healthRuntimeTextForExitCodes.Contains("Resolve-BRAVOExitCode")
+        ) `
+        -Name "Runtime/SharedExitCodeContract" `
+        -Failure "Archive/Health/Maintenance мають підключати BRAVO.ExitCodes і формувати підсумковий код через Resolve-BRAVOExitCode"
+    Test-BRAVOCondition `
+        -Condition (
+            -not ($archiveRuntimeTextForExitCodes -match 'processExitCode\s*=\s*2\b') -and
+            -not ($maintenanceRuntimeTextForExitCodes -match '\bexit\s+2\b') -and
+            -not ($maintenanceRuntimeTextForExitCodes -match '\bexit\s+1\b')
+        ) `
+        -Name "Runtime/NoLegacyAdHocExitCodes" `
+        -Failure "старі ad-hoc коди (2 для lock, голий exit 1) мають бути повністю замінені контрактом BRAVO.ExitCodes"
+
     $insecureWebhookRejected = $false
     try {
         Send-BRAVOWebhookNotification `

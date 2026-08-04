@@ -14,7 +14,7 @@ function Invoke-BRAVOMaintenanceEntrypoint {
         # Той самий захист, що й у BRAVO.Archive.psm1: спрацьовує лише на
         # непередбаченій помилці, яку runtime не встиг обробити власним Exit.
         Write-Error "Неочікувана помилка runtime Maintenance: $($_.Exception.Message)"
-        return 1
+        return 90
     }
 }
 

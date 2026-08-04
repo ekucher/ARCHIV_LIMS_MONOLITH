@@ -2,6 +2,19 @@
 
 ## 4.2.12 — 2026-08-03
 
+- Формальний контракт кодів завершення (`modules/BRAVO.ExitCodes`): замість
+  `0`/`1` Archive, Health і Maintenance тепер повертають одне з `0`
+  (успішно), `10` (успішно з попередженнями), `20` (пропущено — lock
+  зайнятий), `30` (некоректна конфігурація), `31` (немає credentials),
+  `40` (помилка локальної архівації), `41` (не підтверджено цілісність),
+  `50` (SFTP failed), `51` (SMB failed), `60` (Maintenance failed), `70`
+  (Health critical), `90` (внутрішня непередбачена помилка). Дозволяє
+  зовнішньому моніторингу (Task Scheduler history, Zabbix) розрізняти
+  причину збою, а не лише факт його наявності. При одночасних відмовах
+  переможець визначається пріоритетом (lock > config > creds > local
+  archive > integrity > SFTP > SMB > maintenance > health > warnings).
+  Заразом узгоджено: Archive більше не трактує статуси Health `Disabled`/
+  `Deferred` як власну відмову — сам Health вважає їх безпечними.
 - Runtime Archive, Health і Maintenance та спільні бібліотеки перенесено до
   versioned PowerShell-модулів у каталозі `modules`; task-entrypoint-и залишено
   тонкими стабільними wrappers.

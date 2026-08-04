@@ -31,7 +31,7 @@ function Complete-BRAVOHealthResult {
 $bravoScriptDirectory = $RuntimeRoot
 
 # Health використовує спільні модулі, а не копії з архіватора.
-foreach ($moduleName in @('BRAVO.Compatibility', 'BRAVO.Credentials', 'BRAVO.ArchiveRuntime', 'BRAVO.Logging')) {
+foreach ($moduleName in @('BRAVO.Compatibility', 'BRAVO.Credentials', 'BRAVO.ArchiveRuntime', 'BRAVO.Logging', 'BRAVO.ExitCodes')) {
     $modulePath = Join-Path $bravoScriptDirectory "modules\$moduleName\$moduleName.psd1"
     if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) {
         throw "Не знайдено спільний PowerShell-модуль: $modulePath"
@@ -134,6 +134,11 @@ $notificationCredentialError = $null
 $sftpCredentialError = $null
 $smbCredentialError = $null
 $script:smbCredential = $null
+# Лічильник WARNING для контракту кодів завершення: успіх без жодного
+# попередження -> 0, успіх із попередженнями -> 10 (Resolve-BRAVOExitCode).
+# Ініціалізується тут явно, а не лише в Write-HealthLog — інакше перше ж
+# читання під Set-StrictMode впало б, якщо жодного попередження не було.
+$script:BRAVOWarningCount = 0
 # Кеш каталогу тимчасових файлів WinSCP. Get-BRAVOHealthTemporaryRoot читає
 # його ще до першого присвоєння, а Set-StrictMode (успадкований від
 # конфігураційного завантажувача) робить читання неоголошеної змінної помилкою.
@@ -288,6 +293,9 @@ function Write-HealthLog {
     # через повідомлення винятку WinSCP/Invoke-WebRequest — маскуємо перед
     # тим, як щось піде в консоль чи файл.
     $Message = Protect-BRAVOLogSecret -Text $Message
+    if ($Level -eq "WARNING") {
+        $script:BRAVOWarningCount++
+    }
 
     $timestamp = Get-Date -Format $logTimestampFormat
     $entry = "[$timestamp] [$Level] $Message"
@@ -3573,8 +3581,22 @@ if ($MyInvocation.InvocationName -ne '.') {
         SkipIfBackupTaskRunning = $SkipIfBackupTaskRunning
     }
     $healthResult = Invoke-BRAVOHealth @healthParameters
-    if ([string]$healthResult.Status -in @('Healthy', 'Skipped', 'Deferred', 'Disabled')) {
-        exit 0
+    # Deferred — це саме "пропущено через lock/уже виконується інше завдання"
+    # у сенсі загального контракту кодів, тому окремий код 20, а не 0/1.
+    # Skipped ніколи фактично не породжується цим runtime (мертва гілка),
+    # лишена як безпечний fallback на успіх.
+    $exitCode = switch ([string]$healthResult.Status) {
+        'Healthy'            { 0 }
+        'Skipped'            { 0 }
+        'Disabled'           { 0 }
+        'Deferred'           { Resolve-BRAVOExitCode -LockBusy }
+        'ConfigurationError' { Resolve-BRAVOExitCode -InvalidConfiguration }
+        'Critical'           { Resolve-BRAVOExitCode -HealthCritical }
+        'NotificationError'  { Resolve-BRAVOExitCode -HealthCritical }
+        default              { Resolve-BRAVOExitCode -HealthCritical }
     }
-    exit 1
+    if ($exitCode -eq 0 -and $script:BRAVOWarningCount -gt 0) {
+        $exitCode = Resolve-BRAVOExitCode -HasWarnings
+    }
+    exit $exitCode
 }

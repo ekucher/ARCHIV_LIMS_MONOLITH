@@ -23,7 +23,7 @@ param (
 $bravoScriptDirectory = $RuntimeRoot
 
 # Спільні PowerShell-модулі runtime.
-foreach ($moduleName in @('BRAVO.Compatibility', 'BRAVO.Credentials', 'BRAVO.ArchiveHelpers', 'BRAVO.Logging')) {
+foreach ($moduleName in @('BRAVO.Compatibility', 'BRAVO.Credentials', 'BRAVO.ArchiveHelpers', 'BRAVO.Logging', 'BRAVO.ExitCodes')) {
     $modulePath = Join-Path $bravoScriptDirectory "modules\$moduleName\$moduleName.psd1"
     if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) {
         throw "Не знайдено спільний PowerShell-модуль: $modulePath"
@@ -89,7 +89,7 @@ $script:maintenanceOperationLockPath = $null
 # ===== ЗАВАНТАЖЕННЯ НАЛАШТУВАНЬ =====
 if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
     Write-Host "ПОМИЛКА: Не знайдено конфігураційний файл: $ConfigPath" -ForegroundColor Red
-    exit 1
+    exit 30
 }
 
 try {
@@ -125,7 +125,7 @@ try {
     }
 } catch {
     Write-Host "ПОМИЛКА читання конфігурації '$ConfigPath': $($_.Exception.Message)" -ForegroundColor Red
-    exit 1
+    exit 30
 }
 
 $requiredConfigPaths = @(
@@ -158,14 +158,14 @@ foreach ($requiredPath in $requiredConfigPaths) {
         if ($currentNode -is [System.Collections.IDictionary]) {
             if (-not $currentNode.Contains($segment) -or $null -eq $currentNode[$segment]) {
                 Write-Host "ПОМИЛКА: У конфігурації відсутній обов'язковий параметр '$requiredPath'" -ForegroundColor Red
-                exit 1
+                exit 30
             }
             $currentNode = $currentNode[$segment]
         } else {
             $property = $currentNode.PSObject.Properties[$segment]
             if ($null -eq $property -or $null -eq $property.Value) {
                 Write-Host "ПОМИЛКА: У конфігурації відсутній обов'язковий параметр '$requiredPath'" -ForegroundColor Red
-                exit 1
+                exit 30
             }
             $currentNode = $property.Value
         }
@@ -382,28 +382,28 @@ if ([string]::IsNullOrWhiteSpace($script:ObjectName) -or
     $script:LogLevel -notin @("DEBUG", "INFO", "WARNING", "ERROR", "SUCCESS") -or
     $arcCommonParams.Count -eq 0) {
     Write-Host "ПОМИЛКА: BRAVO.config містить некоректні значення" -ForegroundColor Red
-    exit 1
+    exit 30
 }
 
 if ($invalidExcludedDrives.Count -gt 0) {
     Write-Host "ПОМИЛКА: Некоректні значення Limits.ExcludedDrives: $($invalidExcludedDrives -join ', ')" -ForegroundColor Red
-    exit 1
+    exit 30
 }
 
 if ($RangeIdMonitoringEnabled -and [string]::IsNullOrWhiteSpace($RangeIdLogPath)) {
     Write-Host "ПОМИЛКА: Для моніторингу діапазонів ID потрібно вказати RangeIdMonitoring.FilePath" -ForegroundColor Red
-    exit 1
+    exit 30
 }
 
 if ($archivePasswordPresentInConfig) {
     Write-Host "ПОМИЛКА: Видаліть параметр -p<пароль> із Maintenance.Archiver.Parameters у BRAVO.config. Пароль має зберігатися лише у Credential Manager." -ForegroundColor Red
-    exit 1
+    exit 30
 }
 
 if ([string]::IsNullOrWhiteSpace($script:ArchivePassword)) {
     $archiveCredentialDetails = if ($ArchiveCredentialError) { ": $ArchiveCredentialError" } else { "" }
     Write-Host "ПОМИЛКА: Не знайдено пароль архівів 7-Zip у Credential Manager$archiveCredentialDetails" -ForegroundColor Red
-    exit 1
+    exit 31
 }
 
 if ($SlackMode -ne "none" -and
@@ -411,7 +411,7 @@ if ($SlackMode -ne "none" -and
     -not $NotificationWebhookUrl.StartsWith("https://"))) {
     $credentialDetails = if ($NotificationCredentialError) { ": $NotificationCredentialError" } else { "" }
     Write-Host "ПОМИЛКА: Для каналу $NotificationProviderDisplayName не знайдено коректний HTTPS webhook у Credential Manager$credentialDetails" -ForegroundColor Red
-    exit 1
+    exit 31
 }
 
 # Автоматичне визначення служби Apache для BRAVO Web.
@@ -663,6 +663,9 @@ $script:SlackMessageBuffer = New-Object 'System.Collections.Generic.List[string]
 $script:CriticalErrors = $false
 $script:CriticalErrorsList = New-Object 'System.Collections.Generic.List[string]'
 $script:criticalErrorOccurred = $false
+# Лічильник WARNING для контракту кодів завершення: успіх без жодного
+# попередження -> 0, успіх із попередженнями -> 10 (Resolve-BRAVOExitCode).
+$script:BRAVOWarningCount = 0
 
 function Enter-BRAVOMaintenanceOperationLock {
     $lockPath = Join-Path $LOG_DIR "BRAVO_OPERATION.lock"
@@ -760,7 +763,7 @@ if ($PSBoundParameters.ContainsKey('AutoShutdown')) {
 
 if ($AutoShutdown -notin @("on", "off")) {
     Write-Host "ПОМИЛКА: Параметр AutoShutdown має бути 'on' або 'off'. Поточне значення: $AutoShutdown" -ForegroundColor Red
-    exit 1
+    exit 30
 }
 
 $script:EnableAutoShutdown = ($AutoShutdown -eq "on")
@@ -777,7 +780,7 @@ if ($PSBoundParameters.ContainsKey('ArchiveAfterMaintenance')) {
 
 if ($ArchiveAfterMaintenance -notin @("on", "off")) {
     Write-Host "ПОМИЛКА: Параметр ArchiveAfterMaintenance має бути 'on' або 'off'. Поточне значення: $ArchiveAfterMaintenance" -ForegroundColor Red
-    exit 1
+    exit 30
 }
 
 $script:EnableArchiveAfterMaintenance = ($ArchiveAfterMaintenance -eq "on")
@@ -795,6 +798,9 @@ function Write-Log {
     # сюди через повідомлення винятку — маскуємо перед виводом у консоль
     # чи запис у файл, до будь-якого з можливих виходів функції нижче.
     $Message = Protect-BRAVOLogSecret -Text $Message
+    if ($Level -eq "WARNING") {
+        $script:BRAVOWarningCount++
+    }
 
     # Перевірка рівня логування
     $logLevels = @{"DEBUG"=0; "INFO"=1; "WARNING"=2; "ERROR"=3; "SUCCESS"=4}
@@ -2486,14 +2492,14 @@ function Send-FinalReport {
 # Планувальника, навіть якщо роль Administrators не відобразилась через UAC API.
 if (-not $isLocalSystem -and -not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host "ЗАПУСТІТЬ СКРИПТ ВІД ІМЕНІ АДМІНІСТРАТОРА!" -ForegroundColor Red
-    exit 1
+    exit 90
 }
 
 # Перевірка версії PowerShell. Для PowerShell 3.0 використовується сумісна
 # реалізація SHA512 та доступні в цій версії системні командлети.
 if ($PSVersionTable.PSVersion.Major -lt 3) {
     Write-Host "ПОМИЛКА: Необхідна версія PowerShell 3.0 або вище. Поточна версія: $($PSVersionTable.PSVersion)" -ForegroundColor Red
-    exit 1
+    exit 90
 }
 if ($PSVersionTable.PSVersion.Major -lt 5) {
     Write-Host "УВАГА: PowerShell $($PSVersionTable.PSVersion) — увімкнено режим сумісності." -ForegroundColor Yellow
@@ -2502,7 +2508,7 @@ if ($PSVersionTable.PSVersion.Major -lt 5) {
 # Перевірка архітектури ОС
 if (-not [Environment]::Is64BitOperatingSystem) {
     Write-Host "ПОМИЛКА: Скрипт працює тільки на 64-бітних системах" -ForegroundColor Red
-    exit 1
+    exit 90
 }
 
 # Перевірка версії ОС. Environment.OSVersion без application manifest може
@@ -2511,7 +2517,7 @@ if (-not [Environment]::Is64BitOperatingSystem) {
 $osVersion = [System.Environment]::OSVersion.Version
 if ($osVersion.Major -lt 6 -or ($osVersion.Major -eq 6 -and $osVersion.Minor -lt 1)) {
     Write-Host "ПОМИЛКА: Необхідна Windows 7/Windows Server 2008 R2 або новіша версія" -ForegroundColor Red
-    exit 1
+    exit 90
 }
 if ($osVersion.Major -eq 6 -and $osVersion.Minor -lt 3) {
     Write-Host "УВАГА: Windows версії $osVersion — увімкнено сумісний режим роботи." -ForegroundColor Yellow
@@ -2539,7 +2545,7 @@ if ((Split-Path -Leaf $scriptPath) -ne "ARCHIV") {
     $errorMessage = "ПОМИЛКА: Скрипт має запускатись лише з папки ARCHIV!"
     "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $errorMessage" | Out-File "$env:TEMP\lims_error.log" -Append
     Write-Host $errorMessage -ForegroundColor Red
-    exit 1
+    exit 90
 }
 
 $ROOT_LIMS = [Environment]::ExpandEnvironmentVariables([string]$pathSettings.LIMSRoot)
@@ -2547,7 +2553,7 @@ $ARCHIVE_ROOT = [Environment]::ExpandEnvironmentVariables([string]$pathSettings.
 if ([string]::IsNullOrWhiteSpace($ROOT_LIMS) -or
     [string]::IsNullOrWhiteSpace($ARCHIVE_ROOT)) {
     Write-Host "ПОМИЛКА: У BRAVO.config не налаштовано pathSettings.LIMSRoot або pathSettings.ArchiveRoot" -ForegroundColor Red
-    exit 1
+    exit 30
 }
 # Похідні шляхи
 $MODEL_PATH = "$ROOT_LIMS\Model"
@@ -2576,7 +2582,7 @@ if (-not (Test-Path $LOG_DIR)) {
     }
     catch {
         Write-Host "Не вдалося створити директорію для логів $LOG_DIR : $($_.Exception.Message)" -ForegroundColor Red
-        exit 1
+        exit 90
     }
 }
 
@@ -2711,7 +2717,7 @@ $spaceCheckResult = Check-FreeSpace -ROOT_LIMS $ROOT_LIMS -ExcludedDrives $FREE_
 # Перевірка критичних помилок після перевірки місця
 if (-not $spaceCheckResult) {
     Write-Log -Message "Критична помилка перевірки місця. Завершення скрипта." -Level "ERROR"
-    exit 1
+    exit 60
 }
 
 # ===== СТВОРЕННЯ НЕОБХІДНИХ ДИРЕКТОРІЙ =====
@@ -2766,7 +2772,7 @@ if (-not $maintenanceLockResult.Success) {
         "Maintenance відкладено: BRAVO_ARCHIV або інший maintenance уже працює; " +
         "lock=$($maintenanceLockResult.Path); $($maintenanceLockResult.Error)"
     ) -Level "ERROR"
-    exit 2
+    exit 20
 }
 $script:maintenanceOperationLock = $maintenanceLockResult.Stream
 $script:maintenanceOperationLockPath = $maintenanceLockResult.Path
@@ -2797,7 +2803,7 @@ if ($RunMissedRestoreOnly -and $missedDailyWork) {
         Write-Log -Message $message -Level 'WARNING'
         Write-BRAVORestoreState -ScheduledOccurrence $scheduledOccurrence -Status 'Pending' -Reason $message
         Send-SlackAlert -Message $message -IsCritical
-        exit 2
+        exit 20
     }
 }
 $inactiveServicesAtStart = @()
@@ -3476,4 +3482,14 @@ Write-Log -Message "==="
     Exit-BRAVOMaintenanceOperationLock
 }
 
-exit $(if ($script:criticalErrorOccurred) {1} else {0})
+# Maintenance наразі не дробить категорію відмови далі одного бакета
+# (аудит просив лише "60 = MaintenanceFailed"), тому весь наявний
+# $script:criticalErrorOccurred просто мапиться на нього. Жодна з ~38 точок
+# criticalErrorOccurred = $true вище не редагувалась.
+if ($script:criticalErrorOccurred) {
+    exit (Resolve-BRAVOExitCode -MaintenanceFailed)
+} elseif ($script:BRAVOWarningCount -gt 0) {
+    exit (Resolve-BRAVOExitCode -HasWarnings)
+} else {
+    exit 0
+}

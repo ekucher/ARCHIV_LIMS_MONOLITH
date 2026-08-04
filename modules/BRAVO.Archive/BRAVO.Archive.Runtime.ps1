@@ -24,7 +24,7 @@ param(
 $bravoScriptDirectory = $RuntimeRoot
 
 # Спільні PowerShell-модулі runtime.
-foreach ($moduleName in @('BRAVO.Compatibility', 'BRAVO.Credentials', 'BRAVO.ArchiveRuntime', 'BRAVO.Logging', 'BRAVO.Console')) {
+foreach ($moduleName in @('BRAVO.Compatibility', 'BRAVO.Credentials', 'BRAVO.ArchiveRuntime', 'BRAVO.Logging', 'BRAVO.Console', 'BRAVO.ExitCodes')) {
     $modulePath = Join-Path $bravoScriptDirectory "modules\$moduleName\$moduleName.psd1"
     if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) {
         throw "Не знайдено спільний PowerShell-модуль: $modulePath"
@@ -3173,7 +3173,7 @@ function Main {
             "Запуск скасовано: інший екземпляр BRAVO_ARCHIV уже працює " +
             "або файл блокування недоступний: $($processLockResult.Error)"
         ) -Level "ERROR"
-        $script:processExitCode = 2
+        $script:processExitCode = Resolve-BRAVOExitCode -LockBusy
         return
     }
     $script:archiveProcessLock = $processLockResult.Stream
@@ -3230,7 +3230,8 @@ function Main {
         Write-Log "Результат: $(if ($manualSyncSuccess) {'УСПIШНО'} else {'ПОМИЛКА'})" -NoTimestamp
         Write-Log "Тривалiсть: $($manualSyncDuration.ToString($durationFormat))" -NoTimestamp
         Write-Log "Лог-файл: $logFile" -NoTimestamp
-        $script:processExitCode = if ($manualSyncSuccess) { 0 } else { 1 }
+        # -SyncBAZA — це суто SFTP-операція за визначенням.
+        $script:processExitCode = if ($manualSyncSuccess) { 0 } else { Resolve-BRAVOExitCode -SftpFailed }
         Show-ScriptProgress -Status "Завершено" -PercentComplete 100
         Complete-BRAVOProgress
 
@@ -3642,6 +3643,10 @@ function Main {
     # $operationFailed накопичується з попередніх фаз і показав би збій навіть
     # тоді, коли саме передавання пройшло успішно.
     $errorsBeforeSftp = (Get-BRAVOLogStatistics).Errors
+    # Читається у фінальному резолвері коду виходу незалежно від того, чи
+    # передача на SFTP взагалі увімкнена — інакше змінна лишається
+    # неоголошеною, коли компонент вимкнено, і StrictMode кидає виняток.
+    $sftpStepFailed = $false
     if ($sftpTransferEnabled) {
         Show-ScriptProgress -Status "Перевiрка з'єднання з SFTP" -PercentComplete 78
         if (-not $sftpConfigurationValid) {
@@ -3771,6 +3776,8 @@ function Main {
 
     # Копіювання успішно створених архівів та hash-файлів на NAS/SMB
     $errorsBeforeSmb = (Get-BRAVOLogStatistics).Errors
+    # Той самий захист, що й для $sftpStepFailed вище.
+    $smbStepFailed = $false
     if ($smbArchiveCopyEnabled) {
         Show-ScriptProgress -Status "Копіювання архівів на NAS/SMB" -PercentComplete 92
         Write-Log "==="
@@ -3827,6 +3834,9 @@ function Main {
     Write-Log "Лог-файл: $logFile" -NoTimestamp
 
     $errorsBeforeHealth = (Get-BRAVOLogStatistics).Errors
+    # Читається у фінальному резолвері коду виходу нижче незалежно від того,
+    # чи здійснювалась перевірка health-check.
+    $healthCriticalFailure = $false
     if ($healthCheckEnabled) {
         Show-ScriptProgress -Status "Перевiрка стану резервних копiй" -PercentComplete 96
         Write-Log "==="
@@ -3856,22 +3866,37 @@ function Main {
                     "Healthy" {
                         Write-Log "Health-check: усi резервнi копiї актуальнi; повідомлення: $($healthCheckResult.Notification)" -Level "SUCCESS"
                     }
+                    "Disabled" {
+                        # Сам Health вважає це безпечним станом (вимкнено в
+                        # конфігурації) і завершується з exit 0 — Archive не
+                        # повинен трактувати чужий "вимкнено" як власну відмову.
+                        Write-Log "Health-check вимкнено в конфігурації" -Level "INFO"
+                    }
+                    "Deferred" {
+                        # Аналогічно: відкладено через паралельне завдання чи
+                        # зайнятий lock — це не відмова, а штатне пропускання.
+                        Write-Log "Health-check відкладено: інше завдання вже виконується" -Level "INFO"
+                    }
                     "Critical" {
                         Write-Log "Health-check: знайдено проблем: $($healthCheckResult.IssueCount); повідомлення: $($healthCheckResult.Notification)" -Level "ERROR"
                         $operationFailed = $true
+                        $healthCriticalFailure = $true
                     }
                     "NotificationError" {
                         Write-Log "Health-check завершився, але повідомлення не вiдправлено: $($healthCheckResult.Error)" -Level "ERROR"
                         $operationFailed = $true
+                        $healthCriticalFailure = $true
                     }
                     default {
                         Write-Log "Health-check завершився зі статусом: $($healthCheckResult.Status)" -Level "WARNING"
                         $operationFailed = $true
+                        $healthCriticalFailure = $true
                     }
                 }
         } catch {
             Write-Log "Помилка запуску окремого health-check: $($_.Exception.Message)" -Level "ERROR"
             $operationFailed = $true
+            $healthCriticalFailure = $true
         }
     }
 
@@ -3914,7 +3939,25 @@ function Main {
         -Metrics $summaryMetrics `
         -LogFile $script:logFile
     if ($operationFailed) {
-        $script:processExitCode = 1
+        # Один раз, тут, читаємо вже наявний стан секцій Main і визначаємо
+        # найпріоритетнішу категорію відмови — жодна з ~26 точок
+        # $operationFailed = $true вище не редагувалась.
+        $anyLocalArchiveFailed = @(
+            $results.Values | Where-Object { -not $_.ArchiveSuccess }
+        ).Count -gt 0
+        $anyIntegrityTestFailed = @(
+            $results.Values | Where-Object { $_.ArchiveSuccess -and -not $_.HashSuccess }
+        ).Count -gt 0
+        $script:processExitCode = Resolve-BRAVOExitCode `
+            -InvalidConfiguration:(-not $sftpConfigurationValid -or -not $smbConfigurationValid -or -not $archiveConsistencyValid) `
+            -CredentialsUnavailable:(-not $archiveCredentialValid) `
+            -LocalArchiveFailed:$anyLocalArchiveFailed `
+            -IntegrityTestFailed:$anyIntegrityTestFailed `
+            -SftpFailed:([bool]$sftpStepFailed) `
+            -SmbFailed:([bool]$smbStepFailed) `
+            -HealthCritical:$healthCriticalFailure
+    } elseif ($logStatistics.Warnings -gt 0) {
+        $script:processExitCode = Resolve-BRAVOExitCode -HasWarnings
     }
 }
 
@@ -3925,7 +3968,11 @@ $script:archiveProcessLockPath = $null
 try {
     Main
 } catch {
-    $script:processExitCode = 1
+    # Значення тут здебільшого символічне: throw нижче не дає скрипту дійти
+    # до власного Exit, і саме .psm1-обгортка (try/catch навколо виклику
+    # runtime, коміт 1ba0bbb) визначає код, що реально побачить процес —
+    # вона так само повертає 90. Лишаємо узгодженим із контрактом.
+    $script:processExitCode = 90
     throw
 } finally {
     if ($script:archiveProcessLock) {

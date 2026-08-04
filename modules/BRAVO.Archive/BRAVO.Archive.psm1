@@ -18,7 +18,7 @@ function Invoke-BRAVOArchiveEntrypoint {
         # процес завершувався б генеричним кодом самого PowerShell, а не
         # керованим значенням.
         Write-Error "Неочікувана помилка runtime Archive: $($_.Exception.Message)"
-        return 1
+        return 90
     }
 }
 
