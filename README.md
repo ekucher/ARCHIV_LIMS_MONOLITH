@@ -39,14 +39,30 @@
 
 ## 1. Системні вимоги
 
-- Windows 7 / Windows Server 2008 R2 або новіша система;
-- Windows PowerShell 3.0 або новіший; рекомендовано WMF/PowerShell 5.1;
 - 64-бітна Windows для повного сценарію обслуговування;
 - локальні права адміністратора для встановлення завдань і керування службами;
 - доступний VSS на локальних томах із `MODEL`, `BLOG` і `BRAVOEXCH`;
 - доступ до SFTP через TCP 22, якщо SFTP-компоненти ввімкнені;
 - доступ до Slack/Discord через HTTPS 443, якщо сповіщення ввімкнені;
 - доступ до потрібного UNC-шляху, якщо SMB/NAS ввімкнений.
+
+### Підтримувані версії Windows
+
+| Рівень | Системи |
+|---|---|
+| **Supported** | Windows Server 2019+, Windows 10/11, Windows PowerShell 5.1 |
+| **Legacy best-effort** | Windows Server 2012 R2, Windows Server 2016 (без гарантій) |
+| **Unsupported** | Windows 7, Windows Server 2008 R2, PowerShell 3.0 |
+
+Archive, Health і Maintenance визначають рівень при кожному запуску
+(`Get-BRAVOOSSupportTier`, `modules\BRAVO.Compatibility`) і завжди пишуть у
+журнал точну версію ОС, build, PowerShell і .NET — незалежно від рівня. На
+`Legacy best-effort` запуск лише попереджає. На `Unsupported` production-запуск
+**блокується** (код завершення `30`) — щоб продовжити свідомо, встановіть
+змінну середовища `BRAVO_ALLOW_UNSUPPORTED_OS=1` перед запуском. Мінімальна
+версія PowerShell для самого запуску скрипта — 3.0 (нижче кидає помилку
+одразу, `Assert-BRAVOPowerShellCompatibility`); 3.0 сама по собі вже входить
+до Unsupported і потребує того самого override.
 
 У каталозі `ARCHIV\Tools` мають бути:
 
@@ -601,4 +617,9 @@ git-гілку (перевірка м'яко пропускається, якщ�
 - `enableArchiveDeletion` ніколи не видаляє останні `minimumRetainedVerifiedBackups`
   (за замовчуванням `1`) перевірених (SHA512 збігається) комплектів кожного
   компонента, навіть якщо вони старші за `archiveRetentionDays` — серія
-  невдалих backup не повинна лишити компонент без жодної придатної копії.
+  невдалих backup не повинна лишити компонент без жодної придатної копії;
+- `hostInformationSettings.PublicIPLookupEnabled` вимкнено за замовчуванням:
+  без цього Slack/Discord-сповіщення звертаються до `api.ipify.org`/
+  `checkip.amazonaws.com`, зайвої зовнішньої залежності, яка розкриває
+  стороннім сервісам факт і час запуску backup. Увімкніть свідомо, якщо
+  публічна IP-адреса потрібна в сповіщеннях.

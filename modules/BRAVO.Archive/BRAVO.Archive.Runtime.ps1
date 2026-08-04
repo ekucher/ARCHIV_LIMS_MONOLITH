@@ -423,6 +423,20 @@ function Test-Compatibility {
         Write-BRAVOLog -Component 'STARTUP' -Message $windowsPatchLevel.Message -Level "WARNING"
     }
 
+    $osSupportTier = Get-BRAVOOSSupportTier
+    $script:BRAVOOSSupportTier = $osSupportTier
+    Write-BRAVOLog -Component 'STARTUP' -Message "Підтримка ОС: $($osSupportTier.Tier) — Windows $($osSupportTier.OperatingSystem) ($($osSupportTier.OperatingSystemVersion), build $($osSupportTier.Build)); PowerShell $($osSupportTier.PowerShellVersion); .NET release $($osSupportTier.DotNetRelease)" -Level "INFO"
+    if ($osSupportTier.Tier -eq "LegacyBestEffort") {
+        Write-BRAVOLog -Component 'STARTUP' -Message $osSupportTier.Message -Level "WARNING"
+    } elseif ($osSupportTier.Tier -eq "Unsupported") {
+        if ($env:BRAVO_ALLOW_UNSUPPORTED_OS -eq "1") {
+            Write-BRAVOLog -Component 'STARTUP' -Message "$($osSupportTier.Message) Продовжено через BRAVO_ALLOW_UNSUPPORTED_OS=1." -Level "WARNING"
+        } else {
+            Write-BRAVOLog -Component 'STARTUP' -Message $osSupportTier.Message -Level "ERROR"
+            exit (Resolve-BRAVOExitCode -InvalidConfiguration)
+        }
+    }
+
     # $arcPath/$winSCPPath/$winSCPAssemblyPath доступні лише після
     # Import-BravoConfiguration, тому цю перевірку не можна винести у
     # ранній preinit разом із двома вище.

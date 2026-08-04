@@ -592,6 +592,145 @@ function Get-BRAVOFileHash {
     }
 }
 
+function Get-BRAVOOSSupportTier {
+    # Аудит P0.4: попередній README блок "Windows 7 / Windows Server 2008 R2
+    # або новіша" фактично не мав жодного рівня — усе, що технічно
+    # запускалось, вважалось однаково підтримуваним. Ця функція formalizує
+    # три рівні (Supported/LegacyBestEffort/Unsupported) і повертає точну
+    # версію ОС/build/PowerShell/.NET для журналу, незалежно від рівня.
+    [CmdletBinding()]
+    param(
+        # OperatingSystemInfo — той самий injectable-патерн, що й у
+        # Get-BRAVOPowerShellUpdateRecommendation: об'єкт з .Version/.Caption/
+        # .ProductType (як Win32_OperatingSystem), щоб self-test міг
+        # підставити синтетичні дані без реальної іншої ОС.
+        [object]$OperatingSystemInfo,
+        [version]$PowerShellVersion = $PSVersionTable.PSVersion,
+        [int]$DotNetRelease = -1
+    )
+
+    if ($null -eq $OperatingSystemInfo) {
+        try {
+            $OperatingSystemInfo = Get-BRAVOWmiInstance `
+                -ClassName Win32_OperatingSystem |
+                Select-Object -First 1
+        } catch {
+            $OperatingSystemInfo = $null
+        }
+    }
+
+    $registryProductName = $null
+    try {
+        $registryProductName = [string](
+            Get-ItemProperty `
+                -LiteralPath "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" `
+                -Name "ProductName" `
+                -ErrorAction Stop
+        ).ProductName
+    } catch {
+        $registryProductName = $null
+    }
+
+    $osVersion = if ($null -ne $OperatingSystemInfo -and
+        $null -ne $OperatingSystemInfo.Version) {
+        [version]([string]$OperatingSystemInfo.Version)
+    } else {
+        [Environment]::OSVersion.Version
+    }
+    $osCaption = if ($null -ne $OperatingSystemInfo -and
+        -not [string]::IsNullOrWhiteSpace([string]$OperatingSystemInfo.Caption)) {
+        ([string]$OperatingSystemInfo.Caption).Trim()
+    } elseif (-not [string]::IsNullOrWhiteSpace($registryProductName)) {
+        $registryProductName.Trim()
+    } else {
+        [Environment]::OSVersion.VersionString
+    }
+    $productType = if ($null -ne $OperatingSystemInfo -and
+        $null -ne $OperatingSystemInfo.ProductType) {
+        [int]$OperatingSystemInfo.ProductType
+    } elseif ($osCaption -match "(?i)\bServer\b") {
+        3
+    } else {
+        1
+    }
+    $isServer = $productType -ne 1
+
+    if ($DotNetRelease -lt 0) {
+        try {
+            $DotNetRelease = [int](
+                Get-ItemProperty `
+                    -LiteralPath "HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full" `
+                    -Name "Release" `
+                    -ErrorAction Stop
+            ).Release
+        } catch {
+            $DotNetRelease = 0
+        }
+    }
+
+    # Рівень за самою ОС (build 10.0.17763 — Windows Server 2019 RTM).
+    $osTier = if ($osVersion.Major -eq 6 -and $osVersion.Minor -eq 1) {
+        "Unsupported" # Windows 7 / Server 2008 R2
+    } elseif ($osVersion.Major -eq 6 -and ($osVersion.Minor -eq 2 -or $osVersion.Minor -eq 3)) {
+        "LegacyBestEffort" # Windows 8/8.1, Server 2012/2012 R2
+    } elseif ($osVersion.Major -ge 10) {
+        if ($isServer -and $osVersion.Build -lt 17763) {
+            "LegacyBestEffort" # Server 2016 та ранішні білди гілки 10.0
+        } else {
+            "Supported" # Server 2019+, Windows 10/11
+        }
+    } else {
+        "Unsupported" # усе старіше за Windows 7 / Server 2008 R2
+    }
+
+    # Рівень за PowerShell: 5.1 потрібна для "Supported"; 3.x — явно
+    # unsupported (аудит називає PowerShell 3.0 unsupported окремим пунктом,
+    # незалежно від того, наскільки нова сама ОС).
+    $psTier = if ($PowerShellVersion.Major -ge 5 -and
+        ($PowerShellVersion.Major -gt 5 -or $PowerShellVersion.Minor -ge 1)) {
+        "Supported"
+    } elseif ($PowerShellVersion.Major -eq 4) {
+        "LegacyBestEffort"
+    } else {
+        "Unsupported"
+    }
+
+    $tierRank = @{ Unsupported = 0; LegacyBestEffort = 1; Supported = 2 }
+    $tier = if ($tierRank[$osTier] -le $tierRank[$psTier]) { $osTier } else { $psTier }
+
+    $message = switch ($tier) {
+        "Unsupported" {
+            (
+                "ОС {0} (версія {1}) або PowerShell {2} не входять до підтримуваного " +
+                "baseline BRAVO (Windows Server 2019+/Windows 10/11, PowerShell 5.1). " +
+                "Production-запуск заблоковано. Встановіть змінну середовища " +
+                "BRAVO_ALLOW_UNSUPPORTED_OS=1, якщо потрібно свідомо продовжити " +
+                "на цій системі."
+            ) -f $osCaption, $osVersion, $PowerShellVersion
+        }
+        "LegacyBestEffort" {
+            (
+                "ОС {0} (версія {1}) або PowerShell {2} належать до рівня " +
+                "'legacy best-effort' (наприклад Windows Server 2012 R2/2016) — " +
+                "підтримуються без гарантій, рекомендовано перейти на Windows " +
+                "Server 2019+ або Windows 10/11 з PowerShell 5.1."
+            ) -f $osCaption, $osVersion, $PowerShellVersion
+        }
+        default { $null }
+    }
+
+    return New-Object PSObject -Property @{
+        Tier = $tier
+        OperatingSystem = $osCaption
+        OperatingSystemVersion = $osVersion.ToString()
+        Build = [string]$osVersion.Build
+        IsServer = $isServer
+        PowerShellVersion = $PowerShellVersion.ToString()
+        DotNetRelease = $DotNetRelease
+        Message = $message
+    }
+}
+
 function Get-BRAVOToolIntegrityRecommendation {
     [CmdletBinding()]
     param(

@@ -2,6 +2,38 @@
 
 ## 4.2.13 — 2026-08-04
 
+- P1.10 з плану виправлень (`ARCHIV_LIMS_MONOLITH_AUDIT_FIXES.md`):
+  `hostInformationSettings.PublicIPLookupEnabled` у `BRAVO.config` тепер
+  `$false` за замовчуванням — раніше кожен запуск Health/Maintenance
+  звертався до `api.ipify.org`/`checkip.amazonaws.com`, зайвої зовнішньої
+  залежності, яка розкриває стороннім сервісам факт і час запуску backup.
+  Внутрішній fallback у `Get-HostInformation` (`BRAVO.Notifications`) на
+  випадок відсутньої конфігурації узгоджено з тим самим `$false`. Якщо
+  вимкнено, `Get-HostInformation` не робить жодного мережевого запиту й
+  одразу повертає `PublicIP = "вимкнено"`. Додано self-test
+  `Notifications/PublicIPLookupDisabledByDefault`.
+
+- P0.4 з плану виправлень (`ARCHIV_LIMS_MONOLITH_AUDIT_FIXES.md`):
+  формалізовано мінімально підтримувану ОС трьома рівнями — Supported
+  (Windows Server 2019+, Windows 10/11, PowerShell 5.1), Legacy best-effort
+  (Server 2012 R2, Server 2016, без гарантій) і Unsupported (Windows 7,
+  Server 2008 R2, PowerShell 3.0). Раніше README декларував єдиний
+  розмитий baseline "Windows 7 / Server 2008 R2 або новіша", без жодної
+  різниці в поведінці між дуже старою й сучасною системою. Нова
+  `Get-BRAVOOSSupportTier` (`BRAVO.Compatibility`) визначає рівень при
+  кожному запуску Archive/Health/Maintenance і завжди пише в журнал точну
+  версію ОС, build, PowerShell і .NET, незалежно від рівня. `Legacy
+  best-effort` лише попереджає; `Unsupported` блокує production-запуск
+  (код `30`, `InvalidConfiguration`) — продовжити свідомо можна лише через
+  явний override `BRAVO_ALLOW_UNSUPPORTED_OS=1` в середовищі процесу.
+  Для Health, яка може викликатися програмно через dot-source
+  (`Invoke-BRAVOHealthCheck`), заборона повертається як звичайний
+  `Status = "ConfigurationError"`, а не через `exit`, щоб не завершувати
+  процес виклика́ча. Додано функціональні self-test на синтетичних
+  Win32_OperatingSystem-подібних даних (Get-BRAVOOSSupportTier не можна
+  протестувати на реальній іншій ОС) і текстову перевірку підключення
+  guard-у в усі три runtime.
+
 - P1.7 з плану виправлень (`ARCHIV_LIMS_MONOLITH_AUDIT_FIXES.md`):
   `Remove-OldBackupSets` більше не може видалити останню перевірену
   копію компонента. Раніше retention був прив'язаний лише до календарного
