@@ -94,7 +94,7 @@ try {
             -BravoSettings $bravoSettings)
     }
 } catch {
-    Write-Error "Не вдалося завантажити конфігурацію: $($_.Exception.Message)"
+    Write-Error "Не вдалося завантажити конфігурацію: $(Protect-BRAVOLogSecret -Text $_.Exception.Message)"
     return Complete-BRAVOHealthResult -Result ([pscustomobject]@{
         Status = "ConfigurationError"
         IssueCount = 0

@@ -317,6 +317,51 @@ try {
         -Name "Runtime/HealthAndMaintenanceMaskSecretsInLogs" `
         -Failure "Write-HealthLog і Write-Log (Maintenance) мають маскувати секрети так само, як Write-BRAVOLog в Archive"
 
+    # P1.9 аудиту: catch-блоки навколо читання Credential Manager (SFTP/SMB/
+    # архів/webhook) і провалу завантаження BRAVO.config раніше клали
+    # $_.Exception.Message у script-scope змінні або одразу в Write-Host/
+    # Write-Error БЕЗ маскування — ці рядки минали єдину точку масковки
+    # (Write-Log/Write-BRAVOLog/Write-HealthLog) повністю, бо друкувались
+    # до або поза нормальним логуванням. Перевіряємо, що жодне подібне
+    # "гole" присвоєння не лишилось: усі такі catch-блоки або обгортають
+    # $_.Exception.Message у Protect-BRAVOLogSecret, або взагалі відсутні.
+    $archiveScriptTextForSecretMasking = [IO.File]::ReadAllText(
+        (Join-Path $root "modules\BRAVO.Archive\BRAVO.Archive.Runtime.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveScriptTextForSecretMasking.Contains(
+                "Write-Host `"ПОМИЛКА: Не вдалося завантажити конфiгурацiю: `$(Protect-BRAVOLogSecret -Text `$_.Exception.Message)`""
+            ) -and
+            $archiveScriptTextForSecretMasking.Contains(
+                "`$script:archiveCredentialInitializationError = Protect-BRAVOLogSecret -Text `$_.Exception.Message"
+            ) -and
+            $archiveScriptTextForSecretMasking.Contains(
+                "`$script:credentialInitializationError = Protect-BRAVOLogSecret -Text `$_.Exception.Message"
+            ) -and
+            $archiveScriptTextForSecretMasking.Contains(
+                "`$script:smbCredentialInitializationError = Protect-BRAVOLogSecret -Text `$_.Exception.Message"
+            ) -and
+            $archiveScriptTextForSecretMasking.Contains(
+                "`$script:notificationCredentialInitializationError = Protect-BRAVOLogSecret -Text `$_.Exception.Message"
+            ) -and
+            $healthScriptTextForSecretMasking.Contains(
+                "Write-Error `"Не вдалося завантажити конфігурацію: `$(Protect-BRAVOLogSecret -Text `$_.Exception.Message)`""
+            ) -and
+            $maintenanceScriptTextForSecretMasking.Contains(
+                "Write-Host `"ПОМИЛКА читання конфігурації '`$ConfigPath': `$(Protect-BRAVOLogSecret -Text `$_.Exception.Message)`""
+            ) -and
+            $maintenanceScriptTextForSecretMasking.Contains(
+                "`$NotificationCredentialError = Protect-BRAVOLogSecret -Text `$_.Exception.Message"
+            ) -and
+            $maintenanceScriptTextForSecretMasking.Contains(
+                "`$ArchiveCredentialError = Protect-BRAVOLogSecret -Text `$_.Exception.Message"
+            )
+        ) `
+        -Name "Runtime/CredentialAndConfigErrorsMaskedAtCapture" `
+        -Failure "помилки завантаження конфігурації та Credential Manager (SFTP/SMB/архів/webhook) мають маскуватися Protect-BRAVOLogSecret одразу при захопленні, а не лише при подальшому Write-Log — ці catch-блоки друкують до Write-Host/Write-Error поза єдиною точкою масковки"
+
     Remove-Module -Name 'BRAVO.ExitCodes' -Force -ErrorAction SilentlyContinue
     Import-Module -Name (Join-Path $root "modules\BRAVO.ExitCodes\BRAVO.ExitCodes.psd1") -Force -ErrorAction Stop
     Test-BRAVOCondition `

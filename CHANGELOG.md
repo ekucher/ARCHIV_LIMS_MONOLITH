@@ -2,6 +2,21 @@
 
 ## 4.2.13 — 2026-08-04
 
+- P1.9 з плану виправлень (`ARCHIV_LIMS_MONOLITH_AUDIT_FIXES.md`):
+  катастрофи ErrorRecord навколо завантаження `BRAVO.config` і читання
+  Credential Manager (SFTP/SMB/архів/webhook) в Archive/Health/Maintenance
+  друкували `$_.Exception.Message` через `Write-Host`/`Write-Error`
+  напряму в консоль, минаючи єдину точку масковки секретів
+  (`Write-Log`/`Write-BRAVOLog`/`Write-HealthLog`, яка вже маскує
+  `Protect-BRAVOLogSecret`). Тепер ці catch-блоки маскують повідомлення
+  винятку одразу при захопленні — так безпечним лишається кожне подальше
+  читання відповідних script-scope змінних (`credentialInitializationError`,
+  `archiveCredentialInitializationError`, `smbCredentialInitializationError`,
+  `notificationCredentialInitializationError`,
+  `ArchiveCredentialError`/`NotificationCredentialError` у Maintenance), а
+  не лише перший вивід. Додано self-test
+  `Runtime/CredentialAndConfigErrorsMaskedAtCapture`.
+
 - P1.10 з плану виправлень (`ARCHIV_LIMS_MONOLITH_AUDIT_FIXES.md`):
   `hostInformationSettings.PublicIPLookupEnabled` у `BRAVO.config` тепер
   `$false` за замовчуванням — раніше кожен запуск Health/Maintenance

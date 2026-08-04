@@ -125,7 +125,7 @@ try {
         throw "У BRAVO.config відсутня або не заповнена секція pathSettings"
     }
 } catch {
-    Write-Host "ПОМИЛКА читання конфігурації '$ConfigPath': $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "ПОМИЛКА читання конфігурації '$ConfigPath': $(Protect-BRAVOLogSecret -Text $_.Exception.Message)" -ForegroundColor Red
     exit 30
 }
 
@@ -287,7 +287,7 @@ if ($SlackMode -ne "none") {
             throw "запис Credential Manager '$notificationCredentialTarget' не знайдено або він порожній для $([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
         }
     } catch {
-        $NotificationCredentialError = $_.Exception.Message
+        $NotificationCredentialError = Protect-BRAVOLogSecret -Text $_.Exception.Message
     }
 }
 
@@ -313,7 +313,7 @@ try {
         throw "пароль архівів не може містити символи нового рядка"
     }
 } catch {
-    $ArchiveCredentialError = $_.Exception.Message
+    $ArchiveCredentialError = Protect-BRAVOLogSecret -Text $_.Exception.Message
 }
 
 $RangeIdMonitoringEnabled = [System.Convert]::ToBoolean($MaintenanceConfig.RangeIdMonitoring.Enabled)
