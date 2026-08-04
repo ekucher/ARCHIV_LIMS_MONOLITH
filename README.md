@@ -89,10 +89,14 @@ C:\LIMS\
 ├── BLOG\                  джерело BLOG
 ├── BAZA\                  джерело BAZA, якщо ввімкнено
 └── ARCHIV\
-    ├── README.md
+    ├── README.md, SECURITY.md, CHANGELOG.md, RELEASE_CHECKLIST.md
+    ├── VERSION.json
     ├── BRAVO.config
-    ├── BRAVO_*.ps1
-    ├── BRAVO_*.ps1
+    ├── BRAVO_ARCHIV.ps1, BRAVO_MAINTENANCE.ps1, BRAVO_HEALTH.ps1
+    ├── BRAVO_SETUP.ps1, BRAVO_DRY_RUN.ps1, BRAVO_SELF_TEST.ps1
+    ├── BRAVO_CREDENTIALS_SETUP.ps1, BRAVO_TASKS_INSTALL.ps1,
+    │   BRAVO_TASKS_UNINSTALL.ps1, BRAVO_TASKS_DIAGNOSE.ps1
+    ├── modules\             спільні PowerShell-модулі (розділ 13)
     ├── Tools\
     │   ├── 7za.exe
     │   ├── WinSCP.com
@@ -568,6 +572,28 @@ health > лише попередження. Код `90` має найвищий 
 — відмова одного напрямку (наприклад SFTP недоступний) не впливає на
 значення інших, бо кожен перевіряється незалежним викликом.
 
+### Матриця діагностики за кодом завершення
+
+Куди дивитись у журналі `LOGS\BRAVO_ARCHIV_*.log` /
+`BRAVO_MAINTENANCE_*.log` / `BRAVO_ARCHIV_HEALTH_*.log` для кожного коду:
+
+| Код | Найімовірніша причина | Де дивитись |
+|---|---|---|
+| `20` | Інший екземпляр Archive/Maintenance ще виконується | `BRAVO_OPERATION.lock` (JSON: `pid`, `hostname`, `operation`, `startedAt`) у `LOGS`; збільшіть `OperationLockWaitMinutes`, якщо це штатне перекриття довгих завдань |
+| `30` | Некоректний/відсутній розділ `BRAVO.config` (`maintenanceSettings`, `pathSettings` тощо) | Перший `[ERROR]` одразу після `=== ПЕРЕВІРКА СУМІСНОСТІ СИСТЕМИ ===`; `.\BRAVO_SETUP.ps1 -ValidateOnly` відтворює ту саму перевірку без production-дій |
+| `31` | Відсутній або порожній запис Credential Manager для потрібного компонента | Рядок `credentialInitializationError`/`archiveCredentialInitializationError` у консольному виводі; `.\BRAVO_CREDENTIALS_SETUP.ps1 -Action Test -Component Required -StoreFor Both` |
+| `40` | Провал створення архіву 7-Zip, або (Maintenance) провал відновлення з архіву | `[ERROR]` у секції `АРХІВАЦІЯ <компонент>`/`ВІДНОВЛЕННЯ`; останні рядки stdout/stderr 7-Zip записуються одразу після загального повідомлення |
+| `41` | `7z test` або SHA512-звірка не підтвердили цілісність | `Перевiрка цiлiсностi 7-Zip не пройдена` у секції `АРХІВАЦІЯ`; пошкоджений архів навмисно залишається на диску для діагностики (не видаляється) |
+| `50` | SFTP: з'єднання, автентифікація або передача файлу | Секція `ЗАВАНТАЖЕННЯ АРХІВІВ НА SFTP` / `СИНХРОНІЗАЦІЯ BAZA НА SFTP`; перевірте `sftpHostKey` fingerprint і мережевий доступ до TCP 22 |
+| `51` | SMB/NAS: недоступний UNC-шлях або облікові дані | Секція `КОПІЮВАННЯ АРХІВІВ НА NAS/SMB`; перевірте доступність UNC-шляху від `SYSTEM` через `BRAVO_TASKS_DIAGNOSE.ps1 -TestAccess` |
+| `60` | Maintenance: служби, диск, файлове господарство — усе, що не потрапляє під `40`/`41` | Секція, де `Результат: ПОМИЛКА` вперше з'являється в `BRAVO_MAINTENANCE_*.log`; часто — недостатньо вільного місця (`Limits.MinimumFreeSpaceGB`) або служба не в стані `Running` |
+| `70` | Health-check: локальні/SFTP/SMB копії застаріли, або керована служба не працює | `BRAVO_ARCHIV_HEALTH_*.log`, рядки `[ERROR] Проблема ...`; дивіться `LocalVerified`/`SftpVerified`/`SmbVerified`, якщо результат читається програмно |
+| `90` | Непередбачений виняток, якого runtime не встиг категоризувати | `Write-Error`/останній `[ERROR]` перед аварійним завершенням; часто вказує на прогалину в конфігурації, яку варто завести як окремий issue, а не лише перезапустити завдання |
+
+Для `LastTaskResult` самого Task Scheduler (окремо від кодів вище —
+це код запуску процесу, а не BRAVO) дивіться таблицю на початку цього
+розділу.
+
 ## 13. Призначення файлів
 
 ### Основні точки входу
@@ -599,8 +625,9 @@ health > лише попередження. Код `90` має найвищий 
 
 Детальні параметри комплексного setup наведені у
 [BRAVO_SETUP.md](BRAVO_SETUP.md), історія версій — у
-[CHANGELOG.md](CHANGELOG.md), а модель безпеки й порядок повідомлення про
-вразливості — у [SECURITY.md](SECURITY.md).
+[CHANGELOG.md](CHANGELOG.md), модель безпеки й порядок повідомлення про
+вразливості — у [SECURITY.md](SECURITY.md), а чек-лист перед випуском
+нової версії — у [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md).
 
 ### Гілки та release channel
 
