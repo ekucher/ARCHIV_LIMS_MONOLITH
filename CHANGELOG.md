@@ -2,6 +2,13 @@
 
 ## 4.3.0 — 2026-08-04
 
+- Внутрішній код-рев'ю, рефакторинг: `Get-SanitizedWinSCPDiagnostic`
+  (маскування паролю/host key у діагностиці WinSCP.com) перенесено зі
+  `BRAVO.Archive.Runtime.ps1` у спільний `BRAVO.ArchiveRuntime` — раніше
+  функція була продубльована лише в Archive, а `Invoke-WinSCPHealthSession`
+  (`BRAVO.Health.Runtime.ps1`) повертав `Output`/`ErrorOutput` без
+  санітизації взагалі; тепер обидва runtime використовують одну спільну
+  реалізацію, і Health-сесія санітизує результат одразу в джерелі.
 - Внутрішній код-рев'ю (не з формального аудиту, точкові виправлення):
   - `Enter-BRAVOWinSCPProcessLock` (`BRAVO.ArchiveRuntime`) тепер приймає
     явний параметр `-LogPath` замість мовчазного покладання на
