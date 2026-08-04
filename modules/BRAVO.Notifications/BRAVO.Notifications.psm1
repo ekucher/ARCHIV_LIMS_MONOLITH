@@ -46,7 +46,10 @@ function Get-HostInformation {
         "недоступна"
     }
 
-    $lookupEnabled = $true
+    # Аудит P1.10: за замовчуванням вимкнено, якщо конфігурація взагалі не
+    # визначає hostInformationSettings/PublicIPLookupEnabled — той самий
+    # fail-safe default, що тепер і в BRAVO.config.
+    $lookupEnabled = $false
     $lookupUrls = @("https://api.ipify.org")
     $lookupTimeoutSeconds = 5
     if ($hostInformationSettings -is [System.Collections.IDictionary]) {

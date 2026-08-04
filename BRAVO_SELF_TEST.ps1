@@ -557,6 +557,22 @@ try {
         -Name "Version/AuthoritativeLoader" `
         -Failure "VERSION.json має бути єдиним джерелом версії, releaseDate і buildId для ScriptVersion/ScriptDate/ScriptBuildId"
 
+    # P1.10 аудиту: за замовчуванням жодних запитів до сторонніх сервісів
+    # (api.ipify.org/checkip.amazonaws.com) для визначення публічної IP —
+    # це зайва зовнішня залежність, яка розкриває факт і час запуску backup.
+    Remove-Module -Name 'BRAVO.Notifications' -Force -ErrorAction SilentlyContinue
+    Import-Module -Name (Join-Path $root "modules\BRAVO.Notifications\BRAVO.Notifications.psd1") -Force -ErrorAction Stop
+    $hostInformationWithConfig = Get-HostInformation
+    Test-BRAVOCondition `
+        -Condition (
+            $global:hostInformationSettings -is [System.Collections.IDictionary] -and
+            $global:hostInformationSettings.Contains("PublicIPLookupEnabled") -and
+            $global:hostInformationSettings.PublicIPLookupEnabled -eq $false -and
+            $hostInformationWithConfig.PublicIP -eq "вимкнено"
+        ) `
+        -Name "Notifications/PublicIPLookupDisabledByDefault" `
+        -Failure "PublicIPLookupEnabled у BRAVO.config має бути \$false за замовчуванням; Get-HostInformation не повинен звертатись до зовнішніх IP-сервісів, доки це не увімкнено свідомо"
+
     # Модель release channel (P0.6 аудиту): developer -> development,
     # master/main -> stable. Перевірка навмисно не обов'язкова — release-пакет
     # без .git (розгорнутий на production-сервері) не повинен через це падати,

@@ -2,6 +2,17 @@
 
 ## 4.2.13 — 2026-08-04
 
+- P1.10 з плану виправлень (`ARCHIV_LIMS_MONOLITH_AUDIT_FIXES.md`):
+  `hostInformationSettings.PublicIPLookupEnabled` у `BRAVO.config` тепер
+  `$false` за замовчуванням — раніше кожен запуск Health/Maintenance
+  звертався до `api.ipify.org`/`checkip.amazonaws.com`, зайвої зовнішньої
+  залежності, яка розкриває стороннім сервісам факт і час запуску backup.
+  Внутрішній fallback у `Get-HostInformation` (`BRAVO.Notifications`) на
+  випадок відсутньої конфігурації узгоджено з тим самим `$false`. Якщо
+  вимкнено, `Get-HostInformation` не робить жодного мережевого запиту й
+  одразу повертає `PublicIP = "вимкнено"`. Додано self-test
+  `Notifications/PublicIPLookupDisabledByDefault`.
+
 - P0.4 з плану виправлень (`ARCHIV_LIMS_MONOLITH_AUDIT_FIXES.md`):
   формалізовано мінімально підтримувану ОС трьома рівнями — Supported
   (Windows Server 2019+, Windows 10/11, PowerShell 5.1), Legacy best-effort
