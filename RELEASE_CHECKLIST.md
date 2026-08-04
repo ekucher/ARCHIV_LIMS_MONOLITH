@@ -59,8 +59,10 @@
   (`windows-latest`, парсинг, BOM, JSON, `PSScriptAnalyzer`, повний
   `BRAVO_SELF_TEST.ps1`, `gitleaks`), запускається на кожен push/PR.
   **Не** ввімкнено branch protection — CI показує статус, але технічно
-  ще не блокує merge/push у `master`, доки власник репозиторію не
-  ввімкне required status checks у налаштуваннях GitHub вручну.
+  ще не блокує merge/push у `master`. Не забутий крок: спроба через
+  `gh api` заблокована самим GitHub — required status checks на
+  приватних репозиторіях вимагає GitHub Pro. Доступно знову, якщо
+  репозиторій стане публічним або власник апгрейдить план.
 - Tools hashes (`TOOLS_INTEGRITY.json`) — TOFU, не еталонний release
   manifest; оновлюються самі при першому запуску на кожному сервері, а
   не публікуються разом з релізом (аудит P0.2).
