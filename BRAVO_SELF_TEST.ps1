@@ -1717,6 +1717,141 @@ try {
         -Name "RestoreDrill/ScriptImplementsFullDrillCycle" `
         -Failure "BRAVO_RESTORE_TEST.ps1 має знаходити найновіший верифікований backup, перевіряти цілісність 7za, розпаковувати в ізольований каталог, звіряти мінімальну кількість файлів, повертати контрактний exit code і прибирати за собою"
 
+    # AUD-008 (аудит P1.6): sanity-check обсягу backup. Технічно валідний
+    # архів (7za test + SHA512 збігається) все одно може бути підозріло
+    # малим через неправильне джерело чи зламані permissions.
+    Remove-Module -Name 'BRAVO.ArchiveHelpers' -Force -ErrorAction SilentlyContinue
+    Import-Module -Name (Join-Path $root "modules\BRAVO.ArchiveHelpers\BRAVO.ArchiveHelpers.psd1") -Force -ErrorAction Stop
+
+    $sizeSanityTestRoot = Join-Path `
+        -Path ([IO.Path]::GetTempPath()) `
+        -ChildPath ("BRAVO_SIZE_SANITY_SELF_TEST_{0}" -f [guid]::NewGuid().ToString("N"))
+    try {
+        [void][IO.Directory]::CreateDirectory($sizeSanityTestRoot)
+
+        function New-BRAVOSizeSanityFixtureArchive {
+            param([string]$Directory, [string]$Name, [int]$Bytes, [datetime]$LastWriteTime)
+
+            $archivePath = Join-Path $Directory $Name
+            $bytesArray = New-Object byte[] $Bytes
+            [IO.File]::WriteAllBytes($archivePath, $bytesArray)
+            (Get-Item -LiteralPath $archivePath).LastWriteTime = $LastWriteTime
+            $hash = (Get-BRAVOFileHash -Path $archivePath -Algorithm SHA512).Hash.ToUpperInvariant()
+            [IO.File]::WriteAllText("$archivePath.sha512", "$hash *$Name")
+            return $archivePath
+        }
+
+        # Історія: 5 валідних архівів по ~100000 байт (медіана — 100000).
+        for ($i = 1; $i -le 5; $i++) {
+            [void](New-BRAVOSizeSanityFixtureArchive `
+                -Directory $sizeSanityTestRoot `
+                -Name "HIST_2026080${i}_1000.mdz" `
+                -Bytes 100000 `
+                -LastWriteTime (Get-Date).AddDays(-$i))
+        }
+
+        $normalNewArchive = New-BRAVOSizeSanityFixtureArchive `
+            -Directory $sizeSanityTestRoot `
+            -Name "NEW_NORMAL_20260810_1000.mdz" `
+            -Bytes 95000 `
+            -LastWriteTime (Get-Date)
+        $normalResult = Test-BRAVOBackupSizeAnomaly `
+            -NewArchiveBytes 95000 `
+            -HistoryDirectory $sizeSanityTestRoot `
+            -ArchiveFilter "*.mdz" `
+            -HashFileExtension ".sha512" `
+            -ExcludeArchivePath $normalNewArchive `
+            -HistoryCount 5 `
+            -MinimumBytes 1024 `
+            -MaxSizeDropPercent 50
+        Test-BRAVOCondition `
+            -Condition (
+                -not [bool]$normalResult.IsAnomaly -and
+                $normalResult.HistorySampleCount -eq 5 -and
+                $normalResult.MedianHistoricalBytes -eq 100000
+            ) `
+            -Name "SizeSanity/NormalSizeIsNotAnomaly" `
+            -Failure "Test-BRAVOBackupSizeAnomaly не повинен позначати архів у межах порогу як аномалію, і має правильно рахувати медіану історії (виключно новий архів)"
+
+        $droppedNewArchive = New-BRAVOSizeSanityFixtureArchive `
+            -Directory $sizeSanityTestRoot `
+            -Name "NEW_DROPPED_20260811_1000.mdz" `
+            -Bytes 20000 `
+            -LastWriteTime (Get-Date)
+        $droppedResult = Test-BRAVOBackupSizeAnomaly `
+            -NewArchiveBytes 20000 `
+            -HistoryDirectory $sizeSanityTestRoot `
+            -ArchiveFilter "*.mdz" `
+            -HashFileExtension ".sha512" `
+            -ExcludeArchivePath $droppedNewArchive `
+            -HistoryCount 5 `
+            -MinimumBytes 1024 `
+            -MaxSizeDropPercent 50
+        Test-BRAVOCondition `
+            -Condition (
+                [bool]$droppedResult.IsAnomaly -and
+                $droppedResult.DropPercent -eq 80.0
+            ) `
+            -Name "SizeSanity/LargeDropIsDetectedAsAnomaly" `
+            -Failure "Test-BRAVOBackupSizeAnomaly має позначати падіння розміру понад MaxSizeDropPercent як аномалію з правильним DropPercent"
+
+        $belowMinimumResult = Test-BRAVOBackupSizeAnomaly `
+            -NewArchiveBytes 10 `
+            -HistoryDirectory $sizeSanityTestRoot `
+            -ArchiveFilter "*.mdz" `
+            -HashFileExtension ".sha512" `
+            -HistoryCount 5 `
+            -MinimumBytes 1024 `
+            -MaxSizeDropPercent 50
+        Test-BRAVOCondition `
+            -Condition (
+                [bool]$belowMinimumResult.IsAnomaly -and
+                $belowMinimumResult.Reason.Contains("мінімально")
+            ) `
+            -Name "SizeSanity/BelowMinimumBytesIsAlwaysAnomaly" `
+            -Failure "Test-BRAVOBackupSizeAnomaly має позначати архів нижче MinimumBytes як аномалію незалежно від наявності історії"
+
+        $noHistoryTestRoot = Join-Path $sizeSanityTestRoot "empty"
+        [void][IO.Directory]::CreateDirectory($noHistoryTestRoot)
+        $firstRunResult = Test-BRAVOBackupSizeAnomaly `
+            -NewArchiveBytes 50000 `
+            -HistoryDirectory $noHistoryTestRoot `
+            -ArchiveFilter "*.mdz" `
+            -HashFileExtension ".sha512" `
+            -HistoryCount 5 `
+            -MinimumBytes 1024 `
+            -MaxSizeDropPercent 50
+        Test-BRAVOCondition `
+            -Condition (
+                -not [bool]$firstRunResult.IsAnomaly -and
+                $firstRunResult.HistorySampleCount -eq 0
+            ) `
+            -Name "SizeSanity/NoHistoryIsNotTreatedAsAnomaly" `
+            -Failure "перший backup компонента (без історії валідних архівів) не повинен вважатися аномалією"
+    } finally {
+        if (Test-Path -LiteralPath $sizeSanityTestRoot) {
+            Remove-Item -LiteralPath $sizeSanityTestRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $archiveRuntimeTextForSizeSanity = [IO.File]::ReadAllText(
+        (Join-Path $root "modules\BRAVO.Archive\BRAVO.Archive.Runtime.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    $bravoConfigTextForSizeSanity = [IO.File]::ReadAllText(
+        (Join-Path $root "BRAVO.config"),
+        [Text.Encoding]::UTF8
+    )
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveRuntimeTextForSizeSanity.Contains("Test-BRAVOBackupSizeAnomaly") -and
+            $archiveRuntimeTextForSizeSanity.Contains("backupMonitoring.SizeSanity.Enabled") -and
+            $bravoConfigTextForSizeSanity.Contains("SizeSanity") -and
+            $bravoConfigTextForSizeSanity.Contains("MaxSizeDropPercent")
+        ) `
+        -Name "SizeSanity/WiredIntoArchiveRuntime" `
+        -Failure "BRAVO.Archive.Runtime.ps1 має викликати Test-BRAVOBackupSizeAnomaly з налаштувань backupMonitoring.SizeSanity"
+
     $legacyEntryPoints = @(
         'ARCHIV_VETOFFICE.ps1',
         'ARCHIV_VETOFFICE.config.ps1',

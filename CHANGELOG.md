@@ -2,6 +2,20 @@
 
 ## 4.3.0 — 2026-08-04
 
+- AUD-008 з ARCHIV_LIMS_MONOLITH_FULL_AUDIT.md (P1.6): sanity-check
+  обсягу backup. Технічно валідний архів (7za test + SHA512 збігається)
+  все одно може бути підозріло малим через неправильне джерело, зламані
+  permissions чи неповний VSS exposure. Нові
+  `Test-BRAVOBackupSizeAnomaly`/`Get-BRAVOValidArchiveSizeHistory`
+  (`modules\BRAVO.ArchiveHelpers`) порівнюють розмір щойно створеного
+  архіву з медіаною останніх валідних (hash-підтверджених) архівів того
+  самого компонента; новий `backupMonitoring.SizeSanity` у `BRAVO.config`
+  (`Enabled`/`HistoryCount`/`MinimumBytes`/`MaxSizeDropPercent`).
+  Перший backup компонента (без історії) не вважається аномалією.
+  Виявлена аномалія НЕ блокує backup — лише `WARNING` у журналі й статус
+  кроку `Архівація <компонент>` підвищується до `WARNING`, що потрапляє в
+  лічильник попереджень і Slack/Discord-сповіщення.
+
 - AUD-004 з ARCHIV_LIMS_MONOLITH_FULL_AUDIT.md (P0.4): доданий restore
   drill — `BRAVO_RESTORE_TEST.ps1`. Читабельний і навіть SHA-512/7za-
   перевірений архів доводить лише незмінність байтів, не відновлюваність

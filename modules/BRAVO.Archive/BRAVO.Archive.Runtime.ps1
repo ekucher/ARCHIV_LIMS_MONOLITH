@@ -3614,6 +3614,7 @@ function Main {
         # аргументи 7-Zip і його вивід лишаються в журналі.
         $archiveStepDuration = (Get-Date) - $archiveStepStarted
         $archiveStepDetails = $archiveStepDuration.ToString($durationFormat)
+        $sizeAnomalyResult = $null
         if ($success) {
             $createdArchivePath = Join-Path $archive.Destination $archiveName
             if (Test-Path -LiteralPath $createdArchivePath -PathType Leaf) {
@@ -3621,14 +3622,45 @@ function Main {
                 $archiveStepDetails = "{0} / {1}" -f
                     (Format-BRAVOFileSize -Bytes $createdArchiveSize),
                     $archiveStepDuration.ToString($durationFormat)
+
+                # AUD-008 (аудит P1.6): sanity-check обсягу — технічно
+                # валідний архів все одно може бути підозріло малим через
+                # неправильне джерело чи зламані permissions. Не блокує
+                # (лишає ArchiveSuccess/HashSuccess як є), лише сигналізує.
+                if ($hashSuccess -and
+                    [bool]$backupMonitoring.SizeSanity.Enabled) {
+                    try {
+                        $sizeAnomalyResult = Test-BRAVOBackupSizeAnomaly `
+                            -NewArchiveBytes $createdArchiveSize `
+                            -HistoryDirectory $archive.Destination `
+                            -ArchiveFilter $archiveFileFilter `
+                            -HashFileExtension $hashFileExtension `
+                            -ExcludeArchivePath $createdArchivePath `
+                            -HistoryCount ([int]$backupMonitoring.SizeSanity.HistoryCount) `
+                            -MinimumBytes ([int64]$backupMonitoring.SizeSanity.MinimumBytes) `
+                            -MaxSizeDropPercent ([int]$backupMonitoring.SizeSanity.MaxSizeDropPercent)
+                        if ([bool]$sizeAnomalyResult.IsAnomaly) {
+                            Write-Log "Підозрілий розмір архіву $($archive.Type): $($sizeAnomalyResult.Reason)" -Level "WARNING"
+                        }
+                    } catch {
+                        Write-Log "Не вдалося виконати sanity-check обсягу для $($archive.Type): $($_.Exception.Message)" -Level "WARNING"
+                    }
+                }
+                $results[$archive.Type].Bytes = $createdArchiveSize
+                $results[$archive.Type].SizeAnomaly = $sizeAnomalyResult
             }
         }
         $archiveStepStatus = if (-not $success) {
             'ERROR'
         } elseif (-not $hashSuccess) {
             'WARNING'
+        } elseif ($null -ne $sizeAnomalyResult -and [bool]$sizeAnomalyResult.IsAnomaly) {
+            'WARNING'
         } else {
             'OK'
+        }
+        if ($null -ne $sizeAnomalyResult -and [bool]$sizeAnomalyResult.IsAnomaly) {
+            $archiveStepDetails = "$archiveStepDetails — $($sizeAnomalyResult.Reason)"
         }
         Write-BRAVOArchiveStep `
             -Name ("Архівація {0}" -f $archive.Type) `
