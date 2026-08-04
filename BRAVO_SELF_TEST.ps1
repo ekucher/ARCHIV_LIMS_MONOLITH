@@ -486,6 +486,33 @@ try {
         ) `
         -Name "Version/AuthoritativeLoader" `
         -Failure "VERSION.json має бути єдиним джерелом версії, releaseDate і buildId для ScriptVersion/ScriptDate/ScriptBuildId"
+
+    # Модель release channel (P0.6 аудиту): developer -> development,
+    # master/main -> stable. Перевірка навмисно не обов'язкова — release-пакет
+    # без .git (розгорнутий на production-сервері) не повинен через це падати,
+    # і сам `git` може бути відсутній навіть у робочій копії репозиторію.
+    $currentGitBranch = $null
+    if (Test-Path -LiteralPath (Join-Path $root '.git')) {
+        try {
+            $gitCommand = Get-Command -Name 'git' -ErrorAction SilentlyContinue
+            if ($null -ne $gitCommand) {
+                $branchOutput = & git -C $root rev-parse --abbrev-ref HEAD 2>$null
+                if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$branchOutput)) {
+                    $currentGitBranch = ([string]$branchOutput).Trim()
+                }
+            }
+        } catch {
+            $currentGitBranch = $null
+        }
+    }
+    if ($currentGitBranch -in @('master', 'main')) {
+        Test-BRAVOCondition `
+            -Condition (
+                [string]$loadedConfiguration.Version.ReleaseChannel -ne 'development'
+            ) `
+            -Name "Version/StableBranchNotDevelopmentChannel" `
+            -Failure "гілка '$currentGitBranch' не повинна мати releaseChannel=development у VERSION.json"
+    }
     $moduleManifests = @(Get-ChildItem -LiteralPath (Join-Path $root 'modules') -Recurse -Filter '*.psd1' -File)
     $moduleVersionsMatch = @($moduleManifests | Where-Object {
             [string](Test-ModuleManifest -Path $_.FullName -ErrorAction Stop).Version -ne

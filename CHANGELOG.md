@@ -2,6 +2,15 @@
 
 ## 4.2.13 — 2026-08-04
 
+- Упорядковано release channels (P0.6 з плану виправлень
+  `ARCHIV_LIMS_MONOLITH_AUDIT_FIXES.md`): `VERSION.json.releaseChannel`
+  тепер відповідає гілці — `development` на `developer`, `stable` на
+  `master`. Додано self-test `Version/StableBranchNotDevelopmentChannel`,
+  який визначає поточну git-гілку і забороняє `releaseChannel=development`
+  на `master`/`main`; перевірка м'яко пропускається, якщо `.git`
+  недоступний (розгорнутий release-пакет без клону репозиторію). У
+  README задокументовано відповідність гілка → канал.
+
 - Повторний аудит (`ARCHIV_LIMS_MONOLITH_REPEAT_AUDIT.md`, P1) вказав: після
   релізного коміту `v.4.2.12` у код внесено суттєві зміни (StrictMode-фікси,
   VSS exposure, ACL runtime, нове логування, маскування секретів, integrity
