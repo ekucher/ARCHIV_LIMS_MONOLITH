@@ -21,6 +21,7 @@ param(
     [string]$StoreFor = "Both",
 
     [switch]$ValidateOnly,
+    [switch]$ConfirmDiscoveryBaseline,
     [switch]$SkipAccessTest,
     [switch]$SkipTestNotification,
     [switch]$NoElevation,
@@ -155,6 +156,9 @@ function Restart-SetupElevated {
     if ($ValidateOnly) {
         $argumentParts += "-ValidateOnly"
     }
+    if ($ConfirmDiscoveryBaseline) {
+        $argumentParts += "-ConfirmDiscoveryBaseline"
+    }
     if ($SkipAccessTest) {
         $argumentParts += "-SkipAccessTest"
     }
@@ -233,6 +237,39 @@ try {
         }
         if ($bravoDiscoveryResult.Overrides.Count -gt 0) {
             Write-Host "Явні override з discoverySettings: $($bravoDiscoveryResult.Overrides.Keys -join ', ')"
+        }
+        if ($bravoDiscoveryResult.PSObject.Properties['Ambiguous'] -and
+            (([bool]$bravoDiscoveryResult.Ambiguous['BravoRoot']) -or ([bool]$bravoDiscoveryResult.Ambiguous['WebRoot']))) {
+            $ambiguousFieldNames = New-Object System.Collections.Generic.List[string]
+            if ([bool]$bravoDiscoveryResult.Ambiguous['BravoRoot']) { $ambiguousFieldNames.Add('BRAVO_ROOT') }
+            if ([bool]$bravoDiscoveryResult.Ambiguous['WebRoot']) { $ambiguousFieldNames.Add('WEB_ROOT') }
+            Write-Host "УВАГА: знайдено кілька служб-кандидатів для $($ambiguousFieldNames -join ' і '); обрано першу знайдену — перевірте вручну." -ForegroundColor Yellow
+        }
+
+        # AUD-007 (аудит P1.1/P1.2): порівняння з останнім підтвердженим
+        # baseline. Це лише read-only перевірка дрейфу — не блокує сама
+        # собою; критичність (Fail vs Warn) лишається за адміністратором,
+        # який бачить попередження й вирішує.
+        $discoveryBaselinePath = Join-Path $PSScriptRoot "LOGS\DISCOVERY_BASELINE.json"
+        $discoveryDrift = @(Compare-BRAVODiscoveryBaseline `
+            -DiscoveryResult $bravoDiscoveryResult `
+            -BaselinePath $discoveryBaselinePath)
+        if ($discoveryDrift.Count -gt 0) {
+            Write-Host "УВАГА: виявлено дрейф джерел відносно збереженого baseline:" -ForegroundColor Yellow
+            foreach ($driftMessage in $discoveryDrift) {
+                Write-Host "  - $driftMessage" -ForegroundColor Yellow
+            }
+        } elseif (Test-Path -LiteralPath $discoveryBaselinePath -PathType Leaf) {
+            Write-Host "Дрейфу джерел відносно збереженого baseline не виявлено."
+        } else {
+            Write-Host "Baseline discovery ще не збережено (перший запуск або ще не підтверджено)."
+        }
+
+        if ($ConfirmDiscoveryBaseline) {
+            Save-BRAVODiscoveryBaseline `
+                -DiscoveryResult $bravoDiscoveryResult `
+                -BaselinePath $discoveryBaselinePath
+            Write-Host "Discovery baseline підтверджено й збережено: $discoveryBaselinePath" -ForegroundColor Green
         }
 
         if ($ValidateOnly) {

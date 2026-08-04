@@ -105,6 +105,7 @@ try {
         "BRAVO_TASKS_INSTALL.ps1",
         "BRAVO_TASKS_UNINSTALL.ps1",
         "BRAVO_TASKS_DIAGNOSE.ps1",
+        "BRAVO_RESTORE_TEST.ps1",
         "BRAVO_SELF_TEST.ps1"
     )
     foreach ($fileName in $helperEntryPoints) {
@@ -1322,7 +1323,8 @@ try {
             [pscustomobject]@{ Name = "BRAVO_TASKS_DIAGNOSE.ps1"; Path = "BRAVO_TASKS_DIAGNOSE.ps1" },
             [pscustomobject]@{ Name = "BRAVO_TASKS_UNINSTALL.ps1"; Path = "BRAVO_TASKS_UNINSTALL.ps1" },
             [pscustomobject]@{ Name = "BRAVO_CREDENTIALS_SETUP.ps1"; Path = "BRAVO_CREDENTIALS_SETUP.ps1" },
-            [pscustomobject]@{ Name = "BRAVO_TASKS_INSTALL.ps1"; Path = "BRAVO_TASKS_INSTALL.ps1" }
+            [pscustomobject]@{ Name = "BRAVO_TASKS_INSTALL.ps1"; Path = "BRAVO_TASKS_INSTALL.ps1" },
+            [pscustomobject]@{ Name = "BRAVO_RESTORE_TEST.ps1"; Path = "BRAVO_RESTORE_TEST.ps1" }
         )) {
         $utilityText = [IO.File]::ReadAllText(
             (Join-Path $root $utility.Path),
@@ -1520,9 +1522,9 @@ try {
             BAZA_APP = $null
             BAZA_WWW = $null
         }
-        $validationErrors = Test-BRAVODiscoveryResult `
+        $validationErrors = @(Test-BRAVODiscoveryResult `
             -DiscoveryResult $missingSourceResult `
-            -EnabledComponents @{ MODEL = $true; BLOG = $true; BRAVOEXCH = $false }
+            -EnabledComponents @{ MODEL = $true; BLOG = $true; BRAVOEXCH = $false })
         Test-BRAVOCondition `
             -Condition (
                 $validationErrors.Count -eq 1 -and
@@ -1530,6 +1532,74 @@ try {
             ) `
             -Name "Discovery/ValidationDetectsMissingEnabledSourceOnly" `
             -Failure "Test-BRAVODiscoveryResult має повідомляти лише про увімкнені компоненти з відсутнім/непорожнім шляхом і не чіпати вимкнені"
+
+        # AUD-007 (аудит P1.1): кілька служб BRAVO з РІЗНИМИ виконуваними
+        # файлами — неоднозначний BRAVO_ROOT має позначатися й блокувати
+        # валідацію для enabled-компонентів, що від нього залежать.
+        $ambiguousExePathA = Join-Path $discoveryTestRoot "bravo_instance_a.exe"
+        [IO.File]::WriteAllText($ambiguousExePathA, "stub")
+        $ambiguousExePathB = Join-Path $discoveryTestRoot "bravo_instance_b.exe"
+        [IO.File]::WriteAllText($ambiguousExePathB, "stub")
+        $ambiguousBravoServices = @(
+            [pscustomobject]@{ Name = "BRAVO"; DisplayName = "BRAVO"; State = "Running"; StartMode = "Auto"; PathName = ('"{0}"' -f $ambiguousExePathA) },
+            [pscustomobject]@{ Name = "BRAVO"; DisplayName = "BRAVO"; State = "Running"; StartMode = "Auto"; PathName = ('"{0}"' -f $ambiguousExePathB) }
+        )
+        $ambiguousDiscovery = Resolve-BRAVOInstallationDiscovery `
+            -LimsRoot $discoveryTestRoot `
+            -BravoServiceName "BRAVO" `
+            -Services $ambiguousBravoServices
+        Test-BRAVOCondition `
+            -Condition (
+                [bool]$ambiguousDiscovery.Ambiguous["BravoRoot"] -and
+                -not [bool]$ambiguousDiscovery.Ambiguous["WebRoot"]
+            ) `
+            -Name "Discovery/AmbiguousBravoServiceIsDetected" `
+            -Failure "Resolve-BRAVOInstallationDiscovery має позначати Ambiguous.BravoRoot=true, якщо знайдено кілька служб BRAVO з різними виконуваними файлами"
+        $ambiguousValidationErrors = @(Test-BRAVODiscoveryResult `
+            -DiscoveryResult $ambiguousDiscovery `
+            -EnabledComponents @{ MODEL = $true; BLOG = $false; BRAVOEXCH = $false })
+        Test-BRAVOCondition `
+            -Condition (
+                @($ambiguousValidationErrors | Where-Object { $_.Contains("BRAVO_ROOT") -and $_.Contains("неоднозначний") }).Count -eq 1
+            ) `
+            -Name "Discovery/ValidationBlocksAmbiguousBravoRootForEnabledComponent" `
+            -Failure "Test-BRAVODiscoveryResult має повідомляти про неоднозначний BRAVO_ROOT, лише якщо від нього залежить увімкнений компонент"
+        $ambiguousValidationErrorsAllDisabled = @(Test-BRAVODiscoveryResult `
+            -DiscoveryResult $ambiguousDiscovery `
+            -EnabledComponents @{ MODEL = $false; BLOG = $false; BRAVOEXCH = $false })
+        Test-BRAVOCondition `
+            -Condition (
+                @($ambiguousValidationErrorsAllDisabled | Where-Object { $_.Contains("неоднозначний") }).Count -eq 0
+            ) `
+            -Name "Discovery/ValidationIgnoresAmbiguousBravoRootWhenNoDependentComponentEnabled" `
+            -Failure "неоднозначний BRAVO_ROOT не повинен генерувати помилку, якщо жоден залежний компонент не увімкнено"
+
+        # AUD-007 (аудит P1.2): baseline snapshot і виявлення дрейфу джерел
+        # між запусками.
+        $baselineTestPath = Join-Path $discoveryTestRoot "discovery_baseline.json"
+        Save-BRAVODiscoveryBaseline -DiscoveryResult $autoDiscovery -BaselinePath $baselineTestPath
+        $noDriftResult = @(Compare-BRAVODiscoveryBaseline -DiscoveryResult $autoDiscovery -BaselinePath $baselineTestPath)
+        $driftedDiscovery = [pscustomobject]@{
+            BRAVO_ROOT = $autoDiscovery.BRAVO_ROOT
+            WEB_ROOT = $autoDiscovery.WEB_ROOT
+            MODEL_SOURCE = "C:\Completely\Different\Model"
+            BLOG_SOURCE = $autoDiscovery.BLOG_SOURCE
+            BRAVOEXCH_SOURCE = $autoDiscovery.BRAVOEXCH_SOURCE
+            BAZA_APP = $autoDiscovery.BAZA_APP
+            BAZA_WWW = $autoDiscovery.BAZA_WWW
+        }
+        $driftResult = @(Compare-BRAVODiscoveryBaseline -DiscoveryResult $driftedDiscovery -BaselinePath $baselineTestPath)
+        $noBaselineYetResult = @(Compare-BRAVODiscoveryBaseline -DiscoveryResult $autoDiscovery -BaselinePath (Join-Path $discoveryTestRoot "__NO_SUCH_BASELINE__.json"))
+        Test-BRAVOCondition `
+            -Condition (
+                (Test-Path -LiteralPath $baselineTestPath -PathType Leaf) -and
+                $noDriftResult.Count -eq 0 -and
+                $driftResult.Count -eq 1 -and
+                $driftResult[0].Contains("MODEL_SOURCE") -and
+                $noBaselineYetResult.Count -eq 0
+            ) `
+            -Name "Discovery/BaselineSaveAndDriftDetection" `
+            -Failure "Save-BRAVODiscoveryBaseline має зберігати JSON-знімок, Compare-BRAVODiscoveryBaseline — виявляти зміну поля відносно нього й не повідомляти про дрейф, якщо baseline ще не існує"
     } finally {
         if (Test-Path -LiteralPath $discoveryTestRoot) {
             Remove-Item -LiteralPath $discoveryTestRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -1555,10 +1625,232 @@ try {
             $bravoConfigTextForDiscovery.Contains("`$global:discoverySettings") -and
             $bravoConfigTextForDiscovery.Contains("`$global:sourcePaths") -and
             $setupTextForDiscovery.Contains("Test-BRAVODiscoveryResult") -and
-            $setupTextForDiscovery.Contains("DISCOVERY")
+            $setupTextForDiscovery.Contains("DISCOVERY") -and
+            $setupTextForDiscovery.Contains("Compare-BRAVODiscoveryBaseline") -and
+            $setupTextForDiscovery.Contains("Save-BRAVODiscoveryBaseline") -and
+            $setupTextForDiscovery.Contains("ConfirmDiscoveryBaseline")
         ) `
         -Name "Discovery/WiredIntoConfigLoaderAndSetup" `
-        -Failure "BRAVO_CONFIG_LOADER.ps1 має імпортувати BRAVO.Discovery, BRAVO.config має викликати Resolve-BRAVOInstallationDiscovery для sourcePaths, а BRAVO_SETUP.ps1 -ValidateOnly має показувати й перевіряти discovery-результат"
+        -Failure "BRAVO_CONFIG_LOADER.ps1 має імпортувати BRAVO.Discovery, BRAVO.config має викликати Resolve-BRAVOInstallationDiscovery для sourcePaths, а BRAVO_SETUP.ps1 -ValidateOnly має показувати й перевіряти discovery-результат і дрейф відносно baseline"
+
+    # AUD-004 (аудит P0.4): restore drill. Читабельний і навіть SHA512/7za-
+    # перевірений архів не доводить відновлюваність — Invoke-BRAVOSevenZipExtraction
+    # (modules\BRAVO.Compatibility) — новий компонент, яким
+    # BRAVO_RESTORE_TEST.ps1 користується для фактичного розпакування в
+    # ізольований каталог. Функціональний round-trip: стиснути реальним
+    # Tools\7za.exe, розпакувати назад, підтвердити, що вміст і кількість
+    # файлів збігаються.
+    Remove-Module -Name 'BRAVO.Compatibility' -Force -ErrorAction SilentlyContinue
+    Import-Module -Name (Join-Path $root "modules\BRAVO.Compatibility\BRAVO.Compatibility.psd1") -Force -ErrorAction Stop
+    $sevenZipToolPath = Join-Path $root "Tools\7za.exe"
+    if (Test-Path -LiteralPath $sevenZipToolPath -PathType Leaf) {
+        $restoreDrillTestRoot = Join-Path `
+            -Path ([IO.Path]::GetTempPath()) `
+            -ChildPath ("BRAVO_RESTORE_DRILL_SELF_TEST_{0}" -f [guid]::NewGuid().ToString("N"))
+        try {
+            $restoreDrillSourceDir = Join-Path $restoreDrillTestRoot "source"
+            [void][IO.Directory]::CreateDirectory($restoreDrillSourceDir)
+            1..4 | ForEach-Object {
+                [IO.File]::WriteAllText((Join-Path $restoreDrillSourceDir "file$_.txt"), "restore drill self-test $_")
+            }
+            $restoreDrillArchivePath = Join-Path $restoreDrillTestRoot "test.mdz"
+            $compressPsi = New-Object System.Diagnostics.ProcessStartInfo
+            $compressPsi.FileName = $sevenZipToolPath
+            $compressPsi.Arguments = "a -mmt -mx1 -r -y -p `"$restoreDrillArchivePath`" `"$restoreDrillSourceDir`""
+            $compressPsi.RedirectStandardInput = $true
+            $compressPsi.RedirectStandardOutput = $true
+            $compressPsi.RedirectStandardError = $true
+            $compressPsi.UseShellExecute = $false
+            $compressProcess = New-Object System.Diagnostics.Process
+            $compressProcess.StartInfo = $compressPsi
+            [void]$compressProcess.Start()
+            $compressProcess.StandardInput.WriteLine("RestoreDrillSelfTestPass")
+            $compressProcess.StandardInput.Close()
+            $compressProcess.WaitForExit()
+
+            $restoreDrillExtractDir = Join-Path $restoreDrillTestRoot "extract"
+            [void][IO.Directory]::CreateDirectory($restoreDrillExtractDir)
+            $extractionResult = Invoke-BRAVOSevenZipExtraction `
+                -SevenZipPath $sevenZipToolPath `
+                -ArchivePath $restoreDrillArchivePath `
+                -Password "RestoreDrillSelfTestPass" `
+                -ExtractDirectory $restoreDrillExtractDir
+            $extractedFiles = @(Get-ChildItem -LiteralPath $restoreDrillExtractDir -Recurse -File -ErrorAction SilentlyContinue)
+            Test-BRAVOCondition `
+                -Condition (
+                    [bool]$extractionResult.Success -and
+                    $extractionResult.ExitCode -eq 0 -and
+                    $extractedFiles.Count -eq 4
+                ) `
+                -Name "RestoreDrill/ExtractionRoundTripSucceeds" `
+                -Failure "Invoke-BRAVOSevenZipExtraction має успішно розпакувати стиснутий 7za.exe архів і повернути ту саму кількість файлів, що й у джерелі"
+
+            $wrongPasswordResult = Invoke-BRAVOSevenZipExtraction `
+                -SevenZipPath $sevenZipToolPath `
+                -ArchivePath $restoreDrillArchivePath `
+                -Password "DefinitelyWrongPassword" `
+                -ExtractDirectory $restoreDrillExtractDir
+            Test-BRAVOCondition `
+                -Condition (-not [bool]$wrongPasswordResult.Success) `
+                -Name "RestoreDrill/ExtractionFailsWithWrongPassword" `
+                -Failure "Invoke-BRAVOSevenZipExtraction має повертати Success=false для архіву з неправильним паролем"
+        } finally {
+            if (Test-Path -LiteralPath $restoreDrillTestRoot) {
+                Remove-Item -LiteralPath $restoreDrillTestRoot -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    $restoreTestScriptText = [IO.File]::ReadAllText(
+        (Join-Path $root "BRAVO_RESTORE_TEST.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    Test-BRAVOCondition `
+        -Condition (
+            $restoreTestScriptText.Contains("Find-BRAVOLatestVerifiedArchive") -and
+            $restoreTestScriptText.Contains("Test-SevenZipArchiveIntegrity") -and
+            $restoreTestScriptText.Contains("Invoke-BRAVOSevenZipExtraction") -and
+            $restoreTestScriptText.Contains("MinimumFileCount") -and
+            $restoreTestScriptText.Contains("Resolve-BRAVOExitCode") -and
+            $restoreTestScriptText.Contains("Remove-Item -LiteralPath `$workingDirectory -Recurse -Force")
+        ) `
+        -Name "RestoreDrill/ScriptImplementsFullDrillCycle" `
+        -Failure "BRAVO_RESTORE_TEST.ps1 має знаходити найновіший верифікований backup, перевіряти цілісність 7za, розпаковувати в ізольований каталог, звіряти мінімальну кількість файлів, повертати контрактний exit code і прибирати за собою"
+
+    # AUD-008 (аудит P1.6): sanity-check обсягу backup. Технічно валідний
+    # архів (7za test + SHA512 збігається) все одно може бути підозріло
+    # малим через неправильне джерело чи зламані permissions.
+    Remove-Module -Name 'BRAVO.ArchiveHelpers' -Force -ErrorAction SilentlyContinue
+    Import-Module -Name (Join-Path $root "modules\BRAVO.ArchiveHelpers\BRAVO.ArchiveHelpers.psd1") -Force -ErrorAction Stop
+
+    $sizeSanityTestRoot = Join-Path `
+        -Path ([IO.Path]::GetTempPath()) `
+        -ChildPath ("BRAVO_SIZE_SANITY_SELF_TEST_{0}" -f [guid]::NewGuid().ToString("N"))
+    try {
+        [void][IO.Directory]::CreateDirectory($sizeSanityTestRoot)
+
+        function New-BRAVOSizeSanityFixtureArchive {
+            param([string]$Directory, [string]$Name, [int]$Bytes, [datetime]$LastWriteTime)
+
+            $archivePath = Join-Path $Directory $Name
+            $bytesArray = New-Object byte[] $Bytes
+            [IO.File]::WriteAllBytes($archivePath, $bytesArray)
+            (Get-Item -LiteralPath $archivePath).LastWriteTime = $LastWriteTime
+            $hash = (Get-BRAVOFileHash -Path $archivePath -Algorithm SHA512).Hash.ToUpperInvariant()
+            [IO.File]::WriteAllText("$archivePath.sha512", "$hash *$Name")
+            return $archivePath
+        }
+
+        # Історія: 5 валідних архівів по ~100000 байт (медіана — 100000).
+        for ($i = 1; $i -le 5; $i++) {
+            [void](New-BRAVOSizeSanityFixtureArchive `
+                -Directory $sizeSanityTestRoot `
+                -Name "HIST_2026080${i}_1000.mdz" `
+                -Bytes 100000 `
+                -LastWriteTime (Get-Date).AddDays(-$i))
+        }
+
+        $normalNewArchive = New-BRAVOSizeSanityFixtureArchive `
+            -Directory $sizeSanityTestRoot `
+            -Name "NEW_NORMAL_20260810_1000.mdz" `
+            -Bytes 95000 `
+            -LastWriteTime (Get-Date)
+        $normalResult = Test-BRAVOBackupSizeAnomaly `
+            -NewArchiveBytes 95000 `
+            -HistoryDirectory $sizeSanityTestRoot `
+            -ArchiveFilter "*.mdz" `
+            -HashFileExtension ".sha512" `
+            -ExcludeArchivePath $normalNewArchive `
+            -HistoryCount 5 `
+            -MinimumBytes 1024 `
+            -MaxSizeDropPercent 50
+        Test-BRAVOCondition `
+            -Condition (
+                -not [bool]$normalResult.IsAnomaly -and
+                $normalResult.HistorySampleCount -eq 5 -and
+                $normalResult.MedianHistoricalBytes -eq 100000
+            ) `
+            -Name "SizeSanity/NormalSizeIsNotAnomaly" `
+            -Failure "Test-BRAVOBackupSizeAnomaly не повинен позначати архів у межах порогу як аномалію, і має правильно рахувати медіану історії (виключно новий архів)"
+
+        $droppedNewArchive = New-BRAVOSizeSanityFixtureArchive `
+            -Directory $sizeSanityTestRoot `
+            -Name "NEW_DROPPED_20260811_1000.mdz" `
+            -Bytes 20000 `
+            -LastWriteTime (Get-Date)
+        $droppedResult = Test-BRAVOBackupSizeAnomaly `
+            -NewArchiveBytes 20000 `
+            -HistoryDirectory $sizeSanityTestRoot `
+            -ArchiveFilter "*.mdz" `
+            -HashFileExtension ".sha512" `
+            -ExcludeArchivePath $droppedNewArchive `
+            -HistoryCount 5 `
+            -MinimumBytes 1024 `
+            -MaxSizeDropPercent 50
+        Test-BRAVOCondition `
+            -Condition (
+                [bool]$droppedResult.IsAnomaly -and
+                $droppedResult.DropPercent -eq 80.0
+            ) `
+            -Name "SizeSanity/LargeDropIsDetectedAsAnomaly" `
+            -Failure "Test-BRAVOBackupSizeAnomaly має позначати падіння розміру понад MaxSizeDropPercent як аномалію з правильним DropPercent"
+
+        $belowMinimumResult = Test-BRAVOBackupSizeAnomaly `
+            -NewArchiveBytes 10 `
+            -HistoryDirectory $sizeSanityTestRoot `
+            -ArchiveFilter "*.mdz" `
+            -HashFileExtension ".sha512" `
+            -HistoryCount 5 `
+            -MinimumBytes 1024 `
+            -MaxSizeDropPercent 50
+        Test-BRAVOCondition `
+            -Condition (
+                [bool]$belowMinimumResult.IsAnomaly -and
+                $belowMinimumResult.Reason.Contains("мінімально")
+            ) `
+            -Name "SizeSanity/BelowMinimumBytesIsAlwaysAnomaly" `
+            -Failure "Test-BRAVOBackupSizeAnomaly має позначати архів нижче MinimumBytes як аномалію незалежно від наявності історії"
+
+        $noHistoryTestRoot = Join-Path $sizeSanityTestRoot "empty"
+        [void][IO.Directory]::CreateDirectory($noHistoryTestRoot)
+        $firstRunResult = Test-BRAVOBackupSizeAnomaly `
+            -NewArchiveBytes 50000 `
+            -HistoryDirectory $noHistoryTestRoot `
+            -ArchiveFilter "*.mdz" `
+            -HashFileExtension ".sha512" `
+            -HistoryCount 5 `
+            -MinimumBytes 1024 `
+            -MaxSizeDropPercent 50
+        Test-BRAVOCondition `
+            -Condition (
+                -not [bool]$firstRunResult.IsAnomaly -and
+                $firstRunResult.HistorySampleCount -eq 0
+            ) `
+            -Name "SizeSanity/NoHistoryIsNotTreatedAsAnomaly" `
+            -Failure "перший backup компонента (без історії валідних архівів) не повинен вважатися аномалією"
+    } finally {
+        if (Test-Path -LiteralPath $sizeSanityTestRoot) {
+            Remove-Item -LiteralPath $sizeSanityTestRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $archiveRuntimeTextForSizeSanity = [IO.File]::ReadAllText(
+        (Join-Path $root "modules\BRAVO.Archive\BRAVO.Archive.Runtime.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    $bravoConfigTextForSizeSanity = [IO.File]::ReadAllText(
+        (Join-Path $root "BRAVO.config"),
+        [Text.Encoding]::UTF8
+    )
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveRuntimeTextForSizeSanity.Contains("Test-BRAVOBackupSizeAnomaly") -and
+            $archiveRuntimeTextForSizeSanity.Contains("backupMonitoring.SizeSanity.Enabled") -and
+            $bravoConfigTextForSizeSanity.Contains("SizeSanity") -and
+            $bravoConfigTextForSizeSanity.Contains("MaxSizeDropPercent")
+        ) `
+        -Name "SizeSanity/WiredIntoArchiveRuntime" `
+        -Failure "BRAVO.Archive.Runtime.ps1 має викликати Test-BRAVOBackupSizeAnomaly з налаштувань backupMonitoring.SizeSanity"
 
     $legacyEntryPoints = @(
         'ARCHIV_VETOFFICE.ps1',

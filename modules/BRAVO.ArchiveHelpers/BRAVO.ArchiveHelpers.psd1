@@ -3,7 +3,7 @@
     ModuleVersion = '4.3.0'
     GUID = '0a073e11-f066-4dc5-b9f7-24aae1a9b3df'
     PowerShellVersion = '3.0'
-    FunctionsToExport = @('Remove-OldLogsByAge', 'Test-SevenZipArchiveIntegrity')
+    FunctionsToExport = @('Remove-OldLogsByAge', 'Test-SevenZipArchiveIntegrity', 'Get-BRAVOValidArchiveSizeHistory', 'Test-BRAVOBackupSizeAnomaly')
     VariablesToExport = @()
     CmdletsToExport = @()
     AliasesToExport = @()

@@ -2,6 +2,85 @@
 
 ## 4.3.0 — 2026-08-04
 
+- AUD-008 з ARCHIV_LIMS_MONOLITH_FULL_AUDIT.md (P1.6): sanity-check
+  обсягу backup. Технічно валідний архів (7za test + SHA512 збігається)
+  все одно може бути підозріло малим через неправильне джерело, зламані
+  permissions чи неповний VSS exposure. Нові
+  `Test-BRAVOBackupSizeAnomaly`/`Get-BRAVOValidArchiveSizeHistory`
+  (`modules\BRAVO.ArchiveHelpers`) порівнюють розмір щойно створеного
+  архіву з медіаною останніх валідних (hash-підтверджених) архівів того
+  самого компонента; новий `backupMonitoring.SizeSanity` у `BRAVO.config`
+  (`Enabled`/`HistoryCount`/`MinimumBytes`/`MaxSizeDropPercent`).
+  Перший backup компонента (без історії) не вважається аномалією.
+  Виявлена аномалія НЕ блокує backup — лише `WARNING` у журналі й статус
+  кроку `Архівація <компонент>` підвищується до `WARNING`, що потрапляє в
+  лічильник попереджень і Slack/Discord-сповіщення.
+
+- AUD-004 з ARCHIV_LIMS_MONOLITH_FULL_AUDIT.md (P0.4): доданий restore
+  drill — `BRAVO_RESTORE_TEST.ps1`. Читабельний і навіть SHA-512/7za-
+  перевірений архів доводить лише незмінність байтів, не відновлюваність
+  системи; новий скрипт бере найновіший локальний backup із коректним
+  `.sha512` для кожного увімкненого компонента (`MODEL`/`BLOG`/`BRAVOEXCH`,
+  `-Component` для одного або всіх), запускає `7za t` (перевикористано
+  `Test-SevenZipArchiveIntegrity`), розпаковує в ІЗОЛЬОВАНИЙ тимчасовий
+  каталог (не production-шлях, ACL SYSTEM+Administrators+поточний
+  користувач, видаляється одразу після перевірки — навіть при помилці,
+  через `finally`), звіряє кількість розпакованих файлів проти
+  `-MinimumFileCount` і повертає контрактний exit code (`0`/`10`/`41`)
+  та машинно-читаний JSON (`-ResultPath`/`-AsJson`). Сповіщення в
+  Slack/Discord — лише при `WARN`/`FAIL`, якщо не задано
+  `-SkipNotification`. Read-only діагностика: не видаляє, не переміщує й
+  не змінює жоден існуючий backup, елевація не потрібна.
+
+  Новий спільний компонент `Invoke-BRAVOSevenZipExtraction`
+  (`modules\BRAVO.Compatibility`) — розпакування архіву, дзеркалить уже
+  наявний `Invoke-BRAVOSevenZipIntegrityTest` (той самий
+  ProcessStartInfo/stdin-пароль патерн, пароль ніколи не потрапляє до
+  командного рядка чи логів).
+
+  Restore drill НЕ входить до типового набору завдань
+  `BRAVO_TASKS_INSTALL.ps1` — рекомендовано (розділ 6.1 README.md)
+  додати окреме щотижневе/щомісячне завдання Планувальника вручну.
+
+- AUD-007 з ARCHIV_LIMS_MONOLITH_FULL_AUDIT.md (P1.1/P1.2): захист від
+  неоднозначного й дрейфового discovery. `Resolve-BRAVOInstallationDiscovery`
+  тепер позначає `Ambiguous.BravoRoot`/`Ambiguous.WebRoot`, якщо знайдено
+  кілька служб BRAVO/Apache із РІЗНИМИ виконуваними файлами (ознака
+  stale/дублюючої інсталяції) — `Test-BRAVODiscoveryResult` блокує
+  валідацію для будь-якого увімкненого компонента, що залежить від
+  неоднозначного кореня. Додано `Save-BRAVODiscoveryBaseline` і
+  `Compare-BRAVODiscoveryBaseline`: `BRAVO_SETUP.ps1 -ValidateOnly`
+  порівнює поточний discovery-результат зі збереженим
+  `LOGS\DISCOVERY_BASELINE.json` (поза git) і повідомляє про дрейф
+  джерел відносно останнього підтвердженого запуску (лише попередження,
+  не блокує); новий switch `-ConfirmDiscoveryBaseline` явно фіксує
+  поточний результат як baseline.
+
+  Під час розробки виявлено й виправлено реальний баг у самому модулі
+  `BRAVO.Discovery`: ідіома `return ,@($collection.ToArray())`
+  (застосована раніше для фіксу розгортання 1-елементного масиву в
+  скаляр під Set-StrictMode -Version 2.0 на Windows PowerShell 5.1) при
+  ПОРОЖНІЙ колекції створює масив з ОДНИМ елементом-порожнім-масивом, а
+  не порожній масив — той самий клас бага, лише в інший бік. Спроба
+  виправити через `Write-Output -NoEnumerate` натомість ламала виклики,
+  де результат додатково обгортається `@(...)` на боці клієнта
+  (подвійне обгортання). Остаточне рішення: звичайний `return
+  $collection.ToArray()` у `Test-BRAVODiscoveryResult` і
+  `Compare-BRAVODiscoveryBaseline`, а всі точки виклику (в
+  `BRAVO_SETUP.ps1` і `BRAVO_SELF_TEST.ps1`) уніфіковано завжди
+  обгортають виклик `@(...)` — єдиний послідовний контракт, який
+  коректно повертає масив для 0, 1 і N елементів незалежно від стилю
+  виклику.
+
+- AUD-017 з ARCHIV_LIMS_MONOLITH_FULL_AUDIT.md: виправлено застарілий
+  рядок у `SECURITY.md` (розділ 8), який стверджував, що
+  `RELEASE_CHECKLIST.md` "наразі не існує" — файл вже доданий раніше
+  (P2.6). Розділ 8 тепер лише чесно перелічує те, що справді ще не
+  реалізовано (threat model, CI/CD gate, SFTP/SMB key auth,
+  `AppLocker`/`WDAC`/`gMSA`), без згадки вже виконаних пунктів.
+  Контакт і SLA в розділі 2 (`[заповнити]`) свідомо лишені як є —
+  власник репозиторію ще не надав реальні значення.
+
 - CLAUDE_CODE_TZ_ARCHIV_LIMS_MONOLITH.md: визначення джерел резервного
   копіювання (`MODEL`, `BLOG`, `BRAVOEXCH`, `BAZA_APP`, `BAZA_WWW`,
   `BRAVO_ROOT`, `WEB_ROOT`) тепер відбувається автоматично на основі
