@@ -2,6 +2,19 @@
 
 ## 4.2.13 — 2026-08-04
 
+- P2.4 з плану виправлень: додано `SECURITY.md` — підтримувані версії
+  (продукт і ОС/PowerShell), порядок повідомлення про вразливості, модель
+  секретів (Credential Manager, `Protect-BRAVOLogSecret`, очищення
+  script-scope змінних), модель довіри до Tools (TOFU, чесно
+  задокументовані відсутні Authenticode/Fail-режим/підписані завдання),
+  модель ACL, обмеження Credential Manager (прив'язка до облікового
+  запису, відсутність gMSA), політика оновлення. Документ описує
+  фактичний поточний стан, включно з відомими незакритими прогалинами —
+  не видає заплановане за вже реалізоване. Секції SLA/контакту для
+  повідомлення про вразливості лишено як явний placeholder для власника
+  репозиторію. Додано self-test `Documentation/SecurityMdExists` і
+  `Documentation/SecurityMdCoversRequiredSections`.
+
 - P1.6 з плану виправлень (`ARCHIV_LIMS_MONOLITH_AUDIT_FIXES.md`): Health
   тепер окремо повертає `LocalVerified`/`SftpVerified`/`SmbVerified` у
   result object (усі 7 гілок `return Complete-BRAVOHealthResult`), а не

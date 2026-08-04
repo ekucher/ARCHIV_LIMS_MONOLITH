@@ -598,8 +598,9 @@ health > лише попередження. Код `90` має найвищий 
 | `BRAVO_SELF_TEST.ps1` | автоматичні регресійні тести |
 
 Детальні параметри комплексного setup наведені у
-[BRAVO_SETUP.md](BRAVO_SETUP.md), а історія версій — у
-[CHANGELOG.md](CHANGELOG.md).
+[BRAVO_SETUP.md](BRAVO_SETUP.md), історія версій — у
+[CHANGELOG.md](CHANGELOG.md), а модель безпеки й порядок повідомлення про
+вразливості — у [SECURITY.md](SECURITY.md).
 
 ### Гілки та release channel
 

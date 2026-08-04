@@ -1343,6 +1343,29 @@ try {
         -Name "ConfigurationLoader/CredentialsSetupNoNameCollision" `
         -Failure "локальний wrapper credentials-утиліти не повинен збігатися за ім'ям із Import-BravoConfiguration"
 
+    # P2.4 аудиту: SECURITY.md — обов'язковий, легко забути оновити після
+    # security-релевантних змін. Перевіряємо лише структуру (розділи є),
+    # не зміст — зміст неможливо валідувати автоматично.
+    $securityDocPath = Join-Path $root "SECURITY.md"
+    Test-BRAVOCondition `
+        -Condition (Test-Path -LiteralPath $securityDocPath -PathType Leaf) `
+        -Name "Documentation/SecurityMdExists" `
+        -Failure "SECURITY.md має існувати в корені репозиторію"
+    if (Test-Path -LiteralPath $securityDocPath -PathType Leaf) {
+        $securityDocText = [IO.File]::ReadAllText($securityDocPath, [Text.Encoding]::UTF8)
+        Test-BRAVOCondition `
+            -Condition (
+                $securityDocText.Contains("Підтримувані версії") -and
+                $securityDocText.Contains("Порядок повідомлення про вразливості") -and
+                $securityDocText.Contains("Модель секретів") -and
+                $securityDocText.Contains("Модель довіри до Tools") -and
+                $securityDocText.Contains("Модель ACL") -and
+                $securityDocText.Contains("Обмеження Credential Manager")
+            ) `
+            -Name "Documentation/SecurityMdCoversRequiredSections" `
+            -Failure "SECURITY.md має покривати підтримувані версії, порядок повідомлення про вразливості, модель секретів/Tools/ACL і обмеження Credential Manager"
+    }
+
     $legacyEntryPoints = @(
         'ARCHIV_VETOFFICE.ps1',
         'ARCHIV_VETOFFICE.config.ps1',
