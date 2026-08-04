@@ -14,7 +14,13 @@
   переможець визначається пріоритетом (lock > config > creds > local
   archive > integrity > SFTP > SMB > maintenance > health > warnings).
   Заразом узгоджено: Archive більше не трактує статуси Health `Disabled`/
-  `Deferred` як власну відмову — сам Health вважає їх безпечними.
+  `Deferred` як власну відмову — сам Health вважає їх безпечними. Maintenance
+  також розрізняє `40`/`41` для власних операцій відновлення: помилка
+  створення/розпакування локального архіву (`Restore-FromArchive`, попередній/
+  контрольний архів навколо відновлення) повертає `40`, а провал 7-Zip test /
+  SHA512-звірки чи розбіжність розміру файлів — `41`; решта відмов Maintenance
+  (сервіси, диск, файлове господарство, оркестрація BRAVO_ARCHIV) лишаються
+  спільним `60`, як і раніше.
 - Runtime Archive, Health і Maintenance та спільні бібліотеки перенесено до
   versioned PowerShell-модулів у каталозі `modules`; task-entrypoint-и залишено
   тонкими стабільними wrappers.

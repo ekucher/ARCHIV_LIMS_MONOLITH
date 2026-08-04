@@ -316,6 +316,17 @@ try {
         ) `
         -Name "Runtime/NoLegacyAdHocExitCodes" `
         -Failure "старі ad-hoc коди (2 для lock, голий exit 1) мають бути повністю замінені контрактом BRAVO.ExitCodes"
+    Test-BRAVOCondition `
+        -Condition (
+            $maintenanceRuntimeTextForExitCodes.Contains('$script:restoreArchiveFailed') -and
+            $maintenanceRuntimeTextForExitCodes.Contains('$script:restoreIntegrityFailed') -and
+            $maintenanceRuntimeTextForExitCodes.Contains('-LocalArchiveFailed:$script:restoreArchiveFailed') -and
+            $maintenanceRuntimeTextForExitCodes.Contains('-IntegrityTestFailed:$script:restoreIntegrityFailed') -and
+            ([regex]::Matches($maintenanceRuntimeTextForExitCodes, [regex]::Escape('$script:restoreArchiveFailed = $true')).Count -eq 10) -and
+            ([regex]::Matches($maintenanceRuntimeTextForExitCodes, [regex]::Escape('$script:restoreIntegrityFailed = $true')).Count -eq 9)
+        ) `
+        -Name "Runtime/MaintenanceDistinguishesArchiveVsIntegrityFailure" `
+        -Failure "Maintenance має розрізняти локальну архівацію (40) і перевірку цілісності (41) відновлення, а не зводити все до 60"
 
     $insecureWebhookRejected = $false
     try {

@@ -666,6 +666,12 @@ $script:criticalErrorOccurred = $false
 # Лічильник WARNING для контракту кодів завершення: успіх без жодного
 # попередження -> 0, успіх із попередженнями -> 10 (Resolve-BRAVOExitCode).
 $script:BRAVOWarningCount = 0
+# Уточнення категорії всередині $criticalErrorOccurred для операцій
+# створення/відновлення локального архіву (40) і перевірки його цілісності
+# (41) — решта відмов (сервіси, диск, файлове господарство, оркестрація
+# BRAVO_ARCHIV) лишаються загальним бакетом 60, як і раніше.
+$script:restoreArchiveFailed = $false
+$script:restoreIntegrityFailed = $false
 
 function Enter-BRAVOMaintenanceOperationLock {
     $lockPath = Join-Path $LOG_DIR "BRAVO_OPERATION.lock"
@@ -1473,6 +1479,7 @@ function Compare-FileSizes {
         if (-not (Test-Path $BeforeFile)) {
             Write-Log "Файл з початковими розмірами не знайдено: $BeforeFile" -Level "ERROR"
             $script:criticalErrorOccurred = $true
+            $script:restoreIntegrityFailed = $true
             return $true
         }
 
@@ -1480,6 +1487,7 @@ function Compare-FileSizes {
         if ($initialData.Count -eq 0) {
             Write-Log "Початковий список файлів MODEL порожній; цілісність після реставрації неможливо підтвердити" -Level "ERROR"
             $script:criticalErrorOccurred = $true
+            $script:restoreIntegrityFailed = $true
             return $true
         }
 
@@ -1544,7 +1552,8 @@ function Compare-FileSizes {
             Write-Log $criticalMessage -Level "ERROR"
             Send-SlackAlert -Message $criticalMessage -IsCritical
             $script:criticalErrorOccurred = $true
-            
+            $script:restoreIntegrityFailed = $true
+
             return $true
         } else {
             Write-Log "Відсутніх файлів або критичних зменшень розміру не знайдено" -Level "INFO"
@@ -1556,6 +1565,7 @@ function Compare-FileSizes {
         Write-Log $errorMsg -Level "ERROR"
         Send-SlackAlert -Message $errorMsg -IsCritical
         $script:criticalErrorOccurred = $true
+        $script:restoreIntegrityFailed = $true
         # Неможливість довести цілісність MODEL є критичною подією. Повертаємо
         # $true, щоб викликач виконав відкат і не створив маркер успіху.
         return $true
@@ -1575,6 +1585,7 @@ function Restore-FromArchive {
         Write-Log "ПОМИЛКА: $errorMsg" -Level "ERROR"
         Send-SlackAlert -Message $errorMsg -IsCritical
         $script:criticalErrorOccurred = $true
+        $script:restoreArchiveFailed = $true
         return 1
     }
 
@@ -1585,6 +1596,7 @@ function Restore-FromArchive {
         Write-Log "ПОМИЛКА: $errorMsg" -Level "ERROR"
         Send-SlackAlert -Message $errorMsg -IsCritical
         $script:criticalErrorOccurred = $true
+        $script:restoreIntegrityFailed = $true
         return 2
     }
 
@@ -1609,8 +1621,9 @@ function Restore-FromArchive {
         Write-Log "ПОМИЛКА: $errorMsg" -Level "ERROR"
         Send-SlackAlert -Message $errorMsg -IsCritical
         $script:criticalErrorOccurred = $true
+        $script:restoreArchiveFailed = $true
     }
-    
+
     return $exitCode
 }
 
@@ -1677,6 +1690,7 @@ function Invoke-CommandWithLog {
         Write-Log $errorMsg -Level "ERROR"
         Send-SlackAlert -Message $errorMsg -IsCritical
         $script:criticalErrorOccurred = $true
+        $script:restoreArchiveFailed = $true
         return 258
     } finally {
         if ($null -ne $outputCapture) {
@@ -1698,8 +1712,9 @@ function Invoke-CommandWithLog {
         Write-Log $errorMsg -Level "ERROR"
         Send-SlackAlert -Message $errorMsg -IsCritical
         $script:criticalErrorOccurred = $true
+        $script:restoreArchiveFailed = $true
     }
-    
+
     if (-not [string]::IsNullOrWhiteSpace($formattedOutput)) {
         Write-Log "Деталі виконання:$formattedOutput" -Level "DEBUG"
     }
@@ -1721,6 +1736,7 @@ function Test-BRAVOMaintenanceSevenZipArchiveIntegrity {
         -Logger { param($Message, $Level) Write-Log $Message -Level $Level }
     if (-not $integrityValid) {
         $script:criticalErrorOccurred = $true
+        $script:restoreIntegrityFailed = $true
     }
     return $integrityValid
 }
@@ -1840,6 +1856,7 @@ function Compress-OldData {
         Write-Log "$errorMsg" -Level "ERROR"
         Send-SlackAlert -Message $errorMsg
         $script:criticalErrorOccurred = $true
+        $script:restoreArchiveFailed = $true
     }
 }
 
@@ -2199,6 +2216,7 @@ function Verify-Backup {
         $errorMsg = "Архів не знайдено: $ArchivePath"
         Write-Log "ПОМИЛКА: $errorMsg" -Level "ERROR"
         $script:criticalErrorOccurred = $true
+        $script:restoreIntegrityFailed = $true
         return $false
     }
 
@@ -2995,6 +3013,7 @@ if ($BravoMaintenanceEnabled -and $bravoStatus -ne "Running") {
                 Write-Log -Message "ПОМИЛКА: $errorMsg" -Level "ERROR"
                 Send-SlackAlert -Message $errorMsg -IsCritical
                 $script:criticalErrorOccurred = $true
+                $script:restoreArchiveFailed = $true
             } elseif (-not (Test-BRAVOMaintenanceSevenZipArchiveIntegrity `
                     -SevenZipPath $ARC_PATH `
                     -ArchivePath $beforeArchivePath)) {
@@ -3002,11 +3021,13 @@ if ($BravoMaintenanceEnabled -and $bravoStatus -ne "Running") {
                 Write-Log -Message "ПОМИЛКА: $errorMsg" -Level "ERROR"
                 Send-SlackAlert -Message $errorMsg -IsCritical
                 $script:criticalErrorOccurred = $true
+                $script:restoreIntegrityFailed = $true
             } elseif (-not (Verify-Backup -ArchivePath $beforeArchivePath)) {
                 $errorMsg = "Не вдалося створити SHA512 для перевіреного архіву перед реставрацією. Реставрація скасована: $beforeArchivePath"
                 Write-Log -Message "ПОМИЛКА: $errorMsg" -Level "ERROR"
                 Send-SlackAlert -Message $errorMsg -IsCritical
                 $script:criticalErrorOccurred = $true
+                $script:restoreIntegrityFailed = $true
             } else {
                 Write-Log -Message "Архів моделі перед реставрацією створено та перевірено -> $beforeArchivePath" -Level "SUCCESS"
                 
@@ -3042,6 +3063,7 @@ if ($BravoMaintenanceEnabled -and $bravoStatus -ne "Running") {
                                 Write-Log -Message "ПОМИЛКА: $errorMsg" -Level "ERROR"
                                 Send-SlackAlert -Message $errorMsg -IsCritical
                                 $script:criticalErrorOccurred = $true
+                                $script:restoreArchiveFailed = $true
                             }
                         }
                     }
@@ -3080,6 +3102,7 @@ if ($BravoMaintenanceEnabled -and $bravoStatus -ne "Running") {
                             Write-Log -Message "ПОМИЛКА: $errorMsg" -Level "ERROR"
                             Send-SlackAlert -Message $errorMsg -IsCritical
                             $script:criticalErrorOccurred = $true
+                            $script:restoreArchiveFailed = $true
                         }
                         
                         # Створення маркера ЛИШЕ при успішній реставрації без критичних змін
@@ -3107,6 +3130,7 @@ if ($BravoMaintenanceEnabled -and $bravoStatus -ne "Running") {
                     Write-Log -Message "ПОМИЛКА: $errorMsg" -Level "ERROR"
                     Send-SlackAlert -Message $errorMsg -IsCritical
                     $script:criticalErrorOccurred = $true
+                    $script:restoreArchiveFailed = $true
                 }
             }
         }
@@ -3115,6 +3139,7 @@ if ($BravoMaintenanceEnabled -and $bravoStatus -ne "Running") {
             Write-Log -Message "ПОМИЛКА: $errorMsg" -Level "ERROR"
             Send-SlackAlert -Message $errorMsg -IsCritical
             $script:criticalErrorOccurred = $true
+            $script:restoreArchiveFailed = $true
         }
     }
     
@@ -3482,12 +3507,17 @@ Write-Log -Message "==="
     Exit-BRAVOMaintenanceOperationLock
 }
 
-# Maintenance наразі не дробить категорію відмови далі одного бакета
-# (аудит просив лише "60 = MaintenanceFailed"), тому весь наявний
-# $script:criticalErrorOccurred просто мапиться на нього. Жодна з ~38 точок
-# criticalErrorOccurred = $true вище не редагувалась.
+# Операції створення/відновлення локального архіву й перевірки його
+# цілісності виділені окремими прапорцями (restoreArchiveFailed/
+# restoreIntegrityFailed, 19 точок) на 40/41; решта ~23 точок
+# criticalErrorOccurred (сервіси, диск, файлове господарство, оркестрація
+# BRAVO_ARCHIV) і далі схлопуються в загальний бакет 60. Resolve-BRAVOExitCode
+# сам віддає пріоритет 40/41 над 60, якщо передані одночасно.
 if ($script:criticalErrorOccurred) {
-    exit (Resolve-BRAVOExitCode -MaintenanceFailed)
+    exit (Resolve-BRAVOExitCode `
+        -LocalArchiveFailed:$script:restoreArchiveFailed `
+        -IntegrityTestFailed:$script:restoreIntegrityFailed `
+        -MaintenanceFailed)
 } elseif ($script:BRAVOWarningCount -gt 0) {
     exit (Resolve-BRAVOExitCode -HasWarnings)
 } else {
