@@ -756,6 +756,52 @@ try {
         ) `
         -Name "Services/ArchiveReadOnly" `
         -Failure "BRAVO_ARCHIV не повинен зупиняти або запускати Windows-служби"
+    $bravoConfigTextForRetention = [IO.File]::ReadAllText(
+        (Join-Path $root "BRAVO.config"),
+        [Text.Encoding]::UTF8
+    )
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveScriptText.Contains('minimumRetainedVerifiedBackups') -and
+            $archiveScriptText.Contains('Select-Object -First $minimumRetainedCount') -and
+            $archiveScriptText.Contains('Select-Object -Skip $minimumRetainedCount') -and
+            $bravoConfigTextForRetention.Contains('$global:minimumRetainedVerifiedBackups')
+        ) `
+        -Name "BackupConsistency/RetentionNeverDeletesLastVerified" `
+        -Failure "Remove-OldBackupSets має захищати N найновіших перевірених комплектів від видалення незалежно від archiveRetentionDays (аудит P1.7)"
+
+    # Archive.Runtime.ps1 безумовно запускає Main при dot-source, тому саму
+    # функцію Remove-OldBackupSets тут викликати небезпечно. Натомість
+    # відтворюємо той самий алгоритм відбору (Select-Object -First/-Skip на
+    # відсортованому за спаданням часу списку) на синтетичних даних — це
+    # функціональна, а не текстова перевірка інваріанту "останню перевірену
+    # копію не видаляти", яку одна лише текстова перевірка вище довести не може.
+    # Навмисно всі три "покоління" старші за cutoff — саме такий сценарій
+    # (серія невдалих backup, лише старі перевірені копії) і був не захищений
+    # до цього виправлення: без Select-Object -First найновіший теж потрапляв
+    # у $setsToDelete.
+    $retentionSimulationSets = @(
+        [pscustomobject]@{ Name = "gen1_newest"; LastWriteTime = (Get-Date).AddDays(-190) },
+        [pscustomobject]@{ Name = "gen2_old"; LastWriteTime = (Get-Date).AddDays(-200) },
+        [pscustomobject]@{ Name = "gen3_oldest"; LastWriteTime = (Get-Date).AddDays(-400) }
+    ) | Sort-Object LastWriteTime -Descending
+    $retentionSimulationCutoff = (Get-Date).AddDays(-183)
+    $retentionSimulationProtected = @($retentionSimulationSets | Select-Object -First 1)
+    $retentionSimulationCandidates = @($retentionSimulationSets | Select-Object -Skip 1)
+    $retentionSimulationToDelete = @($retentionSimulationCandidates | Where-Object {
+        $_.LastWriteTime -lt $retentionSimulationCutoff
+    })
+    Test-BRAVOCondition `
+        -Condition (
+            $retentionSimulationProtected.Count -eq 1 -and
+            $retentionSimulationProtected[0].Name -eq "gen1_newest" -and
+            $retentionSimulationToDelete.Count -eq 2 -and
+            ($retentionSimulationToDelete.Name -contains "gen2_old") -and
+            ($retentionSimulationToDelete.Name -contains "gen3_oldest") -and
+            -not ($retentionSimulationToDelete.Name -contains "gen1_newest")
+        ) `
+        -Name "BackupConsistency/RetentionSelectionAlgorithm" `
+        -Failure "алгоритм відбору на видалення (Select-Object -First/-Skip найновіших перевірених комплектів) має завжди виключати найновіший комплект, навіть коли він старший за retention cutoff"
     $maintenanceScriptText = [IO.File]::ReadAllText(
         (Join-Path $root "modules\BRAVO.Maintenance\BRAVO.Maintenance.Runtime.ps1"),
         [Text.Encoding]::UTF8
