@@ -180,7 +180,11 @@ GitHub Actions (`.github/workflows/ci.yml`), раннер `windows-latest`
 - `PSScriptAnalyzer` — блокує на `Severity=Error`; `Warning`/
   `Information` лише інформаційні (кілька правил навмисно виключено —
   `PSAvoidUsingWriteHost`/`PSAvoidGlobalVars` суперечать усталеній
-  архітектурі репозиторію, не є недоглядом);
+  архітектурі репозиторію; `PSAvoidUsingConvertToSecureStringWithPlainText`
+  і `PSAvoidUsingUsernameAndPasswordParams` — секрет уже прочитаний із
+  Credential Manager, конвертація в `SecureString`/побудова SFTP URL —
+  необхідний міст до .NET API, а не хардкод секрету; жодне з цього не є
+  недоглядом);
 - повний `BRAVO_SELF_TEST.ps1`;
 - сканування секретів (`gitleaks`, окрема Linux-джоба — самому
   скануванню вмісту git-історії ОС не важлива).

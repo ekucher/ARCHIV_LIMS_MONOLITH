@@ -104,9 +104,21 @@ jobs:
           # (Write-Host для інтерактивної консолі допоміжних скриптів,
           # $global: як спільний контракт між BRAVO.config і runtime-
           # модулями — задокументовано й відомо, не забутий недогляд).
+          #
+          # PSAvoidUsingConvertToSecureStringWithPlainText: секрет у всіх
+          # цих місцях щойно прочитаний із Windows Credential Manager
+          # (уже захищене сховище), а ConvertTo-SecureString -AsPlainText
+          # використовується лише для мосту до .NET API, які вимагають
+          # SecureString (New-Object PSCredential тощо) — не хардкод
+          # секрету в джерелі.
+          # PSAvoidUsingUsernameAndPasswordParams: New-BRAVOSftpUrl будує
+          # рядок sftp://user:pass@host для WinSCP — сама мета функції
+          # вимагає рядкових Login/Password, PSCredential тут не підійде.
           $excludeRules = @(
               'PSAvoidUsingWriteHost',
               'PSAvoidGlobalVars',
+              'PSAvoidUsingConvertToSecureStringWithPlainText',
+              'PSAvoidUsingUsernameAndPasswordParams',
               'PSUseShouldProcessForStateChangingFunctions',
               'PSUseDeclaredVarsMoreThanAssignments',
               'PSAvoidUsingInvokeExpression'
