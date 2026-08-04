@@ -1386,6 +1386,23 @@ try {
             -Failure "RELEASE_CHECKLIST.md має покривати VERSION.json, CHANGELOG.md, self-test, BOM і git tag"
     }
 
+    # P2.7 аудиту: дрібні зауваження документації. Дерево каталогів мало
+    # дублікат "BRAVO_*.ps1" двома окремими рядками; додано матрицю
+    # діагностики за кодом завершення (розділ 12).
+    $readmeTextForDocFixes = [IO.File]::ReadAllText(
+        (Join-Path $root "README.md"),
+        [Text.Encoding]::UTF8
+    )
+    Test-BRAVOCondition `
+        -Condition (
+            ([regex]::Matches($readmeTextForDocFixes, [regex]::Escape('BRAVO_*.ps1')).Count -eq 0) -and
+            $readmeTextForDocFixes.Contains("credentialInitializationError") -and
+            $readmeTextForDocFixes.Contains('| `31` |') -and
+            $readmeTextForDocFixes.Contains('| `90` |')
+        ) `
+        -Name "Documentation/ReadmeDirectoryTreeAndTroubleshootingMatrix" `
+        -Failure "README.md не повинен містити дублікат-заглушку 'BRAVO_*.ps1' і має містити матрицю діагностики за кодом завершення"
+
     $legacyEntryPoints = @(
         'ARCHIV_VETOFFICE.ps1',
         'ARCHIV_VETOFFICE.config.ps1',
