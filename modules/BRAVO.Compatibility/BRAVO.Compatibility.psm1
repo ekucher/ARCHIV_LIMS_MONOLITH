@@ -851,6 +851,173 @@ function Get-BRAVOToolIntegrityRecommendation {
     }
 }
 
+function Test-BRAVOToolManifestIntegrity {
+    [CmdletBinding()]
+    param(
+        # Каталог Tools, який перевіряємо.
+        [Parameter(Mandatory = $true)][string]$ToolsDirectory,
+
+        # Version-controlled TOOLS_MANIFEST.json з еталонними хешами.
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+
+        # Enforce — блокувати запуск при будь-якій розбіжності.
+        # Warn — лише повідомляти (поведінка, сумісна з попередньою
+        # моделлю trust-on-first-use).
+        [ValidateSet('Enforce', 'Warn')]
+        [string]$Mode = 'Enforce',
+
+        # Ін'єкція вмісту маніфесту для self-test без файлу на диску.
+        [string]$ManifestContent
+    )
+
+    # Принципова відмінність від Get-BRAVOToolIntegrityRecommendation:
+    # ця функція НІКОЛИ не створює й не оновлює маніфест. Еталон —
+    # частина репозиторію, він потрапляє на сервер разом з комплектом і
+    # проходить код-рев'ю. Функція, яка вміє записати новий baseline на
+    # production-сервері, знецінює саму перевірку: зловмисник, що має
+    # права на підміну 7za.exe, тим самим доступом перепише й baseline.
+    #
+    # Найнебезпечніший сценарій, який це закриває: scheduled task
+    # виконується від NT AUTHORITY\SYSTEM, тому підмінений 7za.exe або
+    # WinSCP.com отримує найвищі права в системі.
+
+    $result = [pscustomobject]@{
+        IsValid = $true
+        Mode = $Mode
+        ManifestPath = $ManifestPath
+        MismatchedTools = @()
+        MissingTools = @()
+        UnknownTools = @()
+        Message = $null
+        ShouldBlock = $false
+    }
+
+    $rawManifest = $null
+    if ($PSBoundParameters.ContainsKey('ManifestContent')) {
+        $rawManifest = $ManifestContent
+    } elseif (Test-Path -LiteralPath $ManifestPath -PathType Leaf) {
+        try {
+            $rawManifest = [System.IO.File]::ReadAllText($ManifestPath, [System.Text.Encoding]::UTF8)
+        } catch {
+            $rawManifest = $null
+        }
+    }
+
+    # Відсутній або пошкоджений еталон у режимі Enforce — це відмова, а
+    # не привід мовчки продовжити: саме видалення маніфесту було б
+    # найпростішим способом обійти перевірку.
+    if ([string]::IsNullOrWhiteSpace($rawManifest)) {
+        $result.IsValid = $false
+        $result.Message = "Не знайдено або не вдалося прочитати еталонний маніфест інструментів: $ManifestPath"
+        $result.ShouldBlock = ($Mode -eq 'Enforce')
+        return $result
+    }
+
+    try {
+        $parsed = ConvertFrom-BRAVOJson -InputObject $rawManifest
+    } catch {
+        $result.IsValid = $false
+        $result.Message = "Пошкоджений еталонний маніфест інструментів ($ManifestPath): $($_.Exception.Message)"
+        $result.ShouldBlock = ($Mode -eq 'Enforce')
+        return $result
+    }
+
+    $expected = @{}
+    if ($null -ne $parsed -and $null -ne $parsed.tools) {
+        foreach ($property in $parsed.tools.PSObject.Properties) {
+            $expected[$property.Name] = ([string]$property.Value).Trim()
+        }
+    }
+    if ($expected.Count -eq 0) {
+        $result.IsValid = $false
+        $result.Message = "Еталонний маніфест інструментів не містить жодного запису: $ManifestPath"
+        $result.ShouldBlock = ($Mode -eq 'Enforce')
+        return $result
+    }
+
+    $mismatched = New-Object System.Collections.Generic.List[string]
+    $missing = New-Object System.Collections.Generic.List[string]
+    $unknown = New-Object System.Collections.Generic.List[string]
+
+    foreach ($toolName in @($expected.Keys)) {
+        $toolPath = Join-Path $ToolsDirectory $toolName
+        if (-not (Test-Path -LiteralPath $toolPath -PathType Leaf)) {
+            [void]$missing.Add($toolName)
+            continue
+        }
+        try {
+            $actualHash = (Get-BRAVOFileHash -Path $toolPath -Algorithm SHA256 -ErrorAction Stop).Hash.ToUpperInvariant()
+        } catch {
+            # Нечитабельний файл трактуємо як розбіжність, а не як "все
+            # гаразд": заблокований на читання бінарник міг бути саме
+            # щойно підмінений.
+            [void]$mismatched.Add("$toolName (не вдалося обчислити хеш: $($_.Exception.Message))")
+            continue
+        }
+        if (-not [string]::Equals($expected[$toolName], $actualHash, [System.StringComparison]::OrdinalIgnoreCase)) {
+            [void]$mismatched.Add($toolName)
+        }
+    }
+
+    # Сторонній .exe/.dll у Tools/ не блокує запуск (він може взагалі не
+    # використовуватись), але про нього треба знати: підкидання файлу в
+    # каталог, який виконується від SYSTEM, — це вже аномалія.
+    if (Test-Path -LiteralPath $ToolsDirectory -PathType Container) {
+        $presentExecutables = @(
+            Get-ChildItem -LiteralPath $ToolsDirectory -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Extension -in @('.exe', '.dll', '.com') } |
+                ForEach-Object { $_.Name }
+        )
+        foreach ($presentName in $presentExecutables) {
+            if (-not $expected.ContainsKey($presentName)) {
+                [void]$unknown.Add($presentName)
+            }
+        }
+    }
+
+    $result.MismatchedTools = @($mismatched)
+    $result.MissingTools = @($missing)
+    $result.UnknownTools = @($unknown)
+
+    $hasViolation = ($mismatched.Count -gt 0 -or $missing.Count -gt 0)
+    if (-not $hasViolation) {
+        if ($unknown.Count -gt 0) {
+            $result.Message = "Стороннi виконуванi файли в Tools (не входять до еталонного манiфесту): $($unknown -join ', ')"
+        }
+        return $result
+    }
+
+    $result.IsValid = $false
+    $result.ShouldBlock = ($Mode -eq 'Enforce')
+
+    $details = New-Object System.Collections.Generic.List[string]
+    if ($mismatched.Count -gt 0) {
+        [void]$details.Add("контрольна сума не збігається з еталоном: $($mismatched -join ', ')")
+    }
+    if ($missing.Count -gt 0) {
+        [void]$details.Add("вiдсутнi файли з еталонного манiфесту: $($missing -join ', ')")
+    }
+    if ($unknown.Count -gt 0) {
+        [void]$details.Add("стороннi виконуванi файли: $($unknown -join ', ')")
+    }
+
+    $action = if ($Mode -eq 'Enforce') {
+        "Запуск заблоковано (ToolIntegrityMode = Enforce)."
+    } else {
+        "Запуск продовжується (ToolIntegrityMode = Warn), але це слiд перевiрити."
+    }
+
+    $result.Message = (
+        "ЦIЛIСНIСТЬ IНСТРУМЕНТIВ ПОРУШЕНО: {0}. {1} Заплановане завдання виконується вiд " +
+        "NT AUTHORITY\SYSTEM, тому пiдмiнений iнструмент отримав би найвищi права в системi. " +
+        "Якщо оновлення iнструментiв свiдоме — оновiть TOOLS_MANIFEST.json у репозиторiї " +
+        "(ci\Update-BRAVOToolsManifest.ps1 -Apply) i розгорнiть новий комплект; манiфест " +
+        "навмисно не оновлюється автоматично на серверi."
+    ) -f ($details -join "; "), $action
+
+    return $result
+}
+
 function Test-BRAVOTcpConnection {
     [CmdletBinding()]
     param(

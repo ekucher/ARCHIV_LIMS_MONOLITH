@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "description": "Еталонні SHA-256 виконуваних файлів Tools/. Цей файл — частина репозиторію (version-controlled) і НІКОЛИ не формується автоматично на production-сервері: інакше сторож сам виписує перепустку злодію. Оновлюється лише свідомо, разом з оновленням самих інструментів, і проходить код-рев'ю як звичайна зміна. Відрізняється від Tools/TOOLS_INTEGRITY.json, який є trust-on-first-use базовою лінією конкретного сервера і лише виявляє дрейф.",
+  "updateProcedure": "Замінити бінарник, запустити ci\\Update-BRAVOToolsManifest.ps1, переглянути git diff (нові хеші мають відповідати саме тому файлу, який ви свідомо завантажили з офіційного джерела), закомітити разом з бінарником.",
+  "tools": {
+    "7za.dll": "8105EAB695801F9C9FCC234C7963A7AC217378916821618DFB9D97B04562B82E",
+    "7za.exe": "35D4D69D7CD6CB44558F208C3B1334268013F9DAF82D2DDA848893A1C30C59C2",
+    "7zxa.dll": "E729E2F0188DA0A40EE065F1A26797278CB88E9507413080F0F5A4F7F4DB6C1E",
+    "DragExt64.dll": "65D215BBBA2387A23198E65FBF6F13EF9CF39FC6FB0ACFD69CFF2C3AC5932607",
+    "WinSCP.com": "F1C35DA6C40B6A59A7C90AF257B06F725F71F329831214A9D752EFDB9AEAD3D6",
+    "WinSCP.exe": "CF948EAF8429C582636953E8B6B82097C8BB0A55111EC57E5F890E27DBAB70D9",
+    "WinSCPnet.dll": "3DF88E8C877BB20B8A6C65AEFC3D25DCAD272131B774D9F60CC046ECD6262ED3"
+  }
+}

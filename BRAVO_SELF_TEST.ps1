@@ -281,6 +281,152 @@ try {
         }
     }
 
+    # Аудит P1 (найнебезпечніший сценарій): підмінений 7za.exe/WinSCP.com
+    # запускається від NT AUTHORITY\SYSTEM. Version-controlled
+    # TOOLS_MANIFEST.json має БЛОКУВАТИ запуск, а не лише попереджати, і
+    # його не можна ані обійти видаленням, ані перегенерувати на сервері.
+    $toolManifestRoot = Join-Path `
+        -Path ([IO.Path]::GetTempPath()) `
+        -ChildPath ("BRAVO_TOOL_MANIFEST_SELF_TEST_{0}" -f [guid]::NewGuid().ToString("N"))
+    try {
+        $toolManifestTools = Join-Path $toolManifestRoot "Tools"
+        [void][IO.Directory]::CreateDirectory($toolManifestTools)
+        $genuineTool = Join-Path $toolManifestTools "7za.exe"
+        [IO.File]::WriteAllText($genuineTool, "GENUINE", (New-Object Text.UTF8Encoding($false)))
+        $genuineHash = (Get-BRAVOFileHash -Path $genuineTool -Algorithm SHA256).Hash.ToUpperInvariant()
+        $toolManifestContent = '{"schemaVersion":1,"tools":{"7za.exe":"' + $genuineHash + '"}}'
+
+        $manifestCleanRun = Test-BRAVOToolManifestIntegrity `
+            -ToolsDirectory $toolManifestTools `
+            -ManifestPath "(інжектовано)" `
+            -ManifestContent $toolManifestContent `
+            -Mode Enforce
+
+        # Сторонній виконуваний файл у Tools — повідомляємо, але не
+        # блокуємо: він може взагалі не використовуватись.
+        $strangerTool = Join-Path $toolManifestTools "stranger.exe"
+        [IO.File]::WriteAllText($strangerTool, "PAYLOAD", (New-Object Text.UTF8Encoding($false)))
+        $manifestUnknownRun = Test-BRAVOToolManifestIntegrity `
+            -ToolsDirectory $toolManifestTools `
+            -ManifestPath "(інжектовано)" `
+            -ManifestContent $toolManifestContent `
+            -Mode Enforce
+        [IO.File]::Delete($strangerTool)
+
+        [IO.File]::WriteAllText($genuineTool, "TAMPERED", (New-Object Text.UTF8Encoding($false)))
+        $manifestTamperedEnforce = Test-BRAVOToolManifestIntegrity `
+            -ToolsDirectory $toolManifestTools `
+            -ManifestPath "(інжектовано)" `
+            -ManifestContent $toolManifestContent `
+            -Mode Enforce
+        $manifestTamperedWarn = Test-BRAVOToolManifestIntegrity `
+            -ToolsDirectory $toolManifestTools `
+            -ManifestPath "(інжектовано)" `
+            -ManifestContent $toolManifestContent `
+            -Mode Warn
+
+        [IO.File]::Delete($genuineTool)
+        $manifestMissingToolRun = Test-BRAVOToolManifestIntegrity `
+            -ToolsDirectory $toolManifestTools `
+            -ManifestPath "(інжектовано)" `
+            -ManifestContent $toolManifestContent `
+            -Mode Enforce
+
+        # Найважливіший сценарій обходу: просто видалити еталон.
+        $manifestAbsentRun = Test-BRAVOToolManifestIntegrity `
+            -ToolsDirectory $toolManifestTools `
+            -ManifestPath (Join-Path $toolManifestRoot "NEMAE.json") `
+            -Mode Enforce
+        $manifestCorruptRun = Test-BRAVOToolManifestIntegrity `
+            -ToolsDirectory $toolManifestTools `
+            -ManifestPath "(інжектовано)" `
+            -ManifestContent "{ це не JSON" `
+            -Mode Enforce
+
+        Test-BRAVOCondition `
+            -Condition (
+                $manifestCleanRun.IsValid -and
+                -not $manifestCleanRun.ShouldBlock
+            ) `
+            -Name "ToolManifest/GenuineToolsPass" `
+            -Failure "незмінені інструменти мають проходити перевірку еталонного маніфесту"
+
+        Test-BRAVOCondition `
+            -Condition (
+                -not $manifestTamperedEnforce.IsValid -and
+                $manifestTamperedEnforce.ShouldBlock -and
+                $manifestTamperedEnforce.MismatchedTools -contains "7za.exe"
+            ) `
+            -Name "ToolManifest/TamperedToolBlocksInEnforce" `
+            -Failure "підмінений інструмент у режимі Enforce має БЛОКУВАТИ запуск (запускався б від SYSTEM)"
+
+        Test-BRAVOCondition `
+            -Condition (
+                -not $manifestTamperedWarn.IsValid -and
+                -not $manifestTamperedWarn.ShouldBlock
+            ) `
+            -Name "ToolManifest/TamperedToolOnlyWarnsInWarnMode" `
+            -Failure "у режимі Warn підміна має повідомляти, але не блокувати"
+
+        Test-BRAVOCondition `
+            -Condition (
+                -not $manifestMissingToolRun.IsValid -and
+                $manifestMissingToolRun.ShouldBlock -and
+                $manifestMissingToolRun.MissingTools -contains "7za.exe"
+            ) `
+            -Name "ToolManifest/MissingToolBlocksInEnforce" `
+            -Failure "відсутній у Tools файл з еталонного маніфесту має блокувати запуск"
+
+        Test-BRAVOCondition `
+            -Condition (
+                -not $manifestAbsentRun.IsValid -and
+                $manifestAbsentRun.ShouldBlock -and
+                -not $manifestCorruptRun.IsValid -and
+                $manifestCorruptRun.ShouldBlock
+            ) `
+            -Name "ToolManifest/AbsentOrCorruptManifestBlocks" `
+            -Failure "видалення чи пошкодження еталонного маніфесту НЕ повинно бути способом обійти перевірку"
+
+        Test-BRAVOCondition `
+            -Condition (
+                $manifestUnknownRun.IsValid -and
+                $manifestUnknownRun.UnknownTools -contains "stranger.exe" -and
+                -not [string]::IsNullOrWhiteSpace([string]$manifestUnknownRun.Message)
+            ) `
+            -Name "ToolManifest/UnknownExecutableIsReportedNotBlocking" `
+            -Failure "сторонній виконуваний файл у Tools має бути помічений, але не блокувати запуск"
+
+        # Маніфест не повинен створюватись автоматично: інакше сторож сам
+        # виписує перепустку злодію.
+        $manifestAutoCreatePath = Join-Path $toolManifestRoot "SHOULD_NOT_APPEAR.json"
+        [void](Test-BRAVOToolManifestIntegrity `
+            -ToolsDirectory $toolManifestTools `
+            -ManifestPath $manifestAutoCreatePath `
+            -Mode Enforce)
+        Test-BRAVOCondition `
+            -Condition (-not (Test-Path -LiteralPath $manifestAutoCreatePath)) `
+            -Name "ToolManifest/NeverAutoCreatesBaseline" `
+            -Failure "еталонний маніфест НЕ повинен створюватись автоматично під час production-запуску"
+    } finally {
+        if (Test-Path -LiteralPath $toolManifestRoot -PathType Container) {
+            [IO.Directory]::Delete($toolManifestRoot, $true)
+        }
+    }
+
+    # Еталонний маніфест у самому репозиторії має відповідати реальним
+    # Tools: інакше свіжий комплект заблокує сам себе на першому ж запуску.
+    $repositoryToolsDirectory = Join-Path $root "Tools"
+    if (Test-Path -LiteralPath $repositoryToolsDirectory -PathType Container) {
+        $repositoryManifestRun = Test-BRAVOToolManifestIntegrity `
+            -ToolsDirectory $repositoryToolsDirectory `
+            -ManifestPath (Join-Path $root "TOOLS_MANIFEST.json") `
+            -Mode Enforce
+        Test-BRAVOCondition `
+            -Condition $repositoryManifestRun.IsValid `
+            -Name "ToolManifest/RepositoryManifestMatchesTools" `
+            -Failure "TOOLS_MANIFEST.json не відповідає реальним Tools у репозиторії: $($repositoryManifestRun.Message)"
+    }
+
     Remove-Module -Name 'BRAVO.Logging' -Force -ErrorAction SilentlyContinue
     Import-Module -Name (Join-Path $root "modules\BRAVO.Logging\BRAVO.Logging.psd1") -Force -ErrorAction Stop
     $maskedSftpUrl = Protect-BRAVOLogSecret -Text "open sftp://bravouser:S3cr3tPass@sftp.example.org:22"
@@ -392,6 +538,19 @@ try {
             (Resolve-BRAVOExitCode -InvalidConfiguration -CredentialsUnavailable) -eq 30
         ) `
         -Name "ExitCodes/ResolvePriorityOrder" `
+        -Failure "при одночасних відмовах має вигравати категорія з вищим пріоритетом контракту"
+
+    # Аудит P1: підміна інструментів має власний код завершення й
+    # пріоритет вище за буденний LockBusy — інакше подія безпеки
+    # губиться в історії Планувальника як "зайнято".
+    Test-BRAVOCondition `
+        -Condition (
+            (Resolve-BRAVOExitCode -ToolIntegrityViolation) -eq 32 -and
+            (Get-BRAVOExitCodeName -Code 32) -eq "ToolIntegrityViolation" -and
+            (Resolve-BRAVOExitCode -ToolIntegrityViolation -LockBusy -HasWarnings) -eq 32 -and
+            (Resolve-BRAVOExitCode -InternalError -ToolIntegrityViolation) -eq 90
+        ) `
+        -Name "ExitCodes/ToolIntegrityViolationPriority" `
         -Failure "при одночасних відмовах має перемагати найвищий пріоритет (lock>config>creds>local>integrity>sftp>smb>maintenance>health>warnings), InternalError — найвищий за все"
     Test-BRAVOCondition `
         -Condition (
@@ -2055,6 +2214,25 @@ try {
         ) `
         -Name "Runtime/SharedToolIntegrityRecommendation" `
         -Failure "Archive/Health/Maintenance мають перевіряти цілісність Tools (7za.exe/WinSCP) через спільну функцію"
+
+    # Аудит P1: Archive і Maintenance мають саме БЛОКУВАТИ запуск при
+    # порушенні еталонного маніфесту (обидва викликають 7za/WinSCP від
+    # SYSTEM). Health — read-only діагностика, він звітує, а не блокує.
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveScriptText.Contains("Test-BRAVOToolManifestIntegrity") -and
+            $archiveScriptText.Contains("-ToolIntegrityViolation") -and
+            $maintenanceScriptText.Contains("Test-BRAVOToolManifestIntegrity") -and
+            $maintenanceScriptText.Contains("-ToolIntegrityViolation") -and
+            $healthScriptTextForPatchLevel.Contains("Test-BRAVOToolManifestIntegrity")
+        ) `
+        -Name "Runtime/ToolManifestBlocksArchiveAndMaintenance" `
+        -Failure "Archive і Maintenance мають блокувати запуск (exit 32) при порушенні TOOLS_MANIFEST.json; Health — звітувати"
+
+    Test-BRAVOCondition `
+        -Condition ($archiveScriptText.Contains("Send-ToolIntegrityAlert")) `
+        -Name "Runtime/ToolManifestSendsCriticalAlert" `
+        -Failure "Archive має надсилати критичне сповіщення при заблокованому запуску через цілісність інструментів"
     $archiveRuntimeText = [IO.File]::ReadAllText(
         (Join-Path $root "modules\BRAVO.ArchiveRuntime\BRAVO.ArchiveRuntime.psm1"),
         [Text.Encoding]::UTF8

@@ -3450,6 +3450,29 @@ $script:BRAVOToolIntegrity = Get-BRAVOToolIntegrityRecommendation `
 if ($script:BRAVOToolIntegrity.HasIntegrityIssue) {
     Write-HealthLog $script:BRAVOToolIntegrity.Message -Level "WARNING"
 }
+
+# Health — діагностичний, read-only runtime: він НЕ блокує себе, а
+# звітує. Саме він має першим помітити підміну й підняти тривогу навіть
+# тоді, коли архівація ще не запускалась. Блокують Archive і Maintenance.
+$script:BRAVOToolManifestMode = 'Enforce'
+$script:BRAVOToolManifestPath = Join-Path $bravoScriptDirectory "TOOLS_MANIFEST.json"
+if ($toolIntegritySettings -is [System.Collections.IDictionary]) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$toolIntegritySettings.Mode)) {
+        $script:BRAVOToolManifestMode = [string]$toolIntegritySettings.Mode
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$toolIntegritySettings.ManifestPath)) {
+        $script:BRAVOToolManifestPath = [string]$toolIntegritySettings.ManifestPath
+    }
+}
+$script:BRAVOToolManifest = Test-BRAVOToolManifestIntegrity `
+    -ToolsDirectory $toolsPath `
+    -ManifestPath $script:BRAVOToolManifestPath `
+    -Mode $script:BRAVOToolManifestMode
+if (-not $script:BRAVOToolManifest.IsValid) {
+    Write-HealthLog $script:BRAVOToolManifest.Message -Level "ERROR"
+} elseif (-not [string]::IsNullOrWhiteSpace([string]$script:BRAVOToolManifest.Message)) {
+    Write-HealthLog $script:BRAVOToolManifest.Message -Level "WARNING"
+}
 $bazaLocalMode = if ($bazaLocalHealthEnabled) { "увімкнено" } else { "вимкнено" }
 $bazaSFTPMode = if ($bazaSFTPHealthEnabled) { "увімкнено" } else { "вимкнено" }
 $bazaWWWSFTPMode = if ($bazaWWWSFTPHealthEnabled) { "увімкнено" } else { "вимкнено" }
