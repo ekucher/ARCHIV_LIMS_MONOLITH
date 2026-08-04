@@ -645,6 +645,46 @@ try {
             -Name "Version/StableBranchNotDevelopmentChannel" `
             -Failure "гілка '$currentGitBranch' не повинна мати releaseChannel=development у VERSION.json"
     }
+    if ($currentGitBranch -eq 'developer') {
+        Test-BRAVOCondition `
+            -Condition (
+                [string]$loadedConfiguration.Version.ReleaseChannel -eq 'development' -and
+                [string]$loadedConfiguration.Version.ReleaseChannelSource -eq 'git-branch'
+            ) `
+            -Name "Version/DeveloperBranchResolvesToDevelopmentViaGit" `
+            -Failure "на гілці developer releaseChannel має визначатися динамічно з .git/HEAD як 'development', а не братися статично з VERSION.json"
+    }
+
+    # AUD-016 (аудит): releaseChannel більше не зберігається як буквальне
+    # значення, що вручну різниться між гілками (кожен merge
+    # developer->master вимагав ручного follow-up commit — двічі забувся
+    # саме в цій сесії через fast-forward, що мовчки протягував значення
+    # в обидва боки). Тепер VERSION.json на обох гілках містить ОДНАКОВИЙ
+    # fallback ("stable" — безпечний дефолт для розгорнутих production-
+    # копій без .git), а Resolve-BRAVOReleaseChannelFromGit
+    # (BRAVO_CONFIG_LOADER.ps1) визначає реальний channel із поточної
+    # гілки напряму з файлової системи (.git/HEAD), без виклику git.exe.
+    Test-BRAVOCondition `
+        -Condition (
+            (Resolve-BRAVOReleaseChannelFromGit -ConfigRoot $root -GitHeadContent "ref: refs/heads/master`n") -eq 'stable' -and
+            (Resolve-BRAVOReleaseChannelFromGit -ConfigRoot $root -GitHeadContent "ref: refs/heads/main`n") -eq 'stable' -and
+            (Resolve-BRAVOReleaseChannelFromGit -ConfigRoot $root -GitHeadContent "ref: refs/heads/developer`n") -eq 'development' -and
+            $null -eq (Resolve-BRAVOReleaseChannelFromGit -ConfigRoot $root -GitHeadContent "ref: refs/heads/feature/xyz`n") -and
+            $null -eq (Resolve-BRAVOReleaseChannelFromGit -ConfigRoot $root -GitHeadContent "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2`n") -and
+            $null -eq (Resolve-BRAVOReleaseChannelFromGit -ConfigRoot $root -GitHeadContent "")
+        ) `
+        -Name "Version/ReleaseChannelResolvedFromGitBranch" `
+        -Failure "Resolve-BRAVOReleaseChannelFromGit має мапити master/main->stable, developer->development, і повертати \$null для інших гілок, detached HEAD або порожнього вмісту"
+
+    $versionJsonTextForNeutralChannel = [IO.File]::ReadAllText(
+        (Join-Path $root "VERSION.json"),
+        [Text.Encoding]::UTF8
+    )
+    Test-BRAVOCondition `
+        -Condition ($versionJsonTextForNeutralChannel.Contains('"releaseChannel": "stable"')) `
+        -Name "Version/StaticReleaseChannelIsNeutralFallback" `
+        -Failure "VERSION.json має містити нейтральний fallback releaseChannel='stable' (однаковий на обох гілках) — реальний channel визначається Resolve-BRAVOReleaseChannelFromGit"
+
     $moduleManifests = @(Get-ChildItem -LiteralPath (Join-Path $root 'modules') -Recurse -Filter '*.psd1' -File)
     $moduleVersionsMatch = @($moduleManifests | Where-Object {
             [string](Test-ModuleManifest -Path $_.FullName -ErrorAction Stop).Version -ne

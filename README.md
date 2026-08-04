@@ -752,19 +752,28 @@ health > лише попередження. Код `90` має найвищий 
 
 ### Гілки та release channel
 
-`VERSION.json` містить `releaseChannel`, який відповідає гілці, з якої
-зібрано комплект:
+`VERSION.json.releaseChannel` — це лише **нейтральний fallback**
+(`"stable"`), однаковий на обох гілках у git. Реальний release channel
+визначається динамічно під час завантаження конфігурації
+(`Resolve-BRAVOReleaseChannelFromGit`, `BRAVO_CONFIG_LOADER.ps1`): якщо
+поруч є каталог `.git`, значення читається напряму з `.git/HEAD`
+(без виклику `git.exe`, який може бути відсутній на production-сервері):
 
-| Гілка | `releaseChannel` | Призначення |
+| Гілка | Ефективний `releaseChannel` | Призначення |
 |---|---|---|
 | `developer` | `development` | Поточна розробка; може містити ще не повністю перевірені зміни |
-| `master` | `stable` | Стабільний стан для production-розгортання |
-| tag `vX.Y.Z` | — | Незмінний знімок конкретного релізу (`git show vX.Y.Z`) |
+| `master`/`main` | `stable` | Стабільний стан для production-розгортання |
+| інша гілка / detached HEAD | статичне значення з `VERSION.json` (`stable`) | fallback, коли гілку не вдалося однозначно визначити |
+| без `.git` (розгорнутий production-сервер) | статичне значення з `VERSION.json` (`stable`) | дистрибутив копіюється файлами, не клонується |
 
-`master` ніколи не повинен мати `releaseChannel=development` —
-`BRAVO_SELF_TEST.ps1` перевіряє це автоматично, коли визначає поточну
-git-гілку (перевірка м'яко пропускається, якщо `.git` недоступний,
-наприклад на розгорнутому production-сервері без клону репозиторію).
+Раніше `releaseChannel` зберігався як буквальне значення, що вручну
+різнилося між гілками — кожен merge `developer` → `master` вимагав
+окремого follow-up commit, а fast-forward-мержі могли мовчки протягнути
+значення в неправильний бік і в той, і в інший бік (AUD-016). Тепер
+джерело не потребує ручного редагування цього поля взагалі:
+`BRAVO_SELF_TEST.ps1` перевіряє, що на `developer` ефективний channel —
+`development` (з `ReleaseChannelSource=git-branch`), а на `master`/`main`
+— ніколи не `development`.
 
 ## 14. Правила безпеки
 

@@ -2,6 +2,37 @@
 
 ## 4.3.0 — 2026-08-04
 
+- AUD-016 з ARCHIV_LIMS_MONOLITH_FULL_AUDIT.md: усунено структурну
+  причину повторюваного бага з `releaseChannel`. Раніше значення
+  зберігалося як буквальний рядок, що вручну підтримувався різним на
+  `master` (`"stable"`) і `developer` (`"development"`) — кожен merge
+  `developer` → `master` вимагав окремого follow-up commit; у цій самій
+  сесії fast-forward-мержі двічі мовчки протягували значення не в той
+  бік (спочатку `"development"` на `master` після мержу PR, потім
+  `"stable"` назад на `developer` після виправлення).
+
+  `VERSION.json.releaseChannel` тепер — нейтральний fallback
+  (`"stable"`), **однаковий на обох гілках**. Реальний channel визначає
+  новий `Resolve-BRAVOReleaseChannelFromGit` (`BRAVO_CONFIG_LOADER.ps1`)
+  напряму з `.git/HEAD` (без виклику `git.exe`): `master`/`main` →
+  `stable`, `developer` → `development`, будь-яка інша гілка, detached
+  HEAD або відсутній `.git` (розгорнутий production-сервер) — fallback
+  на статичне значення з `VERSION.json`. Новий `ReleaseChannelSource`
+  (`git-branch`/`VERSION.json`/`legacy`) у метаданих версії показує,
+  звідки взято ефективне значення.
+
+  Додано self-test `Version/ReleaseChannelResolvedFromGitBranch`
+  (`Resolve-BRAVOReleaseChannelFromGit` із синтетичним `.git/HEAD`),
+  `Version/DeveloperBranchResolvesToDevelopmentViaGit`,
+  `Version/StaticReleaseChannelIsNeutralFallback`.
+
+  Під час розробки виявлено ще один класичний PowerShell-гачок:
+  непереданий параметр типу `[string]` дефолтить у `""`, а не `$null` —
+  перевірка `if ($null -eq $GitHeadContent)` для визначення "чи викликач
+  передав -GitHeadContent явно" завжди була `$false`, тому функція
+  ніколи не читала реальний `.git/HEAD`. Виправлено через
+  `$PSBoundParameters.ContainsKey('GitHeadContent')`.
+
 - AUD-008 з ARCHIV_LIMS_MONOLITH_FULL_AUDIT.md (P1.6): sanity-check
   обсягу backup. Технічно валідний архів (7za test + SHA512 збігається)
   все одно може бути підозріло малим через неправильне джерело, зламані
