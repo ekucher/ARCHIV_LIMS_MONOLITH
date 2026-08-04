@@ -52,6 +52,19 @@ function Get-HostInformation {
     $lookupEnabled = $false
     $lookupUrls = @("https://api.ipify.org")
     $lookupTimeoutSeconds = 5
+
+    # $hostInformationSettings навмисно читається без $global: — так само
+    # резолвиться через ланцюжок scope. Але якщо змінна взагалі не існує
+    # (модуль імпортовано до того, як BRAVO.config її встановив), це і
+    # раніше, і зараз мовчки трактується як "вимкнено" (fail-safe за
+    # замовчуванням) — явно попереджаємо про це в лог, щоб оператор
+    # бачив, що налаштування з конфігу фактично проігноровані, а не
+    # думав, що lookup свідомо вимкнено адміністратором.
+    $hostInformationSettingsVar = Get-Variable -Name hostInformationSettings -Scope Global -ErrorAction SilentlyContinue
+    if ($null -eq $hostInformationSettingsVar -and (Get-Command -Name Write-Log -ErrorAction SilentlyContinue)) {
+        Write-Log -Message "hostInformationSettings не ініціалізовано (BRAVO.config не завантажено?) — public IP lookup вимкнено за замовчуванням" -Level WARNING
+    }
+
     if ($hostInformationSettings -is [System.Collections.IDictionary]) {
         if ($hostInformationSettings.Contains("PublicIPLookupEnabled")) {
             $lookupEnabled = [System.Convert]::ToBoolean($hostInformationSettings.PublicIPLookupEnabled)
