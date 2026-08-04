@@ -1726,8 +1726,8 @@ function Process-Logs {
         return
     }
     
-    $logFiles = Get-BRAVOFiles -Path $SourceDir |
-        Where-Object { $_.Length -gt 0 }
+    $logFiles = @(Get-BRAVOFiles -Path $SourceDir |
+        Where-Object { $_.Length -gt 0 })
     
     if (-not $logFiles) {
         Write-Log "У директорії $SourceDir немає файлів логів для обробки ($LogType)." -Level "INFO"
@@ -1920,9 +1920,9 @@ function Remove-OldRestoreArchives {
     )
 
     # Збираємо основні архіви (без контрольних сум)
-    $mainArchiveFiles = $mainArchivePatterns | ForEach-Object {
+    $mainArchiveFiles = @($mainArchivePatterns | ForEach-Object {
         Get-ChildItem -Path $Path -Filter $_ -ErrorAction SilentlyContinue
-    }
+    })
 
     if (-not $mainArchiveFiles -or $mainArchiveFiles.Count -eq 0) {
         Write-Log "Немає основних архівів реставрації для обробки у $Path" -Level "DEBUG"
@@ -2699,8 +2699,10 @@ if ($BravoWebMaintenanceEnabled -and $ApacheEnabled) {
     $dirsToCreate += $BRAVO_WEB_ARCHIV_DIR, $BRAVO_WEB_DAILY_DIR
 }
 
-# Перевіряємо, які директорії потрібно створити
-$missingDirs = $dirsToCreate | Where-Object { -not (Test-Path $_) }
+# Перевіряємо, які директорії потрібно створити.
+# @() обовʼязкове: Where-Object повертає один обʼєкт, а не масив, коли збіг
+# рівно один, і тоді .Count під Set-StrictMode кидає PropertyNotFoundStrict.
+$missingDirs = @($dirsToCreate | Where-Object { -not (Test-Path $_) })
 
 if ($missingDirs.Count -gt 0 -or $script:criticalErrorOccurred) {
     Write-Log -Message "==="
@@ -3142,8 +3144,8 @@ if ($exchangAPIServiceEnabled) {
 # та необхідних каталогів.
 if ($BravoWebMaintenanceEnabled -and $ApacheEnabled) {
     try {
-        $apacheLogFiles = Get-BRAVOFiles -Path $APACHE_LOGS_DIR |
-            Where-Object { $_.Length -gt 0 }
+        $apacheLogFiles = @(Get-BRAVOFiles -Path $APACHE_LOGS_DIR |
+            Where-Object { $_.Length -gt 0 })
         if ($apacheLogFiles) {
             Write-Log "==="
             Write-Log -Message "=== ОБРОБКА ЛОГІВ APACHE ===" -Level "INFO"
@@ -3155,8 +3157,8 @@ if ($BravoWebMaintenanceEnabled -and $ApacheEnabled) {
             Write-Log -Message "Оброблено $webApacheLogsProcessedCount з $($apacheLogFiles.Count) Apache файлів" -Level "SUCCESS"
         }
 
-        $wwwLogFiles = Get-BRAVOFiles -Path $WWW_LOGS_DIR |
-            Where-Object { $_.Length -gt 0 }
+        $wwwLogFiles = @(Get-BRAVOFiles -Path $WWW_LOGS_DIR |
+            Where-Object { $_.Length -gt 0 })
         if ($wwwLogFiles) {
             Write-Log -Message "==="
             Write-Log -Message "=== ОБРОБКА ЛОГІВ WWW ===" -Level "INFO"
@@ -3317,8 +3319,8 @@ if ($exchangAPIServiceEnabled) {
 
 # Перевірка Br-a-vo.web (якщо Apache встановлений)
 if ($BravoWebMaintenanceEnabled -and $ApacheEnabled) {
-    $bravoWebOldDirs = Get-BRAVODirectories -Path $BRAVO_WEB_ARCHIV_DIR |
-        Where-Object { $_.Name -match '^\d{4}-\d{2}-\d{2}$' -and $_.CreationTime -lt (Get-Date).AddDays(-$ARCHIVE_RETENTION_DAYS) }
+    $bravoWebOldDirs = @(Get-BRAVODirectories -Path $BRAVO_WEB_ARCHIV_DIR |
+        Where-Object { $_.Name -match '^\d{4}-\d{2}-\d{2}$' -and $_.CreationTime -lt (Get-Date).AddDays(-$ARCHIVE_RETENTION_DAYS) })
     $hasDataToClean = $hasDataToClean -or ($bravoWebOldDirs.Count -gt 0)
 }
 

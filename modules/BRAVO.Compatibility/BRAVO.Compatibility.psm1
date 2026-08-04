@@ -506,6 +506,12 @@ function Test-BRAVOTcpConnection {
         [int]$TimeoutMilliseconds = 5000
     )
 
+    # Test-NetConnection малює власний Write-Progress ("Attempting TCP connect",
+    # "Waiting for response"), який перекриває єдиний індикатор BRAVO.
+    # Присвоєння створює локальну змінну: після виходу з функції глобальне
+    # значення лишається незмінним, тому власний прогрес не глушиться.
+    $ProgressPreference = 'SilentlyContinue'
+
     if (Test-BRAVOCommandAvailable -Name "Test-NetConnection") {
         try {
             return [bool](Test-NetConnection `
@@ -1123,6 +1129,9 @@ function Send-BRAVOWebhookNotification {
         UseBasicParsing = $true
         ErrorAction = "Stop"
     }
+    # Invoke-WebRequest теж має власний індикатор; глушимо його локально,
+    # щоб надсилання сповіщення не перекривало смугу прогресу BRAVO.
+    $ProgressPreference = 'SilentlyContinue'
     $response = Invoke-WebRequest @requestParameters
 
     if ($normalizedProvider -eq "slack") {
