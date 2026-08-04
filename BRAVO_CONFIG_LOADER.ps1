@@ -2,6 +2,63 @@
 
 Set-StrictMode -Version 2.0
 
+function Resolve-BRAVOReleaseChannelFromGit {
+    # AUD-016 (аудит): releaseChannel раніше зберігався як буквальне
+    # значення у VERSION.json, яке різнилось між гілками master/developer
+    # — кожен merge developer->master вимагав ручного follow-up commit,
+    # інакше fast-forward мовчки протягував "development" на master (і
+    # навпаки — виправлення на master могло так само мовчки протягнутись
+    # назад у developer при наступному злитті). Джерело тепер зберігає
+    # ОДНАКОВЕ значення на обох гілках (нейтральний fallback для
+    # розгорнутих production-копій без .git); коли поруч є .git-каталог
+    # (git-checkout, а не скопійований дистрибутив), реальний release
+    # channel визначається з поточної гілки напряму з файлової системи —
+    # без виклику git.exe (може бути відсутній на production-сервері).
+    #
+    # -GitHeadContent дозволяє self-test підставити синтетичний вміст
+    # .git/HEAD замість реального файлу (той самий injectable-патерн, що
+    # вже використовує BRAVO.Discovery).
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$ConfigRoot,
+        [string]$GitHeadContent
+    )
+
+    # Непереданий [string]-параметр PowerShell дефолтить у "" (не $null),
+    # тому "чи викликач передав -GitHeadContent" перевіряємо через
+    # PSBoundParameters, а не через порівняння з $null — інакше self-test
+    # не зміг би підставити явний порожній вміст (detached HEAD без
+    # ref-рядка), і водночас звичайний виклик без параметра завжди
+    # "знаходив" би порожній рядок замість читання реального .git/HEAD.
+    if (-not $PSBoundParameters.ContainsKey('GitHeadContent')) {
+        $gitHeadPath = Join-Path $ConfigRoot '.git\HEAD'
+        if (-not (Test-Path -LiteralPath $gitHeadPath -PathType Leaf)) {
+            return $null
+        }
+        try {
+            $GitHeadContent = (Get-Content -LiteralPath $gitHeadPath -Raw -ErrorAction Stop).Trim()
+        } catch {
+            return $null
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($GitHeadContent)) {
+        return $null
+    }
+    if ($GitHeadContent -notmatch '^ref:\s*refs/heads/(?<Branch>.+)$') {
+        # detached HEAD (checkout конкретного коміту/тегу) — неоднозначно,
+        # який channel мався на увазі; не перевизначаємо.
+        return $null
+    }
+    $branchName = $Matches.Branch.Trim()
+
+    switch -Regex ($branchName) {
+        '^(master|main)$' { return 'stable' }
+        '^developer$' { return 'development' }
+        default { return $null }
+    }
+}
+
 function Get-BravoVersionMetadata {
     [CmdletBinding()]
     param(
@@ -20,6 +77,7 @@ function Get-BravoVersionMetadata {
             UpdaterVersion = $null
             ReleaseDate = $null
             ReleaseChannel = 'legacy'
+            ReleaseChannelSource = 'legacy'
             BuildId = $null
             VersionFilePath = $versionPath
             VersionFilePresent = $false
@@ -63,6 +121,19 @@ function Get-BravoVersionMetadata {
         $null
     }
 
+    $staticReleaseChannel = [string]$versionData.releaseChannel
+    $gitDetectedReleaseChannel = Resolve-BRAVOReleaseChannelFromGit -ConfigRoot $ConfigRoot
+    $effectiveReleaseChannel = if (-not [string]::IsNullOrWhiteSpace($gitDetectedReleaseChannel)) {
+        $gitDetectedReleaseChannel
+    } else {
+        $staticReleaseChannel
+    }
+    $releaseChannelSource = if (-not [string]::IsNullOrWhiteSpace($gitDetectedReleaseChannel)) {
+        'git-branch'
+    } else {
+        'VERSION.json'
+    }
+
     return [pscustomobject]@{
         Product = [string]$versionData.product
         PackageVersion = [string]$versionData.packageVersion
@@ -70,7 +141,8 @@ function Get-BravoVersionMetadata {
         StateSchemaVersion = [int]$versionData.stateSchemaVersion
         UpdaterVersion = [string]$versionData.updaterVersion
         ReleaseDate = [string]$versionData.releaseDate
-        ReleaseChannel = [string]$versionData.releaseChannel
+        ReleaseChannel = $effectiveReleaseChannel
+        ReleaseChannelSource = $releaseChannelSource
         BuildId = $buildId
         VersionFilePath = $versionPath
         VersionFilePresent = $true
