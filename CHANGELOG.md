@@ -1,5 +1,54 @@
 # Changelog
 
+## 4.3.0 — 2026-08-04
+
+- CLAUDE_CODE_TZ_ARCHIV_LIMS_MONOLITH.md: визначення джерел резервного
+  копіювання (`MODEL`, `BLOG`, `BRAVOEXCH`, `BAZA_APP`, `BAZA_WWW`,
+  `BRAVO_ROOT`, `WEB_ROOT`) тепер відбувається автоматично на основі
+  активної інсталяції BRAVO (служба `BRAVO`, служба Apache, файл
+  `bravo.ini`), з повним ручним перевизначенням через
+  `$global:discoverySettings` у `BRAVO.config`. Новий модуль
+  `modules\BRAVO.Discovery\` (`Get-BRAVOServiceExecutablePath`,
+  `Find-BRAVOServiceByCandidates`, `ConvertFrom-BRAVOIniFile`,
+  `Resolve-BRAVOInstallationDiscovery`, `Test-BRAVODiscoveryResult`)
+  реалізує пріоритетний ланцюг: явний override → значення з `bravo.ini`
+  → попередня LIMSRoot-відносна поведінка (legacy fallback) — 100%
+  зворотної сумісності для інсталяцій без служби BRAVO/Apache або без
+  `bravo.ini`. Слабка евристика `Find-BRAVOExchSourceDirectory`
+  (фіксований список кандидатів) замінена: значення з `bravo.ini`
+  (`BEXCH=`) тепер має найвищий пріоритет, а старі жорстко задані
+  кандидати (`exchangAPI`, `bravoexch`, `C:\bravoexch`) лишаються лише як
+  запасний варіант. `Archive.Runtime.ps1`/`Health.Runtime.ps1`/
+  `Maintenance.Runtime.ps1` не змінювались — вони читають ті самі
+  глобальні змінні (`$global:sourcePaths`, `$global:bazaPaths` тощо), які
+  тепер заповнюються результатом discovery замість прямих обчислень.
+
+  `BRAVO_SETUP.ps1 -ValidateOnly` виводить новий розділ
+  `=== DISCOVERY ДЖЕРЕЛ ===` (знайдені служби, шлях `bravo.ini`, кожне
+  джерело з поясненням походження значення) і викликає
+  `Test-BRAVODiscoveryResult` для перевірки увімкнених джерел і
+  каталогів призначення — без аварійного завершення самого wizard.
+  `BRAVO.config` свідомо НЕ виконує жорстку валідацію (throw) при
+  звичайному завантаженні: увімкнені за замовчуванням компоненти
+  (`MODEL`/`BLOG`/`BRAVOEXCH`) на сервері без реальної інсталяції LIMS
+  зламали б кожен виклик `Import-BravoConfiguration`, включно з
+  `BRAVO_SELF_TEST.ps1`.
+
+  Додано self-test `Discovery/IniParserHandlesRealBravoIniFormat`,
+  `Discovery/ResolvesFromServiceAndIniWithoutOverride`,
+  `Discovery/ExplicitOverrideWinsAndIsNeverReplaced`,
+  `Discovery/LegacyFallbackWhenNoServiceFound`,
+  `Discovery/ValidationDetectsMissingEnabledSourceOnly`,
+  `Discovery/WiredIntoConfigLoaderAndSetup`.
+
+  Під час розробки `Test-BRAVODiscoveryResult` спершу повертав масив
+  помилок через `return @($errors)`, що на Windows PowerShell 5.1 і
+  `Set-StrictMode -Version 2.0` розгортається пайплайном у скаляр при
+  рівно одному елементі — виклик `.Count` на такому скалярі (рядку) падав
+  з `PropertyNotFoundStrict`, бо `String` не має `.Count` до PowerShell 7.
+  Виправлено уніарною комою (`return ,@($errors.ToArray())`), що
+  гарантує повернення масиву незалежно від кількості елементів.
+
 ## 4.2.13 — 2026-08-04
 
 - P2.7 з плану виправлень: виправлено дрібні зауваження документації.

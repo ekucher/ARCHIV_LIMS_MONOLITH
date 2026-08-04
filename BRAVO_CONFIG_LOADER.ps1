@@ -173,6 +173,16 @@ function Import-BravoConfiguration {
 
     $versionMetadata = Get-BravoVersionMetadata -ConfigRoot $resolvedConfigRoot
 
+    # BRAVO.config викликає Resolve-BRAVOInstallationDiscovery, тому цей
+    # модуль має бути в scope ще до виконання самого config-скрипта.
+    # BRAVO.config сам ніколи не імпортує модулі (покладається на те, що
+    # виклик Import-BravoConfiguration уже їх завантажив) — тому це єдина
+    # точка, спільна для всіх ~10 entrypoint-ів, які дот-сорсять цей файл.
+    $discoveryModulePath = Join-Path $resolvedConfigRoot 'modules\BRAVO.Discovery\BRAVO.Discovery.psd1'
+    if (Test-Path -LiteralPath $discoveryModulePath -PathType Leaf) {
+        Import-Module -Name $discoveryModulePath -ErrorAction Stop
+    }
+
     try {
         # Files with a non-.ps1 extension are not reliably dot-sourced by
         # Windows PowerShell. Read the legacy file explicitly and compile it

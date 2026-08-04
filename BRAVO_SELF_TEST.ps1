@@ -1403,6 +1403,163 @@ try {
         -Name "Documentation/ReadmeDirectoryTreeAndTroubleshootingMatrix" `
         -Failure "README.md не повинен містити дублікат-заглушку 'BRAVO_*.ps1' і має містити матрицю діагностики за кодом завершення"
 
+    # CLAUDE_CODE_TZ_ARCHIV_LIMS_MONOLITH.md: автоматичний Discovery джерел
+    # (BRAVO_ROOT/WEB_ROOT/MODEL/BLOG/BRAVOEXCH/BAZA_APP/BAZA_WWW) за
+    # встановленою службою BRAVO і активним bravo.ini, з повним ручним
+    # перевизначенням через BRAVO.config.
+    Remove-Module -Name 'BRAVO.Discovery' -Force -ErrorAction SilentlyContinue
+    Import-Module -Name (Join-Path $root "modules\BRAVO.Discovery\BRAVO.Discovery.psd1") -Force -ErrorAction Stop
+
+    # Реальний фрагмент bravo.ini.example, наданий користувачем: секції
+    # [system]/[model], закоментовані та задубльовані ключі. Перевіряємо,
+    # що парсер бере останнє неекрановане значення й ігнорує ";"-рядки.
+    $sampleIniContent = @(
+        '[system]',
+        'DBMEMLIMIT=0',
+        '',
+        '[model]',
+        ';MODEL=G:\LIMS\LIMS_v020924\Poltava_fito\lims',
+        'MODEL=D:\LIMS-OLD\Model\lims',
+        'MODEL=D:\LIMS-NEW\Model\lims',
+        ';MODEL=D:\LIMS\Model\lims',
+        'BLOG=D:\LIMS-NEW\BLOG\',
+        'BEXCH=D:\LIMS-NEW\bravoexch',
+        'BLOGMAX=1000'
+    )
+    $parsedIni = ConvertFrom-BRAVOIniFile -Content $sampleIniContent
+    Test-BRAVOCondition `
+        -Condition (
+            $parsedIni['model']['MODEL'] -eq 'D:\LIMS-NEW\Model\lims' -and
+            $parsedIni['model']['BLOG'] -eq 'D:\LIMS-NEW\BLOG\' -and
+            $parsedIni['model']['BEXCH'] -eq 'D:\LIMS-NEW\bravoexch' -and
+            $parsedIni['system']['DBMEMLIMIT'] -eq '0' -and
+            -not $parsedIni['model'].ContainsKey('')
+        ) `
+        -Name "Discovery/IniParserHandlesRealBravoIniFormat" `
+        -Failure "ConvertFrom-BRAVOIniFile має правильно розбирати секції, коментарі ';' і брати останнє неекрановане значення для задубльованих ключів (формат наданого bravo.ini.example)"
+
+    $discoveryTestRoot = Join-Path `
+        -Path ([IO.Path]::GetTempPath()) `
+        -ChildPath ("BRAVO_DISCOVERY_SELF_TEST_{0}" -f [guid]::NewGuid().ToString("N"))
+    try {
+        [void][IO.Directory]::CreateDirectory($discoveryTestRoot)
+        $fakeBravoExePath = Join-Path $discoveryTestRoot "bravo.exe"
+        [IO.File]::WriteAllText($fakeBravoExePath, "stub")
+        $fakeApacheBinDir = Join-Path $discoveryTestRoot "webroot\apache\bin"
+        [void][IO.Directory]::CreateDirectory($fakeApacheBinDir)
+        $fakeHttpdPath = Join-Path $fakeApacheBinDir "httpd.exe"
+        [IO.File]::WriteAllText($fakeHttpdPath, "stub")
+        $fakeBravoIniPath = Join-Path $discoveryTestRoot "bravo.ini"
+        $discoveryTestIniContent = @(
+            '[model]',
+            ("MODEL={0}" -f (Join-Path $discoveryTestRoot "Model\lims")),
+            ("BLOG={0}\" -f (Join-Path $discoveryTestRoot "BLOG")),
+            ("BEXCH={0}" -f (Join-Path $discoveryTestRoot "bravoexch"))
+        )
+        [IO.File]::WriteAllLines($fakeBravoIniPath, $discoveryTestIniContent)
+
+        $syntheticServices = @(
+            [pscustomobject]@{ Name = "BRAVO"; DisplayName = "BRAVO"; State = "Running"; StartMode = "Auto"; PathName = ('"{0}"' -f $fakeBravoExePath) },
+            [pscustomobject]@{ Name = "Apache2.4"; DisplayName = "Apache2.4"; State = "Running"; StartMode = "Auto"; PathName = ('"{0}"' -f $fakeHttpdPath) }
+        )
+
+        $autoDiscovery = Resolve-BRAVOInstallationDiscovery `
+            -LimsRoot $discoveryTestRoot `
+            -BravoServiceName "BRAVO" `
+            -WebServiceCandidates @("Apache2.4") `
+            -Services $syntheticServices
+
+        Test-BRAVOCondition `
+            -Condition (
+                $autoDiscovery.BRAVO_ROOT -eq $discoveryTestRoot -and
+                $autoDiscovery.WEB_ROOT -eq (Join-Path $discoveryTestRoot "webroot") -and
+                $autoDiscovery.MODEL_SOURCE -eq (Join-Path $discoveryTestRoot "Model") -and
+                $autoDiscovery.BLOG_SOURCE -eq (Join-Path $discoveryTestRoot "BLOG") -and
+                $autoDiscovery.BRAVOEXCH_SOURCE -eq (Join-Path $discoveryTestRoot "bravoexch") -and
+                $autoDiscovery.BAZA_APP -eq (Join-Path $discoveryTestRoot "BAZA") -and
+                $autoDiscovery.BAZA_WWW -eq (Join-Path $discoveryTestRoot "webroot\www\BAZA") -and
+                $autoDiscovery.MODEL_PROJECT_FILE -eq (Join-Path $discoveryTestRoot "Model\lims")
+            ) `
+            -Name "Discovery/ResolvesFromServiceAndIniWithoutOverride" `
+            -Failure "Resolve-BRAVOInstallationDiscovery має обчислювати BRAVO_ROOT/WEB_ROOT/MODEL_SOURCE/BLOG_SOURCE/BRAVOEXCH_SOURCE/BAZA_APP/BAZA_WWW із синтетичної служби й bravo.ini без жодного override"
+
+        $overriddenDiscovery = Resolve-BRAVOInstallationDiscovery `
+            -LimsRoot $discoveryTestRoot `
+            -BravoServiceName "BRAVO" `
+            -WebServiceCandidates @("Apache2.4") `
+            -Services $syntheticServices `
+            -DiscoverySettings @{ Sources = @{ MODEL = "C:\Explicit\Override\Model" } }
+        Test-BRAVOCondition `
+            -Condition (
+                $overriddenDiscovery.MODEL_SOURCE -eq "C:\Explicit\Override\Model" -and
+                [bool]$overriddenDiscovery.Overrides["MODEL"] -and
+                $overriddenDiscovery.BLOG_SOURCE -eq (Join-Path $discoveryTestRoot "BLOG")
+            ) `
+            -Name "Discovery/ExplicitOverrideWinsAndIsNeverReplaced" `
+            -Failure "явний discoverySettings.Sources.MODEL override має перемагати над автоматично знайденим значенням, не зачіпаючи інші поля"
+
+        $noServiceDiscovery = Resolve-BRAVOInstallationDiscovery `
+            -LimsRoot $discoveryTestRoot `
+            -BravoServiceName "BRAVO_NOT_INSTALLED" `
+            -WebServiceCandidates @("Apache2.4") `
+            -Services @()
+        Test-BRAVOCondition `
+            -Condition (
+                $noServiceDiscovery.BRAVO_ROOT -eq $discoveryTestRoot -and
+                $noServiceDiscovery.MODEL_SOURCE -eq (Join-Path $discoveryTestRoot "Model") -and
+                $noServiceDiscovery.BLOG_SOURCE -eq (Join-Path $discoveryTestRoot "BLOG") -and
+                [string]::IsNullOrWhiteSpace([string]$noServiceDiscovery.WEB_ROOT)
+            ) `
+            -Name "Discovery/LegacyFallbackWhenNoServiceFound" `
+            -Failure "без встановленої служби BRAVO/Apache Resolve-BRAVOInstallationDiscovery має fallback-ити на чинну LIMSRoot-відносну поведінку (Model/BLOG у корені), а не повертати порожні значення"
+
+        $missingSourceResult = [pscustomobject]@{
+            MODEL_SOURCE = Join-Path $discoveryTestRoot "__DOES_NOT_EXIST__"
+            BLOG_SOURCE = $discoveryTestRoot
+            BRAVOEXCH_SOURCE = $null
+            BAZA_APP = $null
+            BAZA_WWW = $null
+        }
+        $validationErrors = Test-BRAVODiscoveryResult `
+            -DiscoveryResult $missingSourceResult `
+            -EnabledComponents @{ MODEL = $true; BLOG = $true; BRAVOEXCH = $false }
+        Test-BRAVOCondition `
+            -Condition (
+                $validationErrors.Count -eq 1 -and
+                $validationErrors[0].Contains("MODEL")
+            ) `
+            -Name "Discovery/ValidationDetectsMissingEnabledSourceOnly" `
+            -Failure "Test-BRAVODiscoveryResult має повідомляти лише про увімкнені компоненти з відсутнім/непорожнім шляхом і не чіпати вимкнені"
+    } finally {
+        if (Test-Path -LiteralPath $discoveryTestRoot) {
+            Remove-Item -LiteralPath $discoveryTestRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $bravoConfigTextForDiscovery = [IO.File]::ReadAllText(
+        (Join-Path $root "BRAVO.config"),
+        [Text.Encoding]::UTF8
+    )
+    $configLoaderTextForDiscovery = [IO.File]::ReadAllText(
+        (Join-Path $root "BRAVO_CONFIG_LOADER.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    $setupTextForDiscovery = [IO.File]::ReadAllText(
+        (Join-Path $root "BRAVO_SETUP.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    Test-BRAVOCondition `
+        -Condition (
+            $configLoaderTextForDiscovery.Contains("modules\BRAVO.Discovery\BRAVO.Discovery.psd1") -and
+            $bravoConfigTextForDiscovery.Contains("Resolve-BRAVOInstallationDiscovery") -and
+            $bravoConfigTextForDiscovery.Contains("`$global:discoverySettings") -and
+            $bravoConfigTextForDiscovery.Contains("`$global:sourcePaths") -and
+            $setupTextForDiscovery.Contains("Test-BRAVODiscoveryResult") -and
+            $setupTextForDiscovery.Contains("DISCOVERY")
+        ) `
+        -Name "Discovery/WiredIntoConfigLoaderAndSetup" `
+        -Failure "BRAVO_CONFIG_LOADER.ps1 має імпортувати BRAVO.Discovery, BRAVO.config має викликати Resolve-BRAVOInstallationDiscovery для sourcePaths, а BRAVO_SETUP.ps1 -ValidateOnly має показувати й перевіряти discovery-результат"
+
     $legacyEntryPoints = @(
         'ARCHIV_VETOFFICE.ps1',
         'ARCHIV_VETOFFICE.config.ps1',
