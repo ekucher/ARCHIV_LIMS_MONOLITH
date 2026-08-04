@@ -105,6 +105,7 @@ try {
         -ConfigPath $ConfigPath
     $script:ScriptVersion = [string]$global:ScriptVersion
     $script:ScriptDate = [string]$global:ScriptDate
+    $script:ScriptBuildId = [string]$global:ScriptBuildId
 
     if ($null -eq $credentialSettings -or
         $null -eq (Get-Command -Name Initialize-BRAVOCredentialManager -ErrorAction SilentlyContinue)) {
@@ -1053,7 +1054,7 @@ function New-MaintenanceNotificationMessage {
         ":desktop_computer: Машина: $($hostInformation.MachineName)",
         ":globe_with_meridians: IP-адреси: $($hostInformation.LocalIP) | $($hostInformation.PublicIP)",
         ":spiral_calendar_pad: $dateText • $($currentTime.ToString('HH:mm:ss')) • :hourglass_flowing_sand: $(Format-Duration $Duration)",
-        "🏷️ Версія BRAVO_MAINTENANCE: $($script:ScriptVersion) від $($script:ScriptDate)"
+        "🏷️ Версія BRAVO_MAINTENANCE: $($script:ScriptVersion) від $($script:ScriptDate) (build $(if ([string]::IsNullOrWhiteSpace($script:ScriptBuildId)) { 'невідома' } else { $script:ScriptBuildId }))"
     )
 
     $nonEmptyStatusLines = @($StatusLines | Where-Object {

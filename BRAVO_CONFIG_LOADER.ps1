@@ -20,6 +20,7 @@ function Get-BravoVersionMetadata {
             UpdaterVersion = $null
             ReleaseDate = $null
             ReleaseChannel = 'legacy'
+            BuildId = $null
             VersionFilePath = $versionPath
             VersionFilePresent = $false
         }
@@ -53,6 +54,15 @@ function Get-BravoVersionMetadata {
         throw 'VERSION.json містить некоректну releaseDate; очікується формат YYYY-MM-DD.'
     }
 
+    # buildId — свідомо не обов'язковий: старіші VERSION.json (до цієї
+    # версії) його не містять, і requiredProperty-перевірка вище не мала б
+    # ламатися при оновленні поверх них.
+    $buildId = if ($null -ne $versionData.PSObject.Properties['buildId']) {
+        [string]$versionData.buildId
+    } else {
+        $null
+    }
+
     return [pscustomobject]@{
         Product = [string]$versionData.product
         PackageVersion = [string]$versionData.packageVersion
@@ -61,6 +71,7 @@ function Get-BravoVersionMetadata {
         UpdaterVersion = [string]$versionData.updaterVersion
         ReleaseDate = [string]$versionData.releaseDate
         ReleaseChannel = [string]$versionData.releaseChannel
+        BuildId = $buildId
         VersionFilePath = $versionPath
         VersionFilePresent = $true
     }
@@ -212,6 +223,7 @@ function Import-BravoConfiguration {
     if ($versionMetadata.VersionFilePresent) {
         $global:ScriptVersion = [string]$versionMetadata.PackageVersion
         $global:ScriptDate = [string]$versionMetadata.ReleaseDate
+        $global:ScriptBuildId = [string]$versionMetadata.BuildId
     }
     elseif ([string]::IsNullOrWhiteSpace($legacyScriptVersion)) {
         throw (
@@ -221,6 +233,7 @@ function Import-BravoConfiguration {
     }
     else {
         $global:ScriptVersion = $legacyScriptVersion
+        $global:ScriptBuildId = $null
     }
 
     $global:BravoVersionMetadata = $versionMetadata
@@ -234,6 +247,7 @@ function Import-BravoConfiguration {
         PackageVersion = [string]$global:ScriptVersion
         PackageVersionMatchesLegacyConfig = $versionMatches
         ReleaseDate = [string]$global:ScriptDate
+        BuildId = [string]$global:ScriptBuildId
         LoadedAt = Get-Date
     }
 

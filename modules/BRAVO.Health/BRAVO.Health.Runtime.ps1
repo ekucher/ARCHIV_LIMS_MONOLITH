@@ -2906,6 +2906,11 @@ function New-SlackAlertMessage {
     $hostInformation = Get-HostInformation
     $archiveVersionText = [string]$global:ScriptVersion
     $archiveScriptDateText = [string]$global:ScriptDate
+    $archiveBuildIdText = if ([string]::IsNullOrWhiteSpace([string]$global:ScriptBuildId)) {
+        "невідома"
+    } else {
+        [string]$global:ScriptBuildId
+    }
     $problemComponentNames = @()
     foreach ($issue in $Issues) {
         $componentName = Get-HealthIssueComponentName -Issue $issue
@@ -2945,7 +2950,7 @@ function New-SlackAlertMessage {
         ":derelict_house_building: $($backupMonitoring.InstitutionName) [$($backupMonitoring.InstitutionCode)]",
         ":desktop_computer: $($hostInformation.MachineName) • $($hostInformation.LocalIP) | $($hostInformation.PublicIP)",
         ":clock3: $dateText, $($healthCheckStarted.ToString('HH:mm:ss')) • $durationSeconds сек.",
-        "🏷️ Версія BRAVO_ARCHIV: $archiveVersionText від $archiveScriptDateText",
+        "🏷️ Версія BRAVO_ARCHIV: $archiveVersionText від $archiveScriptDateText (build $archiveBuildIdText)",
         ":pushpin: Проблемних компонентів: $($problemComponentNames.Count) • перевірок: $($Issues.Count)",
         "",
         ":package: $($problemComponentNames -join ', ')"
@@ -3043,6 +3048,11 @@ function New-SlackSuccessMessage {
     $hostInformation = Get-HostInformation
     $archiveVersionText = [string]$global:ScriptVersion
     $archiveScriptDateText = [string]$global:ScriptDate
+    $archiveBuildIdText = if ([string]::IsNullOrWhiteSpace([string]$global:ScriptBuildId)) {
+        "невідома"
+    } else {
+        [string]$global:ScriptBuildId
+    }
 
     $lines = @(
         ":white_check_mark: *РЕЗЕРВНІ КОПІЇ АКТУАЛЬНІ*",
@@ -3052,7 +3062,7 @@ function New-SlackSuccessMessage {
         ":spiral_calendar_pad: Дата: $dateText",
         ":alarm_clock: Час: $($healthCheckStarted.ToString('HH:mm:ss'))",
         ":hourglass_flowing_sand: Тривалість перевірки: $durationSeconds сек.",
-        "🏷️ Версія BRAVO_ARCHIV: $archiveVersionText від $archiveScriptDateText",
+        "🏷️ Версія BRAVO_ARCHIV: $archiveVersionText від $archiveScriptDateText (build $archiveBuildIdText)",
         ":package: Увімкнені компоненти для бекапу: $enabledComponentsText",
         "",
         ":floppy_disk: Локальні архіви та hash-файли актуальні"

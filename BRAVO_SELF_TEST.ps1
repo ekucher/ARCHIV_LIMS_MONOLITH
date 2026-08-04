@@ -480,10 +480,12 @@ try {
         -Condition (
             -not [string]::IsNullOrWhiteSpace([string]$loadedConfiguration.Version.PackageVersion) -and
             [string]$ScriptVersion -eq [string]$loadedConfiguration.Version.PackageVersion -and
-            [string]$ScriptDate -eq [string]$loadedConfiguration.Version.ReleaseDate
+            [string]$ScriptDate -eq [string]$loadedConfiguration.Version.ReleaseDate -and
+            -not [string]::IsNullOrWhiteSpace([string]$loadedConfiguration.Version.BuildId) -and
+            [string]$ScriptBuildId -eq [string]$loadedConfiguration.Version.BuildId
         ) `
         -Name "Version/AuthoritativeLoader" `
-        -Failure "VERSION.json має бути єдиним джерелом версії та releaseDate для ScriptVersion і ScriptDate"
+        -Failure "VERSION.json має бути єдиним джерелом версії, releaseDate і buildId для ScriptVersion/ScriptDate/ScriptBuildId"
     $moduleManifests = @(Get-ChildItem -LiteralPath (Join-Path $root 'modules') -Recurse -Filter '*.psd1' -File)
     $moduleVersionsMatch = @($moduleManifests | Where-Object {
             [string](Test-ModuleManifest -Path $_.FullName -ErrorAction Stop).Version -ne
@@ -493,6 +495,26 @@ try {
         -Condition ($moduleManifests.Count -gt 0 -and $moduleVersionsMatch) `
         -Name "Version/ModuleManifests" `
         -Failure "ModuleVersion усіх manifests має відповідати packageVersion у VERSION.json"
+    $archiveScriptTextForBuildId = [IO.File]::ReadAllText(
+        (Join-Path $root "modules\BRAVO.Archive\BRAVO.Archive.Runtime.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    $healthScriptTextForBuildId = [IO.File]::ReadAllText(
+        (Join-Path $root "modules\BRAVO.Health\BRAVO.Health.Runtime.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    $maintenanceScriptTextForBuildId = [IO.File]::ReadAllText(
+        (Join-Path $root "modules\BRAVO.Maintenance\BRAVO.Maintenance.Runtime.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveScriptTextForBuildId.Contains('$ScriptBuildId') -and
+            $healthScriptTextForBuildId.Contains('$global:ScriptBuildId') -and
+            $maintenanceScriptTextForBuildId.Contains('$global:ScriptBuildId')
+        ) `
+        -Name "Version/BuildIdSurfacedInRuntimes" `
+        -Failure "Archive/Health/Maintenance мають показувати build ID (VERSION.json.buildId) у журналі/сповіщеннях, щоб дві збірки з однаковим packageVersion можна було відрізнити"
     $archiveHelpersModulePath = Join-Path `
         $root `
         'modules\BRAVO.ArchiveHelpers\BRAVO.ArchiveHelpers.psd1'
@@ -917,6 +939,7 @@ try {
             Text = $healthScriptText
             AllowedGlobalVariables = @(
                 "BravoConfigurationMetadata",
+                "ScriptBuildId",
                 "ScriptDate",
                 "ScriptVersion"
             )
@@ -925,7 +948,7 @@ try {
         [pscustomobject]@{
             Name = "Maintenance"
             Text = $maintenanceScriptText
-            AllowedGlobalVariables = @("ScriptDate", "ScriptVersion")
+            AllowedGlobalVariables = @("ScriptBuildId", "ScriptDate", "ScriptVersion")
             RequiredScriptVariables = @("criticalErrorOccurred", "ScriptStartTime")
         }
     )

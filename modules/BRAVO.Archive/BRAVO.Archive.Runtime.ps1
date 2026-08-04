@@ -3254,6 +3254,7 @@ function Main {
     Write-Log "==="
     Write-Log "=== ОПЦIЇ СКРИПТА ==="
     Write-Log "Версiя та дата скрипта: $ScriptVersion вiд $ScriptDate" -NoTimestamp
+    Write-Log "Збірка (build): $(if ([string]::IsNullOrWhiteSpace([string]$ScriptBuildId)) { 'невідома' } else { [string]$ScriptBuildId })" -NoTimestamp
     Write-Log "Час початку: $($scriptStartTime.ToString($logTimestampFormat))" -NoTimestamp
     Write-Log "Кореневий каталог: $rootPath" -NoTimestamp
     Write-Log "Каталог резервних копiй: $backupRootPath" -NoTimestamp

@@ -1,5 +1,31 @@
 # Changelog
 
+## 4.2.13 — 2026-08-04
+
+- Повторний аудит (`ARCHIV_LIMS_MONOLITH_REPEAT_AUDIT.md`, P1) вказав: після
+  релізного коміту `v.4.2.12` у код внесено суттєві зміни (StrictMode-фікси,
+  VSS exposure, ACL runtime, нове логування, маскування секретів, integrity
+  preflight, формальна модель exit code, класифікація restore errors,
+  виправлення тегів журналу), але `VERSION.json` і всі 13 module manifests
+  продовжували показувати `4.2.12` — дві збірки з однаковим номером версії
+  могли мати різний код і різну поведінку.
+- `VERSION.json` отримав нове обов'язкове для нових релізів (але не для
+  вже розгорнутих старих копій) поле `buildId` — короткий git-hash коміту,
+  з якого зібрано випуск. `Get-BravoVersionMetadata`
+  (`BRAVO_CONFIG_LOADER.ps1`) читає його як необов'язкову властивість,
+  щоб оновлення поверх старішого `VERSION.json` без `buildId` не ламалось.
+  Значення прокидається як `$global:ScriptBuildId`, той самий шаблон, що
+  вже використовувався для `ScriptVersion`/`ScriptDate`.
+- Archive, Health і Maintenance тепер показують build ID у консолі/журналі
+  та в Slack/Discord-сповіщеннях поруч з версією й датою (`Версiя та дата
+  скрипта: 4.2.13 вiд 2026-08-04` + окремий рядок `Збірка (build): ...` в
+  Archive; `(build ...)` у сповіщеннях Health і Maintenance).
+- `ModuleVersion` усіх 13 module manifests і версія в заголовках `README.md`
+  та `BRAVO_SETUP.md` синхронізовано з `VERSION.json` (`4.2.13`).
+- Додано self-test `Version/BuildIdSurfacedInRuntimes` (build ID справді
+  прокидається у всі три runtime) і розширено `Version/AuthoritativeLoader`
+  перевіркою, що `ScriptBuildId` відповідає `buildId` у `VERSION.json`.
+
 ## 4.2.12 — 2026-08-03
 
 - Виправлено хибне тегування підсумкового рядка `Результат:` у
