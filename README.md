@@ -599,8 +599,9 @@ health > лише попередження. Код `90` має найвищий 
 
 Детальні параметри комплексного setup наведені у
 [BRAVO_SETUP.md](BRAVO_SETUP.md), історія версій — у
-[CHANGELOG.md](CHANGELOG.md), а модель безпеки й порядок повідомлення про
-вразливості — у [SECURITY.md](SECURITY.md).
+[CHANGELOG.md](CHANGELOG.md), модель безпеки й порядок повідомлення про
+вразливості — у [SECURITY.md](SECURITY.md), а чек-лист перед випуском
+нової версії — у [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md).
 
 ### Гілки та release channel
 

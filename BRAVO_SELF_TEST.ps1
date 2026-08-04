@@ -1366,6 +1366,26 @@ try {
             -Failure "SECURITY.md має покривати підтримувані версії, порядок повідомлення про вразливості, модель секретів/Tools/ACL і обмеження Credential Manager"
     }
 
+    # P2.6 аудиту: RELEASE_CHECKLIST.md.
+    $releaseChecklistPath = Join-Path $root "RELEASE_CHECKLIST.md"
+    Test-BRAVOCondition `
+        -Condition (Test-Path -LiteralPath $releaseChecklistPath -PathType Leaf) `
+        -Name "Documentation/ReleaseChecklistExists" `
+        -Failure "RELEASE_CHECKLIST.md має існувати в корені репозиторію"
+    if (Test-Path -LiteralPath $releaseChecklistPath -PathType Leaf) {
+        $releaseChecklistText = [IO.File]::ReadAllText($releaseChecklistPath, [Text.Encoding]::UTF8)
+        Test-BRAVOCondition `
+            -Condition (
+                $releaseChecklistText.Contains("VERSION.json") -and
+                $releaseChecklistText.Contains("CHANGELOG.md") -and
+                $releaseChecklistText.Contains("BRAVO_SELF_TEST.ps1") -and
+                $releaseChecklistText.Contains("BOM") -and
+                $releaseChecklistText.Contains("tag")
+            ) `
+            -Name "Documentation/ReleaseChecklistCoversRequiredSteps" `
+            -Failure "RELEASE_CHECKLIST.md має покривати VERSION.json, CHANGELOG.md, self-test, BOM і git tag"
+    }
+
     $legacyEntryPoints = @(
         'ARCHIV_VETOFFICE.ps1',
         'ARCHIV_VETOFFICE.config.ps1',

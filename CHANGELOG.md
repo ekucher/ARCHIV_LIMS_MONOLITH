@@ -2,6 +2,17 @@
 
 ## 4.2.13 — 2026-08-04
 
+- P2.6 з плану виправлень: додано `RELEASE_CHECKLIST.md`. Розділ 1 —
+  пункти, які реально виконуються сьогодні й частина яких уже забезпечена
+  self-test (`Version/ModuleManifests`, `Version/BuildIdSurfacedInRuntimes`,
+  `Version/StableBranchNotDevelopmentChannel`). Розділ 2 — свідомо окремо
+  винесені рекомендації аудиту, які в цьому репозиторії ще не
+  автоматизовано (PSScriptAnalyzer, secret scanning, підписаний release
+  manifest, restore drill тощо) — не позначені чекбоксами обов'язкового
+  виконання, щоб чек-лист не створював хибного враження виконаної роботи.
+  Додано self-test `Documentation/ReleaseChecklistExists` і
+  `Documentation/ReleaseChecklistCoversRequiredSteps`.
+
 - P2.4 з плану виправлень: додано `SECURITY.md` — підтримувані версії
   (продукт і ОС/PowerShell), порядок повідомлення про вразливості, модель
   секретів (Credential Manager, `Protect-BRAVOLogSecret`, очищення
