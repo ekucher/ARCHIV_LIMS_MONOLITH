@@ -1985,37 +1985,6 @@ exit
     }
 }
 
-function Get-SanitizedWinSCPDiagnostic {
-    param(
-        [AllowNull()]
-        [string]$Text,
-        [int]$MaximumLines = 80
-    )
-
-    if ([string]::IsNullOrWhiteSpace($Text)) {
-        return ""
-    }
-
-    $sanitized = $Text
-    $sanitized = $sanitized -replace '(?i)(sftp://)[^@\s]+@', '$1***@'
-    $sanitized = $sanitized -replace '(?i)(-password=)(?:"[^"]*"|\S+)', '$1***'
-    $lines = @(
-        $sanitized -split '\r?\n' |
-            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-    )
-
-    $safeMaximumLines = [math]::Max(1, $MaximumLines)
-    if ($lines.Count -gt $safeMaximumLines) {
-        $omittedCount = $lines.Count - $safeMaximumLines
-        $lines = @(
-            "... пропущено рядкiв WinSCP: $omittedCount ..."
-            $lines | Select-Object -Last $safeMaximumLines
-        )
-    }
-
-    return ($lines -join [Environment]::NewLine)
-}
-
 function Get-BAZASFTPComparison {
     param(
         [string]$LocalPath,

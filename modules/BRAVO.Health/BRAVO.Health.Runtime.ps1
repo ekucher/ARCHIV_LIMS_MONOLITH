@@ -1170,8 +1170,11 @@ function Invoke-WinSCPHealthSession {
             Success = $true
             ExitCode = $process.ExitCode
             Xml = $xml
-            Output = $output
-            ErrorOutput = $errorOutput
+            # Санітизуємо тут же, у джерелі, а не покладаємось на те, що
+            # кожен майбутній споживач цього поля сам згадає викликати
+            # Get-SanitizedWinSCPDiagnostic перед логуванням/сповіщенням.
+            Output = Get-SanitizedWinSCPDiagnostic -Text $output
+            ErrorOutput = Get-SanitizedWinSCPDiagnostic -Text $errorOutput
             Error = $null
         }
     } catch {
