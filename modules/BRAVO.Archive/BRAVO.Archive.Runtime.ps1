@@ -323,14 +323,11 @@ if ($credentialHelperLoaded -and $smbCredentialRequired) {
             throw "запис Credential Manager '$smbPasswordTarget' не знайдено або він порожній для $([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
         }
 
-        $secureSmbPassword = ConvertTo-SecureString -String ([string]$storedSmbPassword) -AsPlainText -Force
-        $script:smbCredential = New-Object System.Management.Automation.PSCredential(
-            [string]$storedSmbLogin,
-            $secureSmbPassword
-        )
+        $script:smbCredential = New-BRAVOPlainTextCredential `
+            -UserName ([string]$storedSmbLogin) `
+            -Password ([string]$storedSmbPassword)
         $storedSmbLogin = $null
         $storedSmbPassword = $null
-        $secureSmbPassword = $null
     } catch {
         $script:smbCredentialInitializationError = Protect-BRAVOLogSecret -Text $_.Exception.Message
     }
@@ -3245,7 +3242,10 @@ function Main {
     Write-Log "==="
     Write-Log "=== ПЕРЕВIРКА СУМIСНОСТI СИСТЕМИ ==="
     Show-ScriptProgress -Status "Перевiрка сумiсностi" -PercentComplete 5
-    $compatibilityIssues = Test-Compatibility
+    # Test-Compatibility сама логує знайдені проблеми; повернене значення
+    # тут навмисно не використовується (раніше присвоювалось у змінну,
+    # яку ніхто не читав).
+    [void](Test-Compatibility)
 
     if ($SyncBAZA) {
         $manualSyncStarted = Get-Date

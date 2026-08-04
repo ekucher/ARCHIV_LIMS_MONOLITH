@@ -49,6 +49,9 @@ function Remove-OldLogsByAge {
 }
 
 function Test-SevenZipArchiveIntegrity {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSAvoidUsingPlainTextForPassword', 'Password',
+        Justification = 'Тонка обгортка над Invoke-BRAVOSevenZipIntegrityTest — пароль іде далі через redirected stdin.')]
     param(
         [string]$SevenZipPath,
         [string]$ArchivePath,

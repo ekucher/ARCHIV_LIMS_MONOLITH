@@ -1318,6 +1318,9 @@ function ConvertTo-BRAVOWindowsCommandLineArgument {
 }
 
 function Invoke-BRAVOSevenZipIntegrityTest {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSAvoidUsingPlainTextForPassword', 'Password',
+        Justification = 'Пароль передається 7-Zip через redirected stdin (не в аргументи процесу); SecureString довелося б розгортати тут же.')]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$SevenZipPath,
@@ -1437,6 +1440,9 @@ function Invoke-BRAVOSevenZipExtraction {
     # один (той самий ProcessStartInfo/stdin-пароль патерн), лише команда
     # "x" (extract, повна структура шляхів) замість "t" (test) і
     # -o<ExtractDirectory> замість цільового архіву як єдиного аргументу.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSAvoidUsingPlainTextForPassword', 'Password',
+        Justification = 'Пароль передається 7-Zip через redirected stdin (не в аргументи процесу); SecureString довелося б розгортати тут же.')]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$SevenZipPath,

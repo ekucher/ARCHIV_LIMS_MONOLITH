@@ -438,6 +438,9 @@ function Unprotect-LocalMachineSecret {
 }
 
 function Read-SecretEntries {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSAvoidUsingConvertToSecureStringWithPlainText', '',
+        Justification = 'Секрет щойно введений оператором у консолі й одразу записується в Credential Manager; SecureString — формат зберігання, а не джерело.')]
     param([string[]]$Names)
 
     $entries = New-Object System.Collections.ArrayList
@@ -638,6 +641,9 @@ function Get-CredentialOperationSnapshots {
 }
 
 function Restore-CredentialOperationSnapshots {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSAvoidUsingConvertToSecureStringWithPlainText', '',
+        Justification = 'Rollback раніше збереженого запису Credential Manager — секрет уже походив звідти.')]
     param([object[]]$Snapshots)
 
     $restoreErrors = New-Object System.Collections.ArrayList

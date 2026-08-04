@@ -394,6 +394,9 @@ function Get-WinSCPComponents {
 }
 
 function Test-SftpReadOnlyAccess {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSAvoidUsingPlainTextForPassword', 'Password',
+        Justification = 'Секрет із Credential Manager; WinSCP.SessionOptions.Password приймає саме рядок.')]
     param(
         [string]$Login,
         [string]$Password
@@ -428,6 +431,12 @@ function Test-SftpReadOnlyAccess {
 }
 
 function Test-SmbReadOnlyAccess {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSAvoidUsingPlainTextForPassword', 'Password',
+        Justification = 'Секрет із Credential Manager; конвертується в PSCredential одразу нижче.')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSAvoidUsingConvertToSecureStringWithPlainText', '',
+        Justification = 'Секрет із Credential Manager; SecureString потрібен лише для конструктора PSCredential.')]
     param(
         [string]$RootPath,
         [string]$Login,

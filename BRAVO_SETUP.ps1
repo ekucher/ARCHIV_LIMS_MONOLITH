@@ -1,4 +1,7 @@
-﻿[CmdletBinding()]
+﻿[Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+    'PSAvoidUsingPlainTextForPassword', 'CredentialComponent',
+    Justification = 'Хибне спрацювання: $CredentialComponent — це ValidateSet-перемикач (яку групу credentials налаштовувати), не секрет.')]
+[CmdletBinding()]
 param(
     [string]$ConfigPath,
 

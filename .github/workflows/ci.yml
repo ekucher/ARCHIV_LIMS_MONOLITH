@@ -71,6 +71,62 @@ jobs:
           }
           if ($failed) { exit 1 }
 
+      # Патерни, які PSScriptAnalyzer або не ловить взагалі, або ловить
+      # лише як AST (і пропускає входження всередині рядків). Список
+      # навмисно вузький: кожен пункт — те, чого в цьому репозиторії
+      # немає й не повинно з'явитись.
+      - name: Заборонені патерни (bootstrap-завантаження, довільний код)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = Get-ChildItem -Recurse -File |
+              Where-Object { $_.Extension -in @('.ps1', '.psm1', '.psd1') }
+
+          # ExecutionPolicy Bypass легітимний лише там, де скрипт
+          # перезапускає сам себе через UAC або описує завдання
+          # Планувальника (задокументовано в SECURITY.md розділ 4).
+          # Мета правила — заблокувати НОВІ файли з Bypass, а не
+          # переписати наявний механізм elevation.
+          $bypassAllowlist = @(
+              'BRAVO_TASKS_INSTALL.ps1',
+              'BRAVO_TASKS_UNINSTALL.ps1',
+              'BRAVO_CREDENTIALS_SETUP.ps1',
+              'BRAVO_SELF_TEST.ps1',
+              'BRAVO.Archive.Runtime.ps1',
+              'BRAVO.Maintenance.Runtime.ps1'
+          )
+
+          $forbidden = @(
+              @{ Name = 'Invoke-Expression / iex'; Pattern = '(?i)\b(Invoke-Expression|iex)\s'; Allowlist = @() },
+              @{ Name = 'Мережеве завантаження коду'; Pattern = '(?i)(DownloadString|DownloadFile|Net\.WebClient|Invoke-RestMethod\s+[^|]*\|\s*iex)'; Allowlist = @() },
+              @{ Name = 'Секрет в аргументах процесу'; Pattern = '(?i)-ArgumentList[^\r\n]*\$(password|secret|apiKey|token)\b'; Allowlist = @() },
+              @{ Name = 'ExecutionPolicy Bypass поза installer/task definitions'; Pattern = '(?i)ExecutionPolicy\s+Bypass'; Allowlist = $bypassAllowlist }
+          )
+
+          $failed = $false
+          foreach ($file in $files) {
+              $lines = [IO.File]::ReadAllLines($file.FullName)
+              for ($i = 0; $i -lt $lines.Length; $i++) {
+                  $line = $lines[$i]
+                  # Рядки-коментарі не є виконуваним кодом (у репозиторії
+                  # є приклади команд запуску в коментарях).
+                  if ($line.TrimStart().StartsWith('#')) { continue }
+
+                  foreach ($rule in $forbidden) {
+                      if ($line -match $rule.Pattern) {
+                          if ($rule.Allowlist -contains $file.Name) { continue }
+                          Write-Host "::error file=$($file.FullName),line=$($i + 1)::Заборонений патерн ($($rule.Name)): $($line.Trim())"
+                          $failed = $true
+                      }
+                  }
+              }
+          }
+          if ($failed) {
+              Write-Host "::error::Знайдено заборонені патерни. Ці конструкції не мають легітимного застосування в цьому репозиторії."
+              exit 1
+          }
+          Write-Host "Заборонені патерни: не знайдено."
+
       - name: Markdown-документи не мають BOM
         shell: powershell
         run: |
@@ -93,53 +149,75 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Invoke-ScriptAnalyzer
+      - name: Install PSScriptAnalyzer
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser -SkipPublisherCheck -Repository PSGallery
 
-          # Виключені правила навмисно суперечать їхнім рекомендаціям, бо
-          # відповідають усталеній архітектурі цього репозиторію
-          # (Write-Host для інтерактивної консолі допоміжних скриптів,
-          # $global: як спільний контракт між BRAVO.config і runtime-
-          # модулями — задокументовано й відомо, не забутий недогляд).
-          #
-          # PSAvoidUsingConvertToSecureStringWithPlainText: секрет у всіх
-          # цих місцях щойно прочитаний із Windows Credential Manager
-          # (уже захищене сховище), а ConvertTo-SecureString -AsPlainText
-          # використовується лише для мосту до .NET API, які вимагають
-          # SecureString (New-Object PSCredential тощо) — не хардкод
-          # секрету в джерелі.
-          # PSAvoidUsingUsernameAndPasswordParams: New-BRAVOSftpUrl будує
-          # рядок sftp://user:pass@host для WinSCP — сама мета функції
-          # вимагає рядкових Login/Password, PSCredential тут не підійде.
-          $excludeRules = @(
-              'PSAvoidUsingWriteHost',
-              'PSAvoidGlobalVars',
-              'PSAvoidUsingConvertToSecureStringWithPlainText',
-              'PSAvoidUsingUsernameAndPasswordParams',
-              'PSUseShouldProcessForStateChangingFunctions',
-              'PSUseDeclaredVarsMoreThanAssignments',
-              'PSAvoidUsingInvokeExpression'
-          )
-          $results = Invoke-ScriptAnalyzer -Path . -Recurse -ExcludeRule $excludeRules
+      # Прохід 1 (БЛОКУЮЧИЙ): рівно набір security-правил із
+      # PSScriptAnalyzerSettings.psd1. Жодне з них НЕ виключається
+      # глобально — кожне обґрунтоване місце має точковий
+      # SuppressMessageAttribute із Justification біля конкретної функції.
+      # Тому будь-яке НОВЕ входження цих патернів завалить CI, навіть
+      # якщо десь поруч уже є легітимне обґрунтоване використання.
+      - name: PSScriptAnalyzer — security (блокує)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = Get-ChildItem -Recurse -File |
+              Where-Object { $_.Extension -in @('.ps1', '.psm1', '.psd1') }
 
-          $warnings = @($results | Where-Object { $_.Severity -eq 'Warning' -or $_.Severity -eq 'Information' })
-          $errors = @($results | Where-Object { $_.Severity -eq 'Error' })
-
-          if ($warnings.Count -gt 0) {
-              Write-Host "::warning::PSScriptAnalyzer: $($warnings.Count) попередження (інформаційно, не блокує білд)"
-              $warnings | ForEach-Object {
-                  Write-Host "::warning file=$($_.ScriptPath),line=$($_.Line)::$($_.RuleName): $($_.Message)"
+          # Пофайловий обхід, а не -Path . -Recurse: окремі правила
+          # PSScriptAnalyzer здатні кинути NullReferenceException на
+          # конкретному файлі й обірвати весь аналіз, замаскувавши решту.
+          $results = @()
+          foreach ($file in $files) {
+              try {
+                  $results += Invoke-ScriptAnalyzer `
+                      -Path $file.FullName `
+                      -Settings .\PSScriptAnalyzerSettings.psd1
+              } catch {
+                  Write-Host "::error file=$($file.FullName)::PSScriptAnalyzer впав на цьому файлі: $($_.Exception.Message)"
+                  exit 1
               }
           }
-          if ($errors.Count -gt 0) {
-              $errors | ForEach-Object {
+
+          if ($results.Count -gt 0) {
+              $results | ForEach-Object {
                   Write-Host "::error file=$($_.ScriptPath),line=$($_.Line)::$($_.RuleName): $($_.Message)"
               }
+              Write-Host "::error::Заблоковано $($results.Count) security-порушень. Якщо використання обґрунтоване — додайте точковий [Diagnostics.CodeAnalysis.SuppressMessageAttribute] із Justification біля конкретної функції, НЕ глобальний виняток."
               exit 1
           }
+          Write-Host "Security-набір PSScriptAnalyzer: чисто."
+
+      # Прохід 2 (ІНФОРМАЦІЙНИЙ): усе інше — стилістика, що суперечить
+      # усталеній архітектурі репозиторію (Write-Host для інтерактивної
+      # консолі допоміжних скриптів, $global: як контракт між
+      # BRAVO.config і runtime-модулями). Не блокує.
+      - name: PSScriptAnalyzer — решта правил (інформаційно)
+        shell: powershell
+        continue-on-error: true
+        run: |
+          $files = Get-ChildItem -Recurse -File |
+              Where-Object { $_.Extension -in @('.ps1', '.psm1', '.psd1') }
+          $blocking = (Import-PowerShellDataFile .\PSScriptAnalyzerSettings.psd1).IncludeRules
+
+          $results = @()
+          foreach ($file in $files) {
+              try {
+                  $results += Invoke-ScriptAnalyzer -Path $file.FullName -ExcludeRule $blocking
+              } catch {
+                  Write-Host "::warning file=$($file.FullName)::PSScriptAnalyzer впав на цьому файлі: $($_.Exception.Message)"
+              }
+          }
+
+          Write-Host "PSScriptAnalyzer (інформаційно): $($results.Count) зауважень."
+          $results |
+              Group-Object RuleName |
+              Sort-Object Count -Descending |
+              ForEach-Object { Write-Host "  $($_.Count)x $($_.Name)" }
 
   self-test:
     name: BRAVO_SELF_TEST.ps1
