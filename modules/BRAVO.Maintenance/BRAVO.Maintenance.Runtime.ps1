@@ -23,7 +23,7 @@ param (
 $bravoScriptDirectory = $RuntimeRoot
 
 # Спільні PowerShell-модулі runtime.
-foreach ($moduleName in @('BRAVO.Compatibility', 'BRAVO.Credentials', 'BRAVO.ArchiveHelpers')) {
+foreach ($moduleName in @('BRAVO.Compatibility', 'BRAVO.Credentials', 'BRAVO.ArchiveHelpers', 'BRAVO.Logging')) {
     $modulePath = Join-Path $bravoScriptDirectory "modules\$moduleName\$moduleName.psd1"
     if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) {
         throw "Не знайдено спільний PowerShell-модуль: $modulePath"
@@ -790,7 +790,12 @@ function Write-Log {
         [int]$SeparatorLength = 100,
         [switch]$NoTimestamp
     )
-    
+
+    # Пароль архіву, webhook чи URL з обліковими даними можуть потрапити
+    # сюди через повідомлення винятку — маскуємо перед виводом у консоль
+    # чи запис у файл, до будь-якого з можливих виходів функції нижче.
+    $Message = Protect-BRAVOLogSecret -Text $Message
+
     # Перевірка рівня логування
     $logLevels = @{"DEBUG"=0; "INFO"=1; "WARNING"=2; "ERROR"=3; "SUCCESS"=4}
     

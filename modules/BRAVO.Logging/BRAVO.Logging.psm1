@@ -63,8 +63,15 @@ function Protect-BRAVOLogSecret {
     $sanitized = $sanitized -replace '(?i)([a-z][a-z0-9+.-]*://[^:/\s@]+):[^@\s]+@', '$1:***@'
     # Явні параметри пароля у командних рядках WinSCP і 7-Zip.
     $sanitized = $sanitized -replace '(?i)(-password=)(?:"[^"]*"|\S+)', '$1***'
-    $sanitized = $sanitized -replace '(?i)(\s-p)(?!ath)(?:"[^"]*"|\S+)', '$1***'
+    # (?!ath|assword) — інакше це правило повторно "з'їдає" вже замасковане
+    # -password=*** з рядка вище, розпізнавши його як коротку форму -p.
+    $sanitized = $sanitized -replace '(?i)(\s-p)(?!ath|assword)(?:"[^"]*"|\S+)', '$1***'
     $sanitized = $sanitized -replace '(?i)((?:password|passwd|secret|token)\s*[:=]\s*)(?:"[^"]*"|\S+)', '$1***'
+    # Webhook URL — сам bearer-секрет, без user:pass@; підтримувані провайдери
+    # (Send-BRAVOWebhookNotification -Provider slack|discord) мають токен
+    # прямо у шляху, а не в окремому параметрі.
+    $sanitized = $sanitized -replace '(?i)(hooks\.slack\.com/services/)\S+', '$1***'
+    $sanitized = $sanitized -replace '(?i)(discord(?:app)?\.com/api/webhooks/)\S+', '$1***'
     return $sanitized
 }
 

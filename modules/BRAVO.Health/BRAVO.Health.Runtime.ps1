@@ -31,7 +31,7 @@ function Complete-BRAVOHealthResult {
 $bravoScriptDirectory = $RuntimeRoot
 
 # Health використовує спільні модулі, а не копії з архіватора.
-foreach ($moduleName in @('BRAVO.Compatibility', 'BRAVO.Credentials', 'BRAVO.ArchiveRuntime')) {
+foreach ($moduleName in @('BRAVO.Compatibility', 'BRAVO.Credentials', 'BRAVO.ArchiveRuntime', 'BRAVO.Logging')) {
     $modulePath = Join-Path $bravoScriptDirectory "modules\$moduleName\$moduleName.psd1"
     if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) {
         throw "Не знайдено спільний PowerShell-модуль: $modulePath"
@@ -283,6 +283,11 @@ function Write-HealthLog {
         [string]$Message,
         [string]$Level = "INFO"
     )
+
+    # SFTP URL із паролем, webhook чи інший секрет можуть потрапити сюди
+    # через повідомлення винятку WinSCP/Invoke-WebRequest — маскуємо перед
+    # тим, як щось піде в консоль чи файл.
+    $Message = Protect-BRAVOLogSecret -Text $Message
 
     $timestamp = Get-Date -Format $logTimestampFormat
     $entry = "[$timestamp] [$Level] $Message"

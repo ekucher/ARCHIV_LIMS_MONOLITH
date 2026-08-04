@@ -169,6 +169,43 @@ try {
         -Name "Compatibility/WindowsPatchLevelRecommendation" `
         -Failure "рекомендація оновити Windows має спрацьовувати лише для застарілого рівня патчів і не хибити на свіжій системі"
 
+    Remove-Module -Name 'BRAVO.Logging' -Force -ErrorAction SilentlyContinue
+    Import-Module -Name (Join-Path $root "modules\BRAVO.Logging\BRAVO.Logging.psd1") -Force -ErrorAction Stop
+    $maskedSftpUrl = Protect-BRAVOLogSecret -Text "open sftp://bravouser:S3cr3tPass@sftp.example.org:22"
+    $maskedSlackWebhook = Protect-BRAVOLogSecret -Text "https://hooks.slack.com/services/T000AAAA/B111BBBB/xxxTOKENxxxCCCC"
+    $maskedDiscordWebhook = Protect-BRAVOLogSecret -Text "https://discord.com/api/webhooks/123456789/abcDEF-token_value"
+    $maskedArchivePasswordLong = Protect-BRAVOLogSecret -Text "7za.exe a -password=SuperSecret archive.mdz"
+    $maskedArchivePasswordShort = Protect-BRAVOLogSecret -Text "7za.exe t -pSecretPass123 archive.mdz"
+    $unmaskedPathArgument = Protect-BRAVOLogSecret -Text "backup at -path C:\Some\Dir"
+    Test-BRAVOCondition `
+        -Condition (
+            $maskedSftpUrl -eq "open sftp://bravouser:***@sftp.example.org:22" -and
+            -not $maskedSlackWebhook.Contains("xxxTOKENxxxCCCC") -and
+            $maskedSlackWebhook.Contains("hooks.slack.com/services/***") -and
+            -not $maskedDiscordWebhook.Contains("abcDEF-token_value") -and
+            $maskedDiscordWebhook.Contains("discord.com/api/webhooks/***") -and
+            $maskedArchivePasswordLong -eq "7za.exe a -password=*** archive.mdz" -and
+            $maskedArchivePasswordShort -eq "7za.exe t -p*** archive.mdz" -and
+            $unmaskedPathArgument -eq "backup at -path C:\Some\Dir"
+        ) `
+        -Name "Logging/ProtectSecretMasksKnownShapes" `
+        -Failure "Protect-BRAVOLogSecret має маскувати SFTP-паролі, Slack/Discord webhook-токени і паролі 7-Zip, не займаючи -path"
+    $healthScriptTextForSecretMasking = [IO.File]::ReadAllText(
+        (Join-Path $root "modules\BRAVO.Health\BRAVO.Health.Runtime.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    $maintenanceScriptTextForSecretMasking = [IO.File]::ReadAllText(
+        (Join-Path $root "modules\BRAVO.Maintenance\BRAVO.Maintenance.Runtime.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    Test-BRAVOCondition `
+        -Condition (
+            $healthScriptTextForSecretMasking.Contains("Protect-BRAVOLogSecret") -and
+            $maintenanceScriptTextForSecretMasking.Contains("Protect-BRAVOLogSecret")
+        ) `
+        -Name "Runtime/HealthAndMaintenanceMaskSecretsInLogs" `
+        -Failure "Write-HealthLog і Write-Log (Maintenance) мають маскувати секрети так само, як Write-BRAVOLog в Archive"
+
     $insecureWebhookRejected = $false
     try {
         Send-BRAVOWebhookNotification `
