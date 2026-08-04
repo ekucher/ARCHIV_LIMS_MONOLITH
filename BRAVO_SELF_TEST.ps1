@@ -317,6 +317,51 @@ try {
         -Name "Runtime/HealthAndMaintenanceMaskSecretsInLogs" `
         -Failure "Write-HealthLog і Write-Log (Maintenance) мають маскувати секрети так само, як Write-BRAVOLog в Archive"
 
+    # P1.9 аудиту: catch-блоки навколо читання Credential Manager (SFTP/SMB/
+    # архів/webhook) і провалу завантаження BRAVO.config раніше клали
+    # $_.Exception.Message у script-scope змінні або одразу в Write-Host/
+    # Write-Error БЕЗ маскування — ці рядки минали єдину точку масковки
+    # (Write-Log/Write-BRAVOLog/Write-HealthLog) повністю, бо друкувались
+    # до або поза нормальним логуванням. Перевіряємо, що жодне подібне
+    # "гole" присвоєння не лишилось: усі такі catch-блоки або обгортають
+    # $_.Exception.Message у Protect-BRAVOLogSecret, або взагалі відсутні.
+    $archiveScriptTextForSecretMasking = [IO.File]::ReadAllText(
+        (Join-Path $root "modules\BRAVO.Archive\BRAVO.Archive.Runtime.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveScriptTextForSecretMasking.Contains(
+                "Write-Host `"ПОМИЛКА: Не вдалося завантажити конфiгурацiю: `$(Protect-BRAVOLogSecret -Text `$_.Exception.Message)`""
+            ) -and
+            $archiveScriptTextForSecretMasking.Contains(
+                "`$script:archiveCredentialInitializationError = Protect-BRAVOLogSecret -Text `$_.Exception.Message"
+            ) -and
+            $archiveScriptTextForSecretMasking.Contains(
+                "`$script:credentialInitializationError = Protect-BRAVOLogSecret -Text `$_.Exception.Message"
+            ) -and
+            $archiveScriptTextForSecretMasking.Contains(
+                "`$script:smbCredentialInitializationError = Protect-BRAVOLogSecret -Text `$_.Exception.Message"
+            ) -and
+            $archiveScriptTextForSecretMasking.Contains(
+                "`$script:notificationCredentialInitializationError = Protect-BRAVOLogSecret -Text `$_.Exception.Message"
+            ) -and
+            $healthScriptTextForSecretMasking.Contains(
+                "Write-Error `"Не вдалося завантажити конфігурацію: `$(Protect-BRAVOLogSecret -Text `$_.Exception.Message)`""
+            ) -and
+            $maintenanceScriptTextForSecretMasking.Contains(
+                "Write-Host `"ПОМИЛКА читання конфігурації '`$ConfigPath': `$(Protect-BRAVOLogSecret -Text `$_.Exception.Message)`""
+            ) -and
+            $maintenanceScriptTextForSecretMasking.Contains(
+                "`$NotificationCredentialError = Protect-BRAVOLogSecret -Text `$_.Exception.Message"
+            ) -and
+            $maintenanceScriptTextForSecretMasking.Contains(
+                "`$ArchiveCredentialError = Protect-BRAVOLogSecret -Text `$_.Exception.Message"
+            )
+        ) `
+        -Name "Runtime/CredentialAndConfigErrorsMaskedAtCapture" `
+        -Failure "помилки завантаження конфігурації та Credential Manager (SFTP/SMB/архів/webhook) мають маскуватися Protect-BRAVOLogSecret одразу при захопленні, а не лише при подальшому Write-Log — ці catch-блоки друкують до Write-Host/Write-Error поза єдиною точкою масковки"
+
     Remove-Module -Name 'BRAVO.ExitCodes' -Force -ErrorAction SilentlyContinue
     Import-Module -Name (Join-Path $root "modules\BRAVO.ExitCodes\BRAVO.ExitCodes.psd1") -Force -ErrorAction Stop
     Test-BRAVOCondition `
@@ -988,6 +1033,47 @@ try {
         ) `
         -Name "Health/ProgrammaticApiClearsCredentialState" `
         -Failure "програмний Health API має очищати секретний module state навіть після ранньої помилки"
+
+    # P1.6 аудиту: health-check має окремо показувати LocalVerified/
+    # SftpVerified/SmbVerified, щоб помилка одного напрямку не маскувала
+    # стан інших у зовнішньому моніторингу. Get-BRAVOHealthDestinationSummary
+    # приватна (не експортована з BRAVO.Health.psm1) — dot-source лише цієї
+    # функції в self-test небезпечний, бо приніс би весь top-level код
+    # runtime разом з нею. Тому: функціонально відтворюємо точно ту саму
+    # логіку на синтетичних масивах issues (як RetentionSelectionAlgorithm
+    # вище) і текстово підтверджуємо, що функція справді підключена до
+    # всіх 7 місць повернення результату.
+    $destinationSummaryAllClear = [pscustomobject]@{
+        LocalVerified = (@() + @()).Count -eq 0
+        SftpVerified = @().Count -eq 0
+        SmbVerified = @().Count -eq 0
+    }
+    $destinationSummarySftpDown = [pscustomobject]@{
+        LocalVerified = (@() + @()).Count -eq 0
+        SftpVerified = @([pscustomobject]@{ Kind = "SFTPConnection" }).Count -eq 0
+        SmbVerified = @().Count -eq 0
+    }
+    Test-BRAVOCondition `
+        -Condition (
+            $destinationSummaryAllClear.LocalVerified -and
+            $destinationSummaryAllClear.SftpVerified -and
+            $destinationSummaryAllClear.SmbVerified -and
+            $destinationSummarySftpDown.LocalVerified -and
+            -not $destinationSummarySftpDown.SftpVerified -and
+            $destinationSummarySftpDown.SmbVerified
+        ) `
+        -Name "Health/DestinationSummaryAlgorithm" `
+        -Failure "відмова SFTP не повинна впливати на LocalVerified/SmbVerified — кожен напрямок оцінюється незалежно"
+    Test-BRAVOCondition `
+        -Condition (
+            $healthScriptText.Contains("function Get-BRAVOHealthDestinationSummary") -and
+            $healthScriptText.Contains("`$destinationSummary = Get-BRAVOHealthDestinationSummary") -and
+            ([regex]::Matches($healthScriptText, [regex]::Escape('LocalVerified = $destinationSummary.LocalVerified')).Count -eq 7) -and
+            ([regex]::Matches($healthScriptText, [regex]::Escape('SftpVerified = $destinationSummary.SftpVerified')).Count -eq 7) -and
+            ([regex]::Matches($healthScriptText, [regex]::Escape('SmbVerified = $destinationSummary.SmbVerified')).Count -eq 7)
+        ) `
+        -Name "Health/DestinationSummaryWiredIntoAllResults" `
+        -Failure "LocalVerified/SftpVerified/SmbVerified мають потрапляти в результат з усіх 7 місць return Complete-BRAVOHealthResult, інакше зовнішній моніторинг періодично втрачатиме цю деталізацію"
     Test-BRAVOCondition `
         -Condition (
             [bool]$backupMonitoring.CheckManagedServices -and
@@ -1072,6 +1158,25 @@ try {
         -Condition ([int]$schedulerSettings.OperationLockWaitMinutes -gt 0) `
         -Name "Scheduler/OperationLockWait" `
         -Failure "очікування спільного lock має бути більше нуля"
+
+    # P1.8 аудиту: lock раніше містив лише "PID=...; Started=...; Config=...",
+    # тексту. hostname і processStartTime дають змогу відрізнити той самий
+    # PID, перевикористаний іншим процесом після перезавантаження сервера,
+    # від справді активного BRAVO_ARCHIV/BRAVO_MAINTENANCE — важливо на
+    # спільних серверах і при діагностиці "чому lock не звільняється".
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveScriptText.Contains("processStartTime = ") -and
+            $archiveScriptText.Contains("hostname = [Environment]::MachineName") -and
+            $archiveScriptText.Contains('operation = "Archive"') -and
+            $archiveScriptText.Contains("packageVersion = [string]`$ScriptVersion") -and
+            $maintenanceScriptText.Contains("processStartTime = ") -and
+            $maintenanceScriptText.Contains("hostname = [Environment]::MachineName") -and
+            $maintenanceScriptText.Contains('operation = "Maintenance"') -and
+            $maintenanceScriptText.Contains("packageVersion = [string]`$script:ScriptVersion")
+        ) `
+        -Name "Scheduler/OperationLockMetadata" `
+        -Failure "BRAVO_OPERATION.lock має містити pid/processStartTime/hostname/operation/packageVersion (JSON), а не лише голий PID/Started/Config"
     Test-BRAVOCondition `
         -Condition ([bool]$schedulerSettings.RequireProtectedRuntime) `
         -Name "Scheduler/ProtectedRuntime" `
@@ -1237,6 +1342,29 @@ try {
         -Condition (-not $credentialsSetupText.Contains('function Import-BRAVOConfiguration')) `
         -Name "ConfigurationLoader/CredentialsSetupNoNameCollision" `
         -Failure "локальний wrapper credentials-утиліти не повинен збігатися за ім'ям із Import-BravoConfiguration"
+
+    # P2.4 аудиту: SECURITY.md — обов'язковий, легко забути оновити після
+    # security-релевантних змін. Перевіряємо лише структуру (розділи є),
+    # не зміст — зміст неможливо валідувати автоматично.
+    $securityDocPath = Join-Path $root "SECURITY.md"
+    Test-BRAVOCondition `
+        -Condition (Test-Path -LiteralPath $securityDocPath -PathType Leaf) `
+        -Name "Documentation/SecurityMdExists" `
+        -Failure "SECURITY.md має існувати в корені репозиторію"
+    if (Test-Path -LiteralPath $securityDocPath -PathType Leaf) {
+        $securityDocText = [IO.File]::ReadAllText($securityDocPath, [Text.Encoding]::UTF8)
+        Test-BRAVOCondition `
+            -Condition (
+                $securityDocText.Contains("Підтримувані версії") -and
+                $securityDocText.Contains("Порядок повідомлення про вразливості") -and
+                $securityDocText.Contains("Модель секретів") -and
+                $securityDocText.Contains("Модель довіри до Tools") -and
+                $securityDocText.Contains("Модель ACL") -and
+                $securityDocText.Contains("Обмеження Credential Manager")
+            ) `
+            -Name "Documentation/SecurityMdCoversRequiredSections" `
+            -Failure "SECURITY.md має покривати підтримувані версії, порядок повідомлення про вразливості, модель секретів/Tools/ACL і обмеження Credential Manager"
+    }
 
     $legacyEntryPoints = @(
         'ARCHIV_VETOFFICE.ps1',

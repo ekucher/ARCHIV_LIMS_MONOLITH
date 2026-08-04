@@ -125,7 +125,7 @@ try {
         throw "У BRAVO.config відсутня або не заповнена секція pathSettings"
     }
 } catch {
-    Write-Host "ПОМИЛКА читання конфігурації '$ConfigPath': $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "ПОМИЛКА читання конфігурації '$ConfigPath': $(Protect-BRAVOLogSecret -Text $_.Exception.Message)" -ForegroundColor Red
     exit 30
 }
 
@@ -287,7 +287,7 @@ if ($SlackMode -ne "none") {
             throw "запис Credential Manager '$notificationCredentialTarget' не знайдено або він порожній для $([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
         }
     } catch {
-        $NotificationCredentialError = $_.Exception.Message
+        $NotificationCredentialError = Protect-BRAVOLogSecret -Text $_.Exception.Message
     }
 }
 
@@ -313,7 +313,7 @@ try {
         throw "пароль архівів не може містити символи нового рядка"
     }
 } catch {
-    $ArchiveCredentialError = $_.Exception.Message
+    $ArchiveCredentialError = Protect-BRAVOLogSecret -Text $_.Exception.Message
 }
 
 $RangeIdMonitoringEnabled = [System.Convert]::ToBoolean($MaintenanceConfig.RangeIdMonitoring.Enabled)
@@ -704,12 +704,22 @@ function Enter-BRAVOMaintenanceOperationLock {
         if ($null -eq $stream) {
             throw "lock не звільнився за $waitMinutes хв.: $lastLockError"
         }
-        $lockText = (
-            "Operation=Maintenance; PID={0}; Started={1}; Config={2}" -f
-            $PID,
-            (Get-Date).ToString("o"),
-            $ConfigPath
-        )
+        # JSON замість "Operation=...; PID=...; Started=..." (аудит P1.8):
+        # той самий формат, що й у спільному lock з Archive.Runtime.ps1.
+        $lockProcessStartTime = try {
+            (Get-Process -Id $PID -ErrorAction Stop).StartTime.ToString("o")
+        } catch {
+            $null
+        }
+        $lockText = ([pscustomobject]@{
+            pid = $PID
+            processStartTime = $lockProcessStartTime
+            hostname = [Environment]::MachineName
+            operation = "Maintenance"
+            startedAt = (Get-Date).ToString("o")
+            packageVersion = [string]$script:ScriptVersion
+            config = $ConfigPath
+        } | ConvertTo-Json -Compress)
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($lockText)
         $stream.SetLength(0)
         $stream.Write($bytes, 0, $bytes.Length)

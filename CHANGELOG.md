@@ -2,6 +2,63 @@
 
 ## 4.2.13 — 2026-08-04
 
+- P2.4 з плану виправлень: додано `SECURITY.md` — підтримувані версії
+  (продукт і ОС/PowerShell), порядок повідомлення про вразливості, модель
+  секретів (Credential Manager, `Protect-BRAVOLogSecret`, очищення
+  script-scope змінних), модель довіри до Tools (TOFU, чесно
+  задокументовані відсутні Authenticode/Fail-режим/підписані завдання),
+  модель ACL, обмеження Credential Manager (прив'язка до облікового
+  запису, відсутність gMSA), політика оновлення. Документ описує
+  фактичний поточний стан, включно з відомими незакритими прогалинами —
+  не видає заплановане за вже реалізоване. Секції SLA/контакту для
+  повідомлення про вразливості лишено як явний placeholder для власника
+  репозиторію. Додано self-test `Documentation/SecurityMdExists` і
+  `Documentation/SecurityMdCoversRequiredSections`.
+
+- P1.6 з плану виправлень (`ARCHIV_LIMS_MONOLITH_AUDIT_FIXES.md`): Health
+  тепер окремо повертає `LocalVerified`/`SftpVerified`/`SmbVerified` у
+  result object (усі 7 гілок `return Complete-BRAVOHealthResult`), а не
+  лише агрегований `Status`/`IssueCount` — зовнішній моніторинг більше не
+  втрачає деталізацію "локальні копії в порядку, а SFTP деградував" за
+  єдиним `Status = "Critical"`. Кожен напрямок обчислюється незалежним
+  викликом (`Get-BackupHealthIssues`/`Get-BAZALocalHealthIssues`/
+  `Get-SFTPHealthIssues`/`Get-SMBHealthIssues`) — жоден не перериває
+  виконання інших при відмові, тому сам механізм перевірок не
+  редагувався, лише додано `Get-BRAVOHealthDestinationSummary`, яка
+  зводить уже наявні незалежні списки issues у три прапорці. Додано
+  self-test `Health/DestinationSummaryAlgorithm` (функціональний, на
+  синтетичних issues) і `Health/DestinationSummaryWiredIntoAllResults`
+  (текстовий, підтверджує підключення до всіх 7 місць повернення).
+
+- P1.8 з плану виправлень (`ARCHIV_LIMS_MONOLITH_AUDIT_FIXES.md`):
+  `BRAVO_OPERATION.lock` (спільний exclusive-lock Archive/Maintenance)
+  тепер містить структуровані JSON-метадані замість голого
+  `"PID=...; Started=...; Config=..."`: `pid`, `processStartTime`
+  (реальний час старту процесу з `Get-Process`, не лише PID — відрізняє
+  той самий PID, перевикористаний після перезавантаження сервера, від
+  справді активного запуску), `hostname`, `operation`
+  (`Archive`/`Maintenance`), `startedAt`, `packageVersion`, `config`.
+  Сам механізм lock не змінено — це вже реальний ексклюзивний файловий
+  handle (`FileShare.None`), який Windows звільняє автоматично при
+  аварійному завершенні процесу, тому окремої перевірки "живий PID перед
+  видаленням stale lock" не було потрібно, на відміну від класичних
+  PID-файлів. Додано self-test `Scheduler/OperationLockMetadata`.
+
+- P1.9 з плану виправлень (`ARCHIV_LIMS_MONOLITH_AUDIT_FIXES.md`):
+  катастрофи ErrorRecord навколо завантаження `BRAVO.config` і читання
+  Credential Manager (SFTP/SMB/архів/webhook) в Archive/Health/Maintenance
+  друкували `$_.Exception.Message` через `Write-Host`/`Write-Error`
+  напряму в консоль, минаючи єдину точку масковки секретів
+  (`Write-Log`/`Write-BRAVOLog`/`Write-HealthLog`, яка вже маскує
+  `Protect-BRAVOLogSecret`). Тепер ці catch-блоки маскують повідомлення
+  винятку одразу при захопленні — так безпечним лишається кожне подальше
+  читання відповідних script-scope змінних (`credentialInitializationError`,
+  `archiveCredentialInitializationError`, `smbCredentialInitializationError`,
+  `notificationCredentialInitializationError`,
+  `ArchiveCredentialError`/`NotificationCredentialError` у Maintenance), а
+  не лише перший вивід. Додано self-test
+  `Runtime/CredentialAndConfigErrorsMaskedAtCapture`.
+
 - P1.10 з плану виправлень (`ARCHIV_LIMS_MONOLITH_AUDIT_FIXES.md`):
   `hostInformationSettings.PublicIPLookupEnabled` у `BRAVO.config` тепер
   `$false` за замовчуванням — раніше кожен запуск Health/Maintenance

@@ -97,7 +97,7 @@ try {
     $configPath = [string]$global:BravoConfigurationMetadata.ConfigPath
     Write-Host "Конфiгурацiю завантажено успiшно: $configPath" -ForegroundColor $logColors.SUCCESS
 } catch {
-    Write-Host "ПОМИЛКА: Не вдалося завантажити конфiгурацiю: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "ПОМИЛКА: Не вдалося завантажити конфiгурацiю: $(Protect-BRAVOLogSecret -Text $_.Exception.Message)" -ForegroundColor Red
     Exit 1
 }
 
@@ -207,20 +207,25 @@ if ($institutionSettingsRequired -or
         }
         $credentialHelperLoaded = $true
     } catch {
+        # Маскується одразу при захопленні (а не лише при виведенні), щоб
+        # жодне подальше читання цих script-scope змінних — консоль, лог,
+        # повідомлення — не могло випадково пропустити секрет, який .NET
+        # інколи вбудовує прямо в текст виключення Credential Manager.
+        $sanitizedCredentialError = Protect-BRAVOLogSecret -Text $_.Exception.Message
         if ($sftpCredentialRequired) {
-            $script:credentialInitializationError = $_.Exception.Message
+            $script:credentialInitializationError = $sanitizedCredentialError
         }
         if ($archiveCredentialRequired) {
-            $script:archiveCredentialInitializationError = $_.Exception.Message
+            $script:archiveCredentialInitializationError = $sanitizedCredentialError
         }
         if ($smbCredentialRequired) {
-            $script:smbCredentialInitializationError = $_.Exception.Message
+            $script:smbCredentialInitializationError = $sanitizedCredentialError
         }
         if ($institutionSettingsRequired) {
-            $script:institutionSettingsInitializationError = $_.Exception.Message
+            $script:institutionSettingsInitializationError = $sanitizedCredentialError
         }
         if ($notificationCredentialRequired) {
-            $script:notificationCredentialInitializationError = $_.Exception.Message
+            $script:notificationCredentialInitializationError = $sanitizedCredentialError
         }
     }
 }
@@ -231,7 +236,7 @@ if ($credentialHelperLoaded) {
             -CredentialSettings $credentialSettings `
             -BravoSettings $bravoSettings)
     } catch {
-        Write-Host "ПОМИЛКА: Некоректні локальні параметри установи у Credential Manager: $($_.Exception.Message)" `
+        Write-Host "ПОМИЛКА: Некоректні локальні параметри установи у Credential Manager: $(Protect-BRAVOLogSecret -Text $_.Exception.Message)" `
             -ForegroundColor $logColors.ERROR
         exit 1
     }
@@ -255,7 +260,7 @@ if ($credentialHelperLoaded -and $archiveCredentialRequired) {
             throw "запис Credential Manager '$archiveCredentialTarget' не знайдено або він порожній для $([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
         }
     } catch {
-        $script:archiveCredentialInitializationError = $_.Exception.Message
+        $script:archiveCredentialInitializationError = Protect-BRAVOLogSecret -Text $_.Exception.Message
     }
 }
 
@@ -294,7 +299,7 @@ if ($credentialHelperLoaded -and $sftpCredentialRequired) {
         $storedSftpLogin = $null
         $storedSftpPassword = $null
     } catch {
-        $script:credentialInitializationError = $_.Exception.Message
+        $script:credentialInitializationError = Protect-BRAVOLogSecret -Text $_.Exception.Message
     }
 }
 
@@ -327,7 +332,7 @@ if ($credentialHelperLoaded -and $smbCredentialRequired) {
         $storedSmbPassword = $null
         $secureSmbPassword = $null
     } catch {
-        $script:smbCredentialInitializationError = $_.Exception.Message
+        $script:smbCredentialInitializationError = Protect-BRAVOLogSecret -Text $_.Exception.Message
     }
 }
 
@@ -353,7 +358,7 @@ if ($credentialHelperLoaded -and $notificationCredentialRequired) {
             throw "запис Credential Manager '$notificationCredentialTarget' не знайдено або він порожній для $([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
         }
     } catch {
-        $script:notificationCredentialInitializationError = $_.Exception.Message
+        $script:notificationCredentialInitializationError = Protect-BRAVOLogSecret -Text $_.Exception.Message
     }
 }
 
@@ -3117,12 +3122,25 @@ function Enter-BRAVOArchiveProcessLock {
         if ($null -eq $lockStream) {
             throw "lock не звільнився за $waitMinutes хв.: $lastLockError"
         }
-        $lockText = (
-            "PID={0}; Started={1}; Config={2}" -f
-            $PID,
-            (Get-Date).ToString("o"),
-            $configPath
-        )
+        # JSON замість "PID=...; Started=..." (аудит P1.8): processStartTime і
+        # hostname дають змогу відрізнити той самий PID, перевикористаний
+        # іншим процесом після перезавантаження, від справді активного
+        # BRAVO_ARCHIV, а operation — з якого runtime взято спільний lock
+        # (його ділять Archive і Maintenance).
+        $lockProcessStartTime = try {
+            (Get-Process -Id $PID -ErrorAction Stop).StartTime.ToString("o")
+        } catch {
+            $null
+        }
+        $lockText = ([pscustomobject]@{
+            pid = $PID
+            processStartTime = $lockProcessStartTime
+            hostname = [Environment]::MachineName
+            operation = "Archive"
+            startedAt = (Get-Date).ToString("o")
+            packageVersion = [string]$ScriptVersion
+            config = $configPath
+        } | ConvertTo-Json -Compress)
         $lockBytes = [System.Text.Encoding]::UTF8.GetBytes($lockText)
         $lockStream.SetLength(0)
         $lockStream.Write($lockBytes, 0, $lockBytes.Length)
