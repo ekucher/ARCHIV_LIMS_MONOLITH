@@ -2222,8 +2222,22 @@ function Check-MdFileSizes {
     Write-Log "=== ПЕРЕВІРКА РОЗМІРІВ .MD ФАЙЛІВ ==="
     Write-Log "Перевірка розмірів файлів .md..." -Level "INFO"
     
-    $oversizedFiles = @(Get-ChildItem -Path $MODEL_PATH -Recurse -Filter *.md |
-        Where-Object { $_.Length -gt $MAX_MD_FILE_SIZE })
+    # [IO.DirectoryInfo]::EnumerateFiles замість Get-ChildItem -Recurse: на
+    # непатчених білдах Windows Server 2016 (RTM, без Cumulative Update)
+    # рекурсивний PowerShell-провайдер FileSystemProvider.Dir падає з
+    # AccessViolationException у clr.dll на великих деревах каталогів.
+    # Пряме звернення до .NET минає цей шар і дає ті самі об'єкти FileInfo.
+    $modelDirectoryInfo = New-Object System.IO.DirectoryInfo($MODEL_PATH)
+    $oversizedFiles = @(
+        $modelDirectoryInfo.EnumerateFiles('*.md', [System.IO.SearchOption]::AllDirectories) |
+        Where-Object {
+            # EnumerateFiles, на відміну від Get-ChildItem без -Force, не
+            # пропускає приховані й системні файли — фільтруємо їх самі,
+            # щоб не змінити поведінку.
+            ($_.Attributes -band ([IO.FileAttributes]::Hidden -bor [IO.FileAttributes]::System)) -eq 0 -and
+            $_.Length -gt $MAX_MD_FILE_SIZE
+        }
+    )
     $largeFiles = @()
     $excludedFiles = @()
 
@@ -2916,7 +2930,15 @@ if ($BravoMaintenanceEnabled -and $bravoStatus -ne "Running") {
             
             if ($CheckSize) {
                 Write-Log -Message "Збереження розмірів файлів перед реставрацією..." -Level "INFO"
-                $initialSizes = Get-BRAVOFiles -Path $MODEL_PATH -Recurse |
+                # Той самий обхід провайдерного шару PowerShell, що й у
+                # Check-MdFileSizes. EnumerateFiles не пропускає приховані й
+                # системні файли, тому фільтруємо їх самі — Get-BRAVOFiles
+                # без -Force теж їх виключав.
+                $modelSizeDirectoryInfo = New-Object System.IO.DirectoryInfo($MODEL_PATH)
+                $initialSizes = $modelSizeDirectoryInfo.EnumerateFiles('*', [System.IO.SearchOption]::AllDirectories) |
+                    Where-Object {
+                        ($_.Attributes -band ([IO.FileAttributes]::Hidden -bor [IO.FileAttributes]::System)) -eq 0
+                    } |
                     ForEach-Object {
                         [PSCustomObject]@{
                             RelativePath = $_.FullName.Replace($MODEL_PATH, "").TrimStart('\')
