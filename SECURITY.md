@@ -158,13 +158,40 @@ manifest із хешами файлів — цілісність самого re
 
 - Threat model (активи, конкретні вектори атак) — окремий документ,
   наразі не існує (аудит P2.5).
-- CI/CD-контроль якості (PSScriptAnalyzer, secret scanning, обов'язковий
-  gate перед merge, required status checks на `master`) — наразі не
-  існує (аудит P0.1); `BRAVO_SELF_TEST.ps1` запускається вручну перед
-  комітом/релізом, і жодна автоматика зараз не підтверджує це незалежно
-  від автора зміни.
 - SFTP/SMB key-based автентифікація, `AppLocker`/`WDAC`, `gMSA` — не
   реалізовано.
+- GitHub branch protection (required status checks, заборона прямого
+  push у `master`) — CI (розділ нижче) існує й запускається на кожен
+  push/PR, але поки що нічого не заважає змержити чи запушити повз
+  зелений статус, доки власник репозиторію не увімкне branch protection
+  вручну в налаштуваннях GitHub.
+
+## 8.1. CI (аудит AUD-001)
+
+GitHub Actions (`.github/workflows/ci.yml`), раннер `windows-latest`
+(проєкт цільово Windows PowerShell 5.1, не PowerShell 7 — між ними вже
+траплялись реальні поведінкові розбіжності в цьому репозиторії), запуск
+на кожен push і PR у `master`/`developer`:
+
+- парсинг усіх `.ps1`/`.psm1`/`.psd1` (`static-checks`);
+- UTF-8 BOM обов'язковий для `.ps1`/`.psm1`/`.psd1`, заборонений для
+  `.md` (та сама конвенція, що вручну підтримувалась досі);
+- валідність усіх JSON-файлів (`VERSION.json` тощо);
+- `PSScriptAnalyzer` — блокує на `Severity=Error`; `Warning`/
+  `Information` лише інформаційні (кілька правил навмисно виключено —
+  `PSAvoidUsingWriteHost`/`PSAvoidGlobalVars` суперечать усталеній
+  архітектурі репозиторію; `PSAvoidUsingConvertToSecureStringWithPlainText`
+  і `PSAvoidUsingUsernameAndPasswordParams` — секрет уже прочитаний із
+  Credential Manager, конвертація в `SecureString`/побудова SFTP URL —
+  необхідний міст до .NET API, а не хардкод секрету; жодне з цього не є
+  недоглядом);
+- повний `BRAVO_SELF_TEST.ps1`;
+- сканування секретів (`gitleaks`, окрема Linux-джоба — самому
+  скануванню вмісту git-історії ОС не важлива).
+
+**Явно НЕ ввімкнено:** required status checks і заборона прямого push у
+`master` (GitHub branch protection) — CI лише запускається й показує
+статус, але поки не блокує merge технічно.
 
 ## 9. Пов'язані документи
 

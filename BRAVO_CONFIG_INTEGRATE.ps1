@@ -1,4 +1,4 @@
-#requires -Version 3.0
+﻿#requires -Version 3.0
 
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
