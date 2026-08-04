@@ -844,7 +844,28 @@ function Remove-OldBackupSets {
 
         # Зберігання коректних комплектів визначається календарним віком, а не
         # кількістю запусків: додатковий ручний бекап не скорочує строк зберігання.
-        $setsToDelete = @($validSets | Where-Object {
+        #
+        # Інваріант (аудит P1.7): retention, прив'язаний лише до днів, міг
+        # видалити останні перевірені покоління після серії невдалих backup,
+        # якщо всі valid-комплекти виявлялись старшими за cutoff. $validSets
+        # уже відсортовано за спаданням LastWriteTime (найновіші перші), тому
+        # Select-Object -Skip лишає N найновіших недоторканими незалежно від
+        # їхнього віку.
+        $minimumRetainedCount = if ($null -ne $minimumRetainedVerifiedBackups -and
+            [int]$minimumRetainedVerifiedBackups -gt 0) {
+            [int]$minimumRetainedVerifiedBackups
+        } else {
+            1
+        }
+        $protectedSets = @($validSets | Select-Object -First $minimumRetainedCount)
+        $deletionCandidates = @($validSets | Select-Object -Skip $minimumRetainedCount)
+        $protectedFromExpiry = @($protectedSets | Where-Object {
+            $_.Archive.LastWriteTime -lt $validCutoff
+        })
+        foreach ($protectedSet in $protectedFromExpiry) {
+            Write-BRAVOLog -Component 'CLEANUP' -Message "Комплект ${Component} старший за $validRetentionDays днів, але збережений — це одна з останніх $minimumRetainedCount перевірених копій: $($protectedSet.Archive.Name)" -Level "WARNING"
+        }
+        $setsToDelete = @($deletionCandidates | Where-Object {
             $_.Archive.LastWriteTime -lt $validCutoff
         })
         foreach ($set in $setsToDelete) {
