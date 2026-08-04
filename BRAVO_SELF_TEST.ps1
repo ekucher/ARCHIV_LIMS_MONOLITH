@@ -143,6 +143,32 @@ try {
             )) `
         -Name "Compatibility/ImportHasNoConsoleSideEffects" `
         -Failure "імпорт Compatibility не повинен змінювати global OutputEncoding"
+    $staleHotfix = [pscustomobject]@{ InstalledOn = (Get-Date).AddDays(-400) }
+    $stalePatchLevel = Get-BRAVOWindowsPatchLevelRecommendation `
+        -InstalledHotfixes @($staleHotfix) `
+        -Now (Get-Date) `
+        -StaleAfterDays 120
+    $freshHotfix = [pscustomobject]@{ InstalledOn = (Get-Date).AddDays(-10) }
+    $freshPatchLevel = Get-BRAVOWindowsPatchLevelRecommendation `
+        -InstalledHotfixes @($freshHotfix) `
+        -Now (Get-Date) `
+        -StaleAfterDays 120
+    $noDataPatchLevel = Get-BRAVOWindowsPatchLevelRecommendation `
+        -InstalledHotfixes @() `
+        -StaleAfterDays 120
+    Test-BRAVOCondition `
+        -Condition (
+            $stalePatchLevel.IsUpdateRecommended -and
+            $stalePatchLevel.DaysSinceLastUpdate -eq 400 -and
+            -not [string]::IsNullOrWhiteSpace([string]$stalePatchLevel.Message) -and
+            -not $freshPatchLevel.IsUpdateRecommended -and
+            $null -eq $freshPatchLevel.Message -and
+            $noDataPatchLevel.IsUpdateRecommended -and
+            -not [string]::IsNullOrWhiteSpace([string]$noDataPatchLevel.Message)
+        ) `
+        -Name "Compatibility/WindowsPatchLevelRecommendation" `
+        -Failure "рекомендація оновити Windows має спрацьовувати лише для застарілого рівня патчів і не хибити на свіжій системі"
+
     $insecureWebhookRejected = $false
     try {
         Send-BRAVOWebhookNotification `
@@ -915,6 +941,33 @@ try {
         ) `
         -Name "Runtime/SharedCompatibilityAndCredentials" `
         -Failure "archive та maintenance мають використовувати спільні compatibility/credentials замість вбудованих копій"
+    $healthScriptTextForPatchLevel = [IO.File]::ReadAllText(
+        (Join-Path $root "modules\BRAVO.Health\BRAVO.Health.Runtime.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    $credentialsSetupTextForPatchLevel = [IO.File]::ReadAllText(
+        (Join-Path $root "BRAVO_CREDENTIALS_SETUP.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    $tasksInstallTextForPatchLevel = [IO.File]::ReadAllText(
+        (Join-Path $root "BRAVO_TASKS_INSTALL.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    $tasksUninstallTextForPatchLevel = [IO.File]::ReadAllText(
+        (Join-Path $root "BRAVO_TASKS_UNINSTALL.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveScriptText.Contains("Get-BRAVOWindowsPatchLevelRecommendation") -and
+            $maintenanceScriptText.Contains("Get-BRAVOWindowsPatchLevelRecommendation") -and
+            $healthScriptTextForPatchLevel.Contains("Get-BRAVOWindowsPatchLevelRecommendation") -and
+            $credentialsSetupTextForPatchLevel.Contains("Get-BRAVOWindowsPatchLevelRecommendation") -and
+            $tasksInstallTextForPatchLevel.Contains("Get-BRAVOWindowsPatchLevelRecommendation") -and
+            $tasksUninstallTextForPatchLevel.Contains("Get-BRAVOWindowsPatchLevelRecommendation")
+        ) `
+        -Name "Runtime/SharedWindowsPatchLevelRecommendation" `
+        -Failure "усі точки входу мають попереджати про застарілий рівень оновлень Windows"
     $archiveRuntimeText = [IO.File]::ReadAllText(
         (Join-Path $root "modules\BRAVO.ArchiveRuntime\BRAVO.ArchiveRuntime.psm1"),
         [Text.Encoding]::UTF8

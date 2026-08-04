@@ -42,6 +42,7 @@ Assert-BRAVOPowerShellCompatibility
 [void](Initialize-BRAVOConsoleEncoding -CodePage 65001)
 $script:BRAVOCompatibility = Get-BRAVOCompatibilityInfo
 $script:BRAVOPowerShellUpdate = Get-BRAVOPowerShellUpdateRecommendation
+$script:BRAVOWindowsPatchLevel = Get-BRAVOWindowsPatchLevelRecommendation
 $notificationHelpersPath = Join-Path $bravoScriptDirectory 'modules\BRAVO.Notifications\BRAVO.Notifications.psd1'
 if (-not (Test-Path -LiteralPath $notificationHelpersPath -PathType Leaf)) {
     throw "Не знайдено PowerShell-модуль notifications: $notificationHelpersPath"
@@ -3375,6 +3376,9 @@ Write-HealthLog "Сумісність: Windows $($BRAVOCompatibility.WindowsVers
 Write-HealthLog "Каталог резервних копій: $backupRootPath"
 if ($BRAVOPowerShellUpdate.IsUpdateRecommended) {
     Write-HealthLog $BRAVOPowerShellUpdate.Message -Level "WARNING"
+}
+if ($BRAVOWindowsPatchLevel.IsUpdateRecommended) {
+    Write-HealthLog $BRAVOWindowsPatchLevel.Message -Level "WARNING"
 }
 $bazaLocalMode = if ($bazaLocalHealthEnabled) { "увімкнено" } else { "вимкнено" }
 $bazaSFTPMode = if ($bazaSFTPHealthEnabled) { "увімкнено" } else { "вимкнено" }

@@ -35,6 +35,7 @@ Assert-BRAVOPowerShellCompatibility
 [void](Initialize-BRAVOConsoleEncoding -CodePage 65001)
 $script:BRAVOCompatibility = Get-BRAVOCompatibilityInfo
 $script:BRAVOPowerShellUpdate = Get-BRAVOPowerShellUpdateRecommendation
+$script:BRAVOWindowsPatchLevel = Get-BRAVOWindowsPatchLevelRecommendation
 $archiveHelpersPath = Join-Path $bravoScriptDirectory 'modules\BRAVO.ArchiveHelpers\BRAVO.ArchiveHelpers.psd1'
 if (-not (Test-Path -LiteralPath $archiveHelpersPath -PathType Leaf)) {
     throw "Не знайдено PowerShell-модуль archive helpers: $archiveHelpersPath"
@@ -398,8 +399,10 @@ function Test-Compatibility {
     Write-BRAVOLog -Component 'STARTUP' -Message "Перевiрка сумiсностi системи..." -Level "INFO"
     $compatibility = Get-BRAVOCompatibilityInfo
     $powerShellUpdate = Get-BRAVOPowerShellUpdateRecommendation
+    $windowsPatchLevel = Get-BRAVOWindowsPatchLevelRecommendation
     $script:BRAVOCompatibility = $compatibility
     $script:BRAVOPowerShellUpdate = $powerShellUpdate
+    $script:BRAVOWindowsPatchLevel = $windowsPatchLevel
 
     $script:hasFileHash = $compatibility.FileHashProvider -eq "Get-FileHash"
     $script:hasNetConnection = $compatibility.NetworkProvider -eq "Test-NetConnection"
@@ -415,6 +418,9 @@ function Test-Compatibility {
     }
     if ($powerShellUpdate.IsUpdateRecommended) {
         Write-BRAVOLog -Component 'STARTUP' -Message $powerShellUpdate.Message -Level "WARNING"
+    }
+    if ($windowsPatchLevel.IsUpdateRecommended) {
+        Write-BRAVOLog -Component 'STARTUP' -Message $windowsPatchLevel.Message -Level "WARNING"
     }
 
     return $compatibility

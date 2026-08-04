@@ -35,12 +35,16 @@ try {
     [void](Initialize-BRAVOConsoleEncoding -CodePage 65001)
     $script:BRAVOCompatibility = Get-BRAVOCompatibilityInfo
     $script:BRAVOPowerShellUpdate = Get-BRAVOPowerShellUpdateRecommendation
+    $script:BRAVOWindowsPatchLevel = Get-BRAVOWindowsPatchLevelRecommendation
 } catch {
     Write-Error "Помилка сумісності: $($_.Exception.Message)"
     Complete-BRAVOHelperLog -ExitCode 1
 }
 if ($BRAVOPowerShellUpdate.IsUpdateRecommended) {
     Write-Warning $BRAVOPowerShellUpdate.Message
+}
+if ($BRAVOWindowsPatchLevel.IsUpdateRecommended) {
+    Write-Warning $BRAVOWindowsPatchLevel.Message
 }
 
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {

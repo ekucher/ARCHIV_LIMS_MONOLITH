@@ -34,6 +34,7 @@ Assert-BRAVOPowerShellCompatibility
 [void](Initialize-BRAVOConsoleEncoding -CodePage 65001)
 $script:BRAVOCompatibility = Get-BRAVOCompatibilityInfo
 $script:BRAVOPowerShellUpdate = Get-BRAVOPowerShellUpdateRecommendation
+$script:BRAVOWindowsPatchLevel = Get-BRAVOWindowsPatchLevelRecommendation
 $notificationHelpersPath = Join-Path $bravoScriptDirectory 'modules\BRAVO.Notifications\BRAVO.Notifications.psd1'
 if (-not (Test-Path -LiteralPath $notificationHelpersPath -PathType Leaf)) {
     throw "Не знайдено PowerShell-модуль notifications: $notificationHelpersPath"
@@ -2647,6 +2648,9 @@ Write-Log -Message "Конфігурація: $ConfigPath" -NoTimestamp
 Write-Log -Message "Сумісність: Windows $($BRAVOCompatibility.WindowsVersion); PowerShell $($BRAVOCompatibility.PowerShellVersion); WMI=$($BRAVOCompatibility.WmiProvider); Hash=$($BRAVOCompatibility.FileHashProvider); Files=$($BRAVOCompatibility.ChildItemProvider)" -NoTimestamp
 if ($BRAVOPowerShellUpdate.IsUpdateRecommended) {
     Write-Log -Message $BRAVOPowerShellUpdate.Message -Level "WARNING"
+}
+if ($BRAVOWindowsPatchLevel.IsUpdateRecommended) {
+    Write-Log -Message $BRAVOWindowsPatchLevel.Message -Level "WARNING"
 }
 Write-Log -Message "Перевірка вільного місця: усі локальні диски; виключення: $freeSpaceExclusionsText" -NoTimestamp
 if ($BravoMaintenanceEnabled -and $RangeIdMonitoringEnabled) {

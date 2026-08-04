@@ -347,6 +347,100 @@ function Get-BRAVOPowerShellUpdateRecommendation {
     }
 }
 
+function Get-BRAVOWindowsPatchLevelRecommendation {
+    [CmdletBinding()]
+    param(
+        # Дозволяє підставити тестові дані замість реального Get-HotFix.
+        [object[]]$InstalledHotfixes,
+
+        [datetime]$Now = (Get-Date),
+
+        # Скільки днів без оновлень вважати приводом для попередження.
+        # Не привʼязано до конкретних KB чи дат випуску Microsoft, тому
+        # перевірка лишається чинною без ручного супроводу цього коду.
+        [ValidateRange(1, 3650)]
+        [int]$StaleAfterDays = 120
+    )
+
+    $osVersion = [Environment]::OSVersion.Version
+    $osCaption = $null
+    $updateBuildRevision = $null
+    try {
+        $currentVersionKey = Get-ItemProperty `
+            -LiteralPath "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" `
+            -ErrorAction Stop
+        $osCaption = [string]$currentVersionKey.ProductName
+        if ($null -ne $currentVersionKey.UBR) {
+            $updateBuildRevision = [int]$currentVersionKey.UBR
+        }
+    } catch {
+        $osCaption = [Environment]::OSVersion.VersionString
+    }
+    $buildDescription = if ($null -ne $updateBuildRevision) {
+        "{0}.{1}" -f $osVersion.Build, $updateBuildRevision
+    } else {
+        [string]$osVersion.Build
+    }
+
+    if ($null -eq $InstalledHotfixes) {
+        try {
+            $InstalledHotfixes = @(Get-HotFix -ErrorAction Stop)
+        } catch {
+            $InstalledHotfixes = @()
+        }
+    }
+    $lastInstalledOn = $InstalledHotfixes |
+        Where-Object { $null -ne $_.InstalledOn } |
+        Sort-Object -Property InstalledOn -Descending |
+        Select-Object -First 1 -ExpandProperty InstalledOn
+
+    if ($null -eq $lastInstalledOn) {
+        return New-Object PSObject -Property @{
+            IsUpdateRecommended = $true
+            LastInstalledOn = $null
+            DaysSinceLastUpdate = $null
+            OperatingSystem = $osCaption
+            Build = $buildDescription
+            Message = (
+                "Не вдалося визначити дату останнього оновлення Windows на цьому " +
+                "комп'ютері (ОС: $osCaption, білд $buildDescription). Перевірте " +
+                "історію оновлень вручну через Windows Update і встановіть " +
+                "найновіші оновлення, якщо давно цього не робили. Пакети " +
+                "завантажуйте лише з офіційного Microsoft Update Catalog " +
+                "(catalog.update.microsoft.com). Скрипт продовжує роботу, " +
+                "автоматичне встановлення не виконується."
+            )
+        }
+    }
+
+    $daysSinceLastUpdate = [int]($Now - $lastInstalledOn).TotalDays
+    $isStale = $daysSinceLastUpdate -gt $StaleAfterDays
+
+    $message = if ($isStale) {
+        (
+            "Останнє оновлення Windows встановлено {0:yyyy-MM-dd} ({1} дн. тому) " +
+            "на комп'ютері з ОС {2}, білд {3}. Застарілі накопичувальні оновлення " +
+            "підвищують ризик відомих і вже виправлених дефектів .NET/CLR " +
+            "(включно з аварійним завершенням powershell.exe під час рекурсивного " +
+            "обходу каталогів). Рекомендовано встановити найновіше кумулятивне " +
+            "оновлення через Windows Update або Microsoft Update Catalog " +
+            "(catalog.update.microsoft.com), після цього перезавантажити " +
+            "комп'ютер. Скрипт продовжує роботу, автоматичне встановлення не виконується."
+        ) -f $lastInstalledOn, $daysSinceLastUpdate, $osCaption, $buildDescription
+    } else {
+        $null
+    }
+
+    return New-Object PSObject -Property @{
+        IsUpdateRecommended = $isStale
+        LastInstalledOn = $lastInstalledOn
+        DaysSinceLastUpdate = $daysSinceLastUpdate
+        OperatingSystem = $osCaption
+        Build = $buildDescription
+        Message = $message
+    }
+}
+
 function Get-BRAVOWmiInstance {
     [CmdletBinding()]
     param(
