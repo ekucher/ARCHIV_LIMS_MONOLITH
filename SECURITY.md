@@ -180,14 +180,12 @@ GitHub Actions (`.github/workflows/ci.yml`), раннер `windows-latest`
 - UTF-8 BOM обов'язковий для `.ps1`/`.psm1`/`.psd1`, заборонений для
   `.md` (та сама конвенція, що вручну підтримувалась досі);
 - валідність усіх JSON-файлів (`VERSION.json` тощо);
-- `PSScriptAnalyzer` — блокує на `Severity=Error`; `Warning`/
-  `Information` лише інформаційні (кілька правил навмисно виключено —
-  `PSAvoidUsingWriteHost`/`PSAvoidGlobalVars` суперечать усталеній
-  архітектурі репозиторію; `PSAvoidUsingConvertToSecureStringWithPlainText`
-  і `PSAvoidUsingUsernameAndPasswordParams` — секрет уже прочитаний із
-  Credential Manager, конвертація в `SecureString`/побудова SFTP URL —
-  необхідний міст до .NET API, а не хардкод секрету; жодне з цього не є
-  недоглядом);
+- `PSScriptAnalyzer` — два проходи (деталі в розділі 8.2 нижче):
+  блокуючий security-набір із `PSScriptAnalyzerSettings.psd1` і
+  інформаційний прохід для решти правил;
+- заборонені патерни (`Invoke-Expression`, мережеве завантаження коду,
+  секрет в аргументах процесу, `ExecutionPolicy Bypass` поза
+  installer/task definitions) — розділ 8.2;
 - повний `BRAVO_SELF_TEST.ps1`;
 - сканування секретів (`gitleaks`, окрема Linux-джоба — самому
   скануванню вмісту git-історії ОС не важлива).
@@ -196,6 +194,66 @@ GitHub Actions (`.github/workflows/ci.yml`), раннер `windows-latest`
 `master` (GitHub branch protection) — CI лише запускається й показує
 статус, але поки не блокує merge технічно. Причина — не забутий крок, а
 обмеження тарифного плану GitHub (розділ 8 вище).
+
+## 8.2. Статичний аналіз: блокуючий security-набір
+
+**Проблема попередньої моделі (виправлено):** CI блокував лише
+`Severity=Error`, тоді як більшість корисних правил PSScriptAnalyzer
+повертає `Warning`. Додатково `PSAvoidUsingInvokeExpression`,
+`PSAvoidUsingConvertToSecureStringWithPlainText`,
+`PSAvoidUsingUsernameAndPasswordParams` та інші виключались **глобально**
+через `-ExcludeRule`. Навіть якщо кожне наявне місце мало пояснення,
+глобальний виняток означав, що **новий** небезпечний код у будь-якому
+файлі теж мовчки пройде CI.
+
+**Поточна модель** — `PSScriptAnalyzerSettings.psd1` у корені:
+
+1. **Блокуючий прохід** — рівно набір `IncludeRules` (секрети та облікові
+   дані, виконання довільного коду, hardcoded ComputerName, зламані
+   хеш-алгоритми, порівняння з `$null`, аліаси cmdlet). Жодне з цих
+   правил **не** виключається глобально. Кожне обґрунтоване місце має
+   точковий `[Diagnostics.CodeAnalysis.SuppressMessageAttribute]` із
+   полем `Justification` біля конкретної функції — видимий при код-рев'ю
+   разом зі змінами. Тому нове входження завалить CI, навіть якщо поруч
+   уже є легітимне обґрунтоване використання.
+2. **Інформаційний прохід** — усі інші правила, лише `::warning` без
+   блокування (`PSAvoidUsingWriteHost` для інтерактивної консолі
+   допоміжних скриптів, `PSAvoidGlobalVars` як контракт між
+   `BRAVO.config` і runtime-модулями — усталена архітектура, не
+   недогляд).
+
+Обґрунтовані suppressions на сьогодні (усі — секрет уже з Windows
+Credential Manager або необхідний міст до .NET/зовнішнього API, не
+хардкод у джерелі): `New-BRAVOPlainTextCredential`, `New-BRAVOSftpUrl`
+(`BRAVO.Credentials`); `Invoke-BRAVOSevenZipIntegrityTest`,
+`Invoke-BRAVOSevenZipExtraction` (`BRAVO.Compatibility`);
+`Test-SevenZipArchiveIntegrity` (`BRAVO.ArchiveHelpers`);
+`Read-SecretEntries`, `Restore-CredentialOperationSnapshots`
+(`BRAVO_CREDENTIALS_SETUP.ps1`); `Test-SftpReadOnlyAccess`,
+`Test-SmbReadOnlyAccess` (`BRAVO_DRY_RUN.ps1`). Плюс три suppressions
+для **хибних спрацювань** правила на параметрах, чия назва містить
+«Credential», але які не є секретом (`$CredentialSettings`,
+`$CredentialComponent`).
+
+**Окремий крок — заборонені патерни.** Те, чого PSScriptAnalyzer не
+ловить взагалі або ловить лише як AST (пропускаючи входження всередині
+рядків). Кожен пункт — те, чого в цьому репозиторії немає й не повинно
+з'явитись: `Invoke-Expression`/`iex`; мережеве завантаження коду
+(`DownloadString`, `DownloadFile`, `Net.WebClient`); секрет у
+`-ArgumentList` процесу; `ExecutionPolicy Bypass` поза allowlist із
+шести файлів, де він легітимний (перезапуск через UAC і визначення
+завдань Планувальника — розділ 4). Рядки-коментарі ігноруються (у
+репозиторії є приклади команд запуску в коментарях).
+
+**Регресія перевірена:** синтетичний файл із `ConvertTo-SecureString
+-AsPlainText`, `Invoke-Expression` і `[string]$Password` блокується
+всіма трьома відповідними правилами; синтетичний файл із чотирма
+забороненими патернами ловиться всіма чотирма, а той самий текст у
+коментарі — ігнорується.
+
+Повернення глобального виключення охороняється самотестом:
+`StaticAnalysis/SecurityRulesAreBlocking` і
+`StaticAnalysis/NoGlobalSecurityRuleExclusions`.
 
 ## 9. Пов'язані документи
 

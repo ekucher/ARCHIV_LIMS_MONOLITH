@@ -259,14 +259,11 @@ if ($smbCredentialRequired -and $credentialHelperLoaded) {
             throw "запис Credential Manager '$smbPasswordTarget' не знайдено або він порожній для $([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
         }
 
-        $secureSmbPassword = ConvertTo-SecureString -String ([string]$storedSmbPassword) -AsPlainText -Force
-        $script:smbCredential = New-Object System.Management.Automation.PSCredential(
-            [string]$storedSmbLogin,
-            $secureSmbPassword
-        )
+        $script:smbCredential = New-BRAVOPlainTextCredential `
+            -UserName ([string]$storedSmbLogin) `
+            -Password ([string]$storedSmbPassword)
         $storedSmbLogin = $null
         $storedSmbPassword = $null
-        $secureSmbPassword = $null
     } catch {
         $smbCredentialError = $_.Exception.Message
     }
@@ -2389,7 +2386,6 @@ function Get-SFTPHealthIssues {
                 }
             } elseif ($previewSummary.DifferenceCount -gt 0) {
                 if (-not (Test-BAZAPendingSynchronizationOverdue -PreviewSummary $previewSummary)) {
-                    $pendingAge = $healthCheckStarted - [datetime]$previewSummary.OldestLastWriteTime
                     Write-HealthLog (
                         "SFTP $($folderCheck.Name): штатна черга передачі " +
                         "$($previewSummary.DifferenceCount) об'єктів, найстаріший вік " +

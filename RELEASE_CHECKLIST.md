@@ -30,6 +30,12 @@
 - [ ] GitHub Actions CI (`.github/workflows/ci.yml`) зелений на коміті
       релізу — перевірте вкладку Actions перед тегуванням; CI не блокує
       merge технічно (немає branch protection), тому перевірка ручна.
+- [ ] Якщо PSScriptAnalyzer заблокував security-правило: додано
+      **точковий** `[Diagnostics.CodeAnalysis.SuppressMessageAttribute]`
+      із змістовним `Justification` біля конкретної функції — НЕ
+      глобальний `-ExcludeRule` у workflow і НЕ видалення правила з
+      `PSScriptAnalyzerSettings.psd1` (розділ 8.2 SECURITY.md).
+      Самотест це охороняє, але усвідомлюйте, що саме підписуєте.
 - [ ] Усі змінені `.ps1`/`.psm1`/`.psd1` з кирилицею збережені як UTF-8 З
       BOM (`[IO.File]::ReadAllBytes` перші 3 байти `EF BB BF`) —
       `BRAVO_SELF_TEST.ps1` перевіряє парсинг, але не сам факт BOM;

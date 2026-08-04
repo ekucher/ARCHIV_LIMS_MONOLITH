@@ -77,7 +77,7 @@ If (-not $isLocalSystem -and -not $currentPrincipal.IsInRole([Security.Principal
 [Net.ServicePointManager]::Expect100Continue = $false
 
 # Очистка терміналу
-clear
+Clear-Host
 
 # Стан lock-а операції обслуговування. Exit-BRAVOMaintenanceOperationLock
 # читає ці змінні у шляхах очищення, які можуть спрацювати ще до захоплення
@@ -505,7 +505,7 @@ if ($BravoWebComponentEnabled -and -not $ApacheService) {
     }
 }
 
-$ApacheServiceExists = ($ApacheService -ne $null)
+$ApacheServiceExists = ($null -ne $ApacheService)
 $BravoWebServiceDisabledBySystem = $false
 if ($ApacheServiceExists) {
     $cimStartMode = if ($ApacheServiceInfo) { [string]$ApacheServiceInfo.StartMode } else { "" }

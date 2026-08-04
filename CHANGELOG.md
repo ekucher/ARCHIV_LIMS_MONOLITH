@@ -2,6 +2,37 @@
 
 ## 4.3.0 — 2026-08-04
 
+- Аудит P1 (PSScriptAnalyzer майже не блокував небезпечні патерни):
+  CI блокував лише `Severity=Error`, а `PSAvoidUsingInvokeExpression`,
+  `PSAvoidUsingConvertToSecureStringWithPlainText`,
+  `PSAvoidUsingUsernameAndPasswordParams` та інші виключались
+  **глобально** — тобто новий небезпечний код у будь-якому файлі теж
+  мовчки проходив CI.
+  - Новий `PSScriptAnalyzerSettings.psd1`: явний блокуючий
+    security-набір (`IncludeRules`) + інформаційний прохід для решти.
+  - Глобальні `-ExcludeRule` для security-правил прибрані. Натомість
+    11 точкових `SuppressMessageAttribute` із `Justification` біля
+    конкретних функцій (плюс 3 для хибних спрацювань правила на
+    параметрах, чия назва містить «Credential», але які не є секретом).
+  - `New-BRAVOPlainTextCredential` (`BRAVO.Credentials`) — блок
+    `ConvertTo-SecureString` + `New-Object PSCredential` був
+    продубльований у Archive- і Health-runtime; тепер це одна функція з
+    одним точковим виключенням замість двох розсіяних.
+  - Новий CI-крок «Заборонені патерни»: `Invoke-Expression`/`iex`,
+    мережеве завантаження коду (`DownloadString`/`Net.WebClient`),
+    секрет у `-ArgumentList`, `ExecutionPolicy Bypass` поза allowlist
+    із шести файлів, де він легітимний. Коментарі ігноруються.
+  - PSScriptAnalyzer тепер обходить файли поодинці: окремі правила
+    здатні кинути `NullReferenceException` на конкретному файлі й
+    обірвати весь аналіз, замаскувавши решту знахідок.
+  - Побічно виправлено знайдене цим набором: `clear` → `Clear-Host` і
+    `$x -ne $null` → `$null -ne $x` (Maintenance), два мертвих
+    присвоєння (`$compatibilityIssues` в Archive, `$pendingAge` в
+    Health).
+  - Самотест: `StaticAnalysis/SecurityRulesAreBlocking`,
+    `StaticAnalysis/NoGlobalSecurityRuleExclusions` та ще три —
+    охороняють від повернення глобальних виключень.
+
 - Внутрішній код-рев'ю, рефакторинг: `Get-SanitizedWinSCPDiagnostic`
   (маскування паролю/host key у діагностиці WinSCP.com) перенесено зі
   `BRAVO.Archive.Runtime.ps1` у спільний `BRAVO.ArchiveRuntime` — раніше

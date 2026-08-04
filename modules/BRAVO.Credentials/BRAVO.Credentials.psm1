@@ -217,6 +217,9 @@ function Get-BRAVOCredentialIdentity {
 }
 
 function Get-BRAVOArchivePasswordTarget {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSAvoidUsingPlainTextForPassword', 'CredentialSettings',
+        Justification = 'Хибне спрацювання: $CredentialSettings — це hashtable налаштувань (назви записів Credential Manager), не секрет.')]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
@@ -276,6 +279,9 @@ function Test-BRAVOInstitutionSettingValue {
 }
 
 function Import-BRAVOInstitutionSettings {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSAvoidUsingPlainTextForPassword', 'CredentialSettings',
+        Justification = 'Хибне спрацювання: $CredentialSettings — це hashtable налаштувань (назви записів Credential Manager), не секрет.')]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
@@ -389,6 +395,12 @@ function Resolve-BRAVOSftpHostName {
 }
 
 function New-BRAVOSftpUrl {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSAvoidUsingPlainTextForPassword', 'Password',
+        Justification = 'Мета функції — побудувати рядок sftp://user:pass@host для WinSCP; SecureString неможливо вставити в URL.')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSAvoidUsingUsernameAndPasswordParams', '',
+        Justification = 'PSCredential тут не підійде: WinSCP отримує саме рядковий URL з логіном і паролем.')]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
@@ -411,4 +423,39 @@ function New-BRAVOSftpUrl {
     $escapedPassword = [Uri]::EscapeDataString($Password)
     $portSuffix = if ($Port -eq 22) { "" } else { ":$Port" }
     return "sftp://${escapedUserName}:${escapedPassword}@${HostName}${portSuffix}/"
+}
+
+function New-BRAVOPlainTextCredential {
+    # Єдине місце в runtime, де секрет із Credential Manager конвертується
+    # в SecureString для .NET API, що приймає лише PSCredential. Раніше цей
+    # самий блок був продубльований у BRAVO.Archive.Runtime.ps1 і
+    # BRAVO.Health.Runtime.ps1 — тепер точкове виключення PSScriptAnalyzer
+    # стоїть тут, а не глобально на весь репозиторій, тому будь-яке НОВЕ
+    # входження ConvertTo-SecureString -AsPlainText поза цією функцією
+    # заблокує CI.
+    #
+    # Secret походить із Windows Credential Manager (уже захищене сховище),
+    # а не з джерела чи конфігурації — це міст до API, а не хардкод.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSAvoidUsingConvertToSecureStringWithPlainText', '',
+        Justification = 'Секрет прочитаний із Windows Credential Manager; SecureString потрібен лише для конструктора PSCredential.')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSAvoidUsingPlainTextForPassword', 'Password',
+        Justification = 'Get-BRAVOCredentialSecret повертає рядок; SecureString створюється тут же і одразу передається в PSCredential.')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSAvoidUsingUsernameAndPasswordParams', '',
+        Justification = 'Функція саме і будує PSCredential з окремо збережених у Credential Manager логіна та пароля.')]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$UserName,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Password
+    )
+
+    $securePassword = ConvertTo-SecureString -String $Password -AsPlainText -Force
+    return New-Object System.Management.Automation.PSCredential($UserName, $securePassword)
 }

@@ -1408,6 +1408,83 @@ try {
             -Failure "SECURITY.md має покривати підтримувані версії, порядок повідомлення про вразливості, модель секретів/Tools/ACL і обмеження Credential Manager"
     }
 
+    # Аудит P1 (PSScriptAnalyzer майже не блокує небезпечні патерни):
+    # security-правила НЕ повинні виключатись глобально. Обґрунтовані
+    # місця мають точковий SuppressMessageAttribute, а не -ExcludeRule у
+    # workflow — інакше НОВИЙ небезпечний код теж мовчки пройде CI.
+    $analyzerSettingsPath = Join-Path $root "PSScriptAnalyzerSettings.psd1"
+    Test-BRAVOCondition `
+        -Condition (Test-Path -LiteralPath $analyzerSettingsPath -PathType Leaf) `
+        -Name "StaticAnalysis/AnalyzerSettingsExist" `
+        -Failure "PSScriptAnalyzerSettings.psd1 має існувати в корені репозиторію"
+
+    $requiredBlockingRules = @(
+        'PSAvoidUsingConvertToSecureStringWithPlainText',
+        'PSAvoidUsingPlainTextForPassword',
+        'PSAvoidUsingUsernameAndPasswordParams',
+        'PSAvoidUsingInvokeExpression',
+        'PSAvoidUsingComputerNameHardcoded'
+    )
+    if (Test-Path -LiteralPath $analyzerSettingsPath -PathType Leaf) {
+        $analyzerSettings = Import-PowerShellDataFile -LiteralPath $analyzerSettingsPath
+        $blockingRules = @($analyzerSettings.IncludeRules)
+        $missingBlockingRules = @(
+            $requiredBlockingRules | Where-Object { $blockingRules -notcontains $_ }
+        )
+        Test-BRAVOCondition `
+            -Condition ($missingBlockingRules.Count -eq 0) `
+            -Name "StaticAnalysis/SecurityRulesAreBlocking" `
+            -Failure "PSScriptAnalyzerSettings.psd1 має блокувати security-правила; відсутні: $($missingBlockingRules -join ', ')"
+    }
+
+    # Той самий набір не повинен повернутись у workflow як -ExcludeRule.
+    $ciWorkflowPath = Join-Path $root ".github\workflows\ci.yml"
+    Test-BRAVOCondition `
+        -Condition (Test-Path -LiteralPath $ciWorkflowPath -PathType Leaf) `
+        -Name "StaticAnalysis/CiWorkflowExists" `
+        -Failure ".github\workflows\ci.yml має існувати"
+    if (Test-Path -LiteralPath $ciWorkflowPath -PathType Leaf) {
+        $ciWorkflowText = [IO.File]::ReadAllText($ciWorkflowPath, [Text.Encoding]::UTF8)
+        # Рядок з -ExcludeRule дозволений рівно один — інформаційний
+        # прохід, який виключає САМЕ блокуючий набір (щоб не дублювати
+        # його вивід), а не приховує security-правила.
+        $globallyExcluded = @(
+            $requiredBlockingRules | Where-Object {
+                $ciWorkflowText -match "ExcludeRule[^\r\n]*$([regex]::Escape($_))"
+            }
+        )
+        Test-BRAVOCondition `
+            -Condition ($globallyExcluded.Count -eq 0) `
+            -Name "StaticAnalysis/NoGlobalSecurityRuleExclusions" `
+            -Failure "ci.yml не повинен виключати security-правила поіменно: $($globallyExcluded -join ', ')"
+
+        Test-BRAVOCondition `
+            -Condition (
+                $ciWorkflowText.Contains('Invoke-BRAVOSecurityAnalysis.ps1') -and
+                $ciWorkflowText.Contains('Test-BRAVOForbiddenPattern.ps1')
+            ) `
+            -Name "StaticAnalysis/CiUsesSettingsAndForbiddenPatterns" `
+            -Failure "ci.yml має викликати ci\Invoke-BRAVOSecurityAnalysis.ps1 і ci\Test-BRAVOForbiddenPattern.ps1"
+
+        # GitHub Actions записує вміст `run:` у тимчасовий .ps1 БЕЗ BOM,
+        # і Windows PowerShell 5.1 читає його в системній ANSI-кодовій
+        # сторінці — кирилиця там декодується в сміття, а окремі байти
+        # стають control-символами, що ламають парсер ще до виконання
+        # кроку. Реальне падіння CI сталося саме через це. Логіку з
+        # кирилицею тримаємо у файлах репозиторію (мають BOM), а `run:`
+        # лишається ASCII-only.
+        $ciRunBlockLines = @(
+            $ciWorkflowText -split '\r?\n' |
+                Where-Object { $_ -match '[Ѐ-ӿ]' } |
+                Where-Object { $_ -notmatch '^\s*#' } |
+                Where-Object { $_ -notmatch '^\s*-?\s*name:' }
+        )
+        Test-BRAVOCondition `
+            -Condition ($ciRunBlockLines.Count -eq 0) `
+            -Name "StaticAnalysis/CiRunBlocksAreAsciiOnly" `
+            -Failure "ci.yml: виконуваний рядок з кирилицею поза коментарем/name (GitHub Actions пише run: без BOM, PowerShell 5.1 ламається): $($ciRunBlockLines -join ' | ')"
+    }
+
     # P2.6 аудиту: RELEASE_CHECKLIST.md.
     $releaseChecklistPath = Join-Path $root "RELEASE_CHECKLIST.md"
     Test-BRAVOCondition `
