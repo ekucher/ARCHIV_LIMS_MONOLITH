@@ -592,6 +592,126 @@ function Get-BRAVOFileHash {
     }
 }
 
+function Get-BRAVOToolIntegrityRecommendation {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string[]]$ToolPaths,
+        [Parameter(Mandatory = $true)][string]$ManifestPath
+    )
+
+    # Довіряємо стану на перший запуск (trust-on-first-use) і зберігаємо
+    # контрольні суми SHA-256 у маніфесті поруч із самими інструментами —
+    # той самий каталог, який Set-BRAVOProtectedRuntimeAcl вже захищає
+    # рекурсивно (запис лише для SYSTEM/Administrators). Це виявляє
+    # випадкове пошкодження чи підміну файлу між запусками, але не
+    # замінює зовнішній підпис виробника: якщо зловмисник мав доступ на
+    # запис у момент першого запуску, і файл, і маніфест можна підмінити
+    # одночасно.
+    #
+    # Відсутність інструменту на диску — це окрема, вже наявна перевірка
+    # шляхів (Test-PathWithLog тощо); тут перевіряється лише цілісність
+    # того, що реально присутнє.
+    $existingTools = @(
+        $ToolPaths |
+        Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_) -and
+            (Test-Path -LiteralPath $_ -PathType Leaf)
+        }
+    )
+    if ($existingTools.Count -eq 0) {
+        return New-Object PSObject -Property @{
+            HasIntegrityIssue = $false
+            Message = $null
+            ManifestPath = $ManifestPath
+            MismatchedTools = @()
+        }
+    }
+
+    $manifest = @{}
+    $manifestExisted = Test-Path -LiteralPath $ManifestPath -PathType Leaf
+    if ($manifestExisted) {
+        try {
+            $rawManifest = [System.IO.File]::ReadAllText($ManifestPath, [System.Text.Encoding]::UTF8)
+            $parsedManifest = ConvertFrom-BRAVOJson -InputObject $rawManifest
+            foreach ($manifestProperty in $parsedManifest.PSObject.Properties) {
+                $manifest[$manifestProperty.Name] = [string]$manifestProperty.Value
+            }
+        } catch {
+            # Пошкоджений маніфест не повинен зупиняти роботу — трактуємо
+            # як відсутній і перестворюємо базову лінію нижче.
+            $manifest = @{}
+            $manifestExisted = $false
+        }
+    }
+
+    $mismatchedTools = New-Object System.Collections.Generic.List[string]
+    $manifestChanged = $false
+    foreach ($toolPath in $existingTools) {
+        $toolName = [System.IO.Path]::GetFileName($toolPath)
+        try {
+            $currentHash = (Get-BRAVOFileHash -Path $toolPath -Algorithm SHA256 -ErrorAction Stop).Hash.ToUpperInvariant()
+        } catch {
+            continue
+        }
+        if ($manifest.ContainsKey($toolName)) {
+            if (-not [string]::Equals(
+                    $manifest[$toolName],
+                    $currentHash,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                )) {
+                [void]$mismatchedTools.Add($toolName)
+            }
+        } else {
+            $manifest[$toolName] = $currentHash
+            $manifestChanged = $true
+        }
+    }
+
+    if (-not $manifestExisted -or $manifestChanged) {
+        try {
+            $manifestDirectory = Split-Path -Path $ManifestPath -Parent
+            if (-not [string]::IsNullOrWhiteSpace($manifestDirectory) -and
+                -not (Test-Path -LiteralPath $manifestDirectory -PathType Container)) {
+                [void][System.IO.Directory]::CreateDirectory($manifestDirectory)
+            }
+            $manifestJson = $manifest | ConvertTo-BRAVOJson
+            [System.IO.File]::WriteAllText(
+                $ManifestPath,
+                $manifestJson,
+                (New-Object System.Text.UTF8Encoding($true))
+            )
+        } catch {
+            # Не вдалося зберегти базову лінію зараз — спробуємо на наступному
+            # запуску; це не привід зупиняти поточну операцію.
+        }
+    }
+
+    if ($mismatchedTools.Count -eq 0) {
+        return New-Object PSObject -Property @{
+            HasIntegrityIssue = $false
+            Message = $null
+            ManifestPath = $ManifestPath
+            MismatchedTools = @()
+        }
+    }
+
+    $toolWord = if ($mismatchedTools.Count -eq 1) { "інструмента" } else { "інструментів" }
+    $message = (
+        "Виявлено розбіжність контрольної суми для {0}: {1}. Це може бути " +
+        "легітимне оновлення інструменту або ознака підміни файлу. Якщо " +
+        "оновлення свідоме — видаліть '{2}', щоб зафіксувати нову базову " +
+        "лінію. Якщо ні — перевірте походження файлу й права доступу до " +
+        "каталогу Tools. Скрипт продовжує роботу, автоматичних дій не виконується."
+    ) -f $toolWord, ($mismatchedTools -join ", "), $ManifestPath
+
+    return New-Object PSObject -Property @{
+        HasIntegrityIssue = $true
+        Message = $message
+        ManifestPath = $ManifestPath
+        MismatchedTools = @($mismatchedTools)
+    }
+}
+
 function Test-BRAVOTcpConnection {
     [CmdletBinding()]
     param(

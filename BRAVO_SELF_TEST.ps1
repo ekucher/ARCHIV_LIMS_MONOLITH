@@ -169,6 +169,47 @@ try {
         -Name "Compatibility/WindowsPatchLevelRecommendation" `
         -Failure "рекомендація оновити Windows має спрацьовувати лише для застарілого рівня патчів і не хибити на свіжій системі"
 
+    $toolIntegrityTestRoot = Join-Path `
+        -Path ([IO.Path]::GetTempPath()) `
+        -ChildPath ("BRAVO_TOOL_INTEGRITY_SELF_TEST_{0}" -f [guid]::NewGuid().ToString("N"))
+    try {
+        [void][IO.Directory]::CreateDirectory($toolIntegrityTestRoot)
+        $toolIntegrityTool = Join-Path $toolIntegrityTestRoot "fake7za.exe"
+        [IO.File]::WriteAllText($toolIntegrityTool, "original content", (New-Object Text.UTF8Encoding($false)))
+        $toolIntegrityManifest = Join-Path $toolIntegrityTestRoot "TOOLS_INTEGRITY.json"
+
+        $toolIntegrityFirstRun = Get-BRAVOToolIntegrityRecommendation `
+            -ToolPaths @($toolIntegrityTool) `
+            -ManifestPath $toolIntegrityManifest
+        $toolIntegrityUnchangedRun = Get-BRAVOToolIntegrityRecommendation `
+            -ToolPaths @($toolIntegrityTool) `
+            -ManifestPath $toolIntegrityManifest
+        [IO.File]::WriteAllText($toolIntegrityTool, "TAMPERED", (New-Object Text.UTF8Encoding($false)))
+        $toolIntegrityTamperedRun = Get-BRAVOToolIntegrityRecommendation `
+            -ToolPaths @($toolIntegrityTool) `
+            -ManifestPath $toolIntegrityManifest
+        $toolIntegrityMissingRun = Get-BRAVOToolIntegrityRecommendation `
+            -ToolPaths @((Join-Path $toolIntegrityTestRoot "nonexistent.exe")) `
+            -ManifestPath $toolIntegrityManifest
+
+        Test-BRAVOCondition `
+            -Condition (
+                -not $toolIntegrityFirstRun.HasIntegrityIssue -and
+                (Test-Path -LiteralPath $toolIntegrityManifest -PathType Leaf) -and
+                -not $toolIntegrityUnchangedRun.HasIntegrityIssue -and
+                $toolIntegrityTamperedRun.HasIntegrityIssue -and
+                $toolIntegrityTamperedRun.MismatchedTools -contains "fake7za.exe" -and
+                -not [string]::IsNullOrWhiteSpace([string]$toolIntegrityTamperedRun.Message) -and
+                -not $toolIntegrityMissingRun.HasIntegrityIssue
+            ) `
+            -Name "Compatibility/ToolIntegrityRecommendation" `
+            -Failure "перший запуск має тихо зафіксувати базову лінію (TOFU), підміна файлу — попередити, відсутній інструмент — не хибити"
+    } finally {
+        if (Test-Path -LiteralPath $toolIntegrityTestRoot -PathType Container) {
+            [IO.Directory]::Delete($toolIntegrityTestRoot, $true)
+        }
+    }
+
     Remove-Module -Name 'BRAVO.Logging' -Force -ErrorAction SilentlyContinue
     Import-Module -Name (Join-Path $root "modules\BRAVO.Logging\BRAVO.Logging.psd1") -Force -ErrorAction Stop
     $maskedSftpUrl = Protect-BRAVOLogSecret -Text "open sftp://bravouser:S3cr3tPass@sftp.example.org:22"
@@ -1005,6 +1046,14 @@ try {
         ) `
         -Name "Runtime/SharedWindowsPatchLevelRecommendation" `
         -Failure "усі точки входу мають попереджати про застарілий рівень оновлень Windows"
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveScriptText.Contains("Get-BRAVOToolIntegrityRecommendation") -and
+            $maintenanceScriptText.Contains("Get-BRAVOToolIntegrityRecommendation") -and
+            $healthScriptTextForPatchLevel.Contains("Get-BRAVOToolIntegrityRecommendation")
+        ) `
+        -Name "Runtime/SharedToolIntegrityRecommendation" `
+        -Failure "Archive/Health/Maintenance мають перевіряти цілісність Tools (7za.exe/WinSCP) через спільну функцію"
     $archiveRuntimeText = [IO.File]::ReadAllText(
         (Join-Path $root "modules\BRAVO.ArchiveRuntime\BRAVO.ArchiveRuntime.psm1"),
         [Text.Encoding]::UTF8

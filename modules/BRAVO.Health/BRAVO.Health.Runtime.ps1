@@ -3385,6 +3385,12 @@ if ($BRAVOPowerShellUpdate.IsUpdateRecommended) {
 if ($BRAVOWindowsPatchLevel.IsUpdateRecommended) {
     Write-HealthLog $BRAVOWindowsPatchLevel.Message -Level "WARNING"
 }
+$script:BRAVOToolIntegrity = Get-BRAVOToolIntegrityRecommendation `
+    -ToolPaths @($arcPath, $winSCPPath, $winSCPAssemblyPath) `
+    -ManifestPath (Join-Path $toolsPath "TOOLS_INTEGRITY.json")
+if ($script:BRAVOToolIntegrity.HasIntegrityIssue) {
+    Write-HealthLog $script:BRAVOToolIntegrity.Message -Level "WARNING"
+}
 $bazaLocalMode = if ($bazaLocalHealthEnabled) { "увімкнено" } else { "вимкнено" }
 $bazaSFTPMode = if ($bazaSFTPHealthEnabled) { "увімкнено" } else { "вимкнено" }
 $bazaWWWSFTPMode = if ($bazaWWWSFTPHealthEnabled) { "увімкнено" } else { "вимкнено" }

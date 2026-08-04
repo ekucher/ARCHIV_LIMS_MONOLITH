@@ -423,6 +423,17 @@ function Test-Compatibility {
         Write-BRAVOLog -Component 'STARTUP' -Message $windowsPatchLevel.Message -Level "WARNING"
     }
 
+    # $arcPath/$winSCPPath/$winSCPAssemblyPath доступні лише після
+    # Import-BravoConfiguration, тому цю перевірку не можна винести у
+    # ранній preinit разом із двома вище.
+    $toolIntegrity = Get-BRAVOToolIntegrityRecommendation `
+        -ToolPaths @($arcPath, $winSCPPath, $winSCPAssemblyPath) `
+        -ManifestPath (Join-Path $toolsPath "TOOLS_INTEGRITY.json")
+    $script:BRAVOToolIntegrity = $toolIntegrity
+    if ($toolIntegrity.HasIntegrityIssue) {
+        Write-BRAVOLog -Component 'STARTUP' -Message $toolIntegrity.Message -Level "WARNING"
+    }
+
     return $compatibility
 }
 

@@ -2657,6 +2657,12 @@ if ($BRAVOPowerShellUpdate.IsUpdateRecommended) {
 if ($BRAVOWindowsPatchLevel.IsUpdateRecommended) {
     Write-Log -Message $BRAVOWindowsPatchLevel.Message -Level "WARNING"
 }
+$script:BRAVOToolIntegrity = Get-BRAVOToolIntegrityRecommendation `
+    -ToolPaths @($arcPath, $winSCPPath, $winSCPAssemblyPath) `
+    -ManifestPath (Join-Path $toolsPath "TOOLS_INTEGRITY.json")
+if ($script:BRAVOToolIntegrity.HasIntegrityIssue) {
+    Write-Log -Message $script:BRAVOToolIntegrity.Message -Level "WARNING"
+}
 Write-Log -Message "Перевірка вільного місця: усі локальні диски; виключення: $freeSpaceExclusionsText" -NoTimestamp
 if ($BravoMaintenanceEnabled -and $RangeIdMonitoringEnabled) {
     Write-Log -Message "Контроль діапазонів ID: понад $($RangeIdThresholdPercent)% у $RangeIdLogPath" -NoTimestamp
