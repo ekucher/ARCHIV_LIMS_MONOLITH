@@ -2682,6 +2682,18 @@ if ($BRAVOPowerShellUpdate.IsUpdateRecommended) {
 if ($BRAVOWindowsPatchLevel.IsUpdateRecommended) {
     Write-Log -Message $BRAVOWindowsPatchLevel.Message -Level "WARNING"
 }
+$script:BRAVOOSSupportTier = Get-BRAVOOSSupportTier
+Write-Log -Message "Підтримка ОС: $($script:BRAVOOSSupportTier.Tier) — Windows $($script:BRAVOOSSupportTier.OperatingSystem) ($($script:BRAVOOSSupportTier.OperatingSystemVersion), build $($script:BRAVOOSSupportTier.Build)); PowerShell $($script:BRAVOOSSupportTier.PowerShellVersion); .NET release $($script:BRAVOOSSupportTier.DotNetRelease)" -NoTimestamp
+if ($script:BRAVOOSSupportTier.Tier -eq "LegacyBestEffort") {
+    Write-Log -Message $script:BRAVOOSSupportTier.Message -Level "WARNING"
+} elseif ($script:BRAVOOSSupportTier.Tier -eq "Unsupported") {
+    if ($env:BRAVO_ALLOW_UNSUPPORTED_OS -eq "1") {
+        Write-Log -Message "$($script:BRAVOOSSupportTier.Message) Продовжено через BRAVO_ALLOW_UNSUPPORTED_OS=1." -Level "WARNING"
+    } else {
+        Write-Log -Message $script:BRAVOOSSupportTier.Message -Level "ERROR"
+        exit (Resolve-BRAVOExitCode -InvalidConfiguration)
+    }
+}
 $script:BRAVOToolIntegrity = Get-BRAVOToolIntegrityRecommendation `
     -ToolPaths @($arcPath, $winSCPPath, $winSCPAssemblyPath) `
     -ManifestPath (Join-Path $toolsPath "TOOLS_INTEGRITY.json")

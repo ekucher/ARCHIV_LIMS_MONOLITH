@@ -169,6 +169,76 @@ try {
         -Name "Compatibility/WindowsPatchLevelRecommendation" `
         -Failure "рекомендація оновити Windows має спрацьовувати лише для застарілого рівня патчів і не хибити на свіжій системі"
 
+    # P0.4 з ARCHIV_LIMS_MONOLITH_AUDIT_FIXES.md: Supported (Server 2019+,
+    # Windows 10/11, PS 5.1) / LegacyBestEffort (Server 2012 R2, 2016) /
+    # Unsupported (Windows 7, Server 2008 R2, PowerShell 3.0). Перевірено на
+    # синтетичних Win32_OperatingSystem-подібних об'єктах — реальну іншу ОС
+    # у self-test підставити неможливо, той самий injectable-патерн, що й
+    # у Get-BRAVOPowerShellUpdateRecommendation вище.
+    $osTierWin7 = Get-BRAVOOSSupportTier `
+        -OperatingSystemInfo ([pscustomobject]@{ Version = "6.1.7601"; Caption = "Windows 7 Enterprise"; ProductType = 1 }) `
+        -PowerShellVersion ([version]"5.1") -DotNetRelease 528040
+    $osTierServer2008R2 = Get-BRAVOOSSupportTier `
+        -OperatingSystemInfo ([pscustomobject]@{ Version = "6.1.7601"; Caption = "Windows Server 2008 R2"; ProductType = 3 }) `
+        -PowerShellVersion ([version]"5.1") -DotNetRelease 528040
+    $osTierServer2012R2 = Get-BRAVOOSSupportTier `
+        -OperatingSystemInfo ([pscustomobject]@{ Version = "6.3.9600"; Caption = "Windows Server 2012 R2"; ProductType = 3 }) `
+        -PowerShellVersion ([version]"5.1") -DotNetRelease 528040
+    $osTierServer2016 = Get-BRAVOOSSupportTier `
+        -OperatingSystemInfo ([pscustomobject]@{ Version = "10.0.14393"; Caption = "Windows Server 2016"; ProductType = 3 }) `
+        -PowerShellVersion ([version]"5.1") -DotNetRelease 528040
+    $osTierServer2019 = Get-BRAVOOSSupportTier `
+        -OperatingSystemInfo ([pscustomobject]@{ Version = "10.0.17763"; Caption = "Windows Server 2019"; ProductType = 3 }) `
+        -PowerShellVersion ([version]"5.1") -DotNetRelease 528040
+    $osTierWin10 = Get-BRAVOOSSupportTier `
+        -OperatingSystemInfo ([pscustomobject]@{ Version = "10.0.19045"; Caption = "Windows 10 Pro"; ProductType = 1 }) `
+        -PowerShellVersion ([version]"5.1") -DotNetRelease 528040
+    $osTierServer2019PS3 = Get-BRAVOOSSupportTier `
+        -OperatingSystemInfo ([pscustomobject]@{ Version = "10.0.17763"; Caption = "Windows Server 2019"; ProductType = 3 }) `
+        -PowerShellVersion ([version]"3.0") -DotNetRelease 528040
+    $osTierServer2019PS4 = Get-BRAVOOSSupportTier `
+        -OperatingSystemInfo ([pscustomobject]@{ Version = "10.0.17763"; Caption = "Windows Server 2019"; ProductType = 3 }) `
+        -PowerShellVersion ([version]"4.0") -DotNetRelease 528040
+    Test-BRAVOCondition `
+        -Condition (
+            $osTierWin7.Tier -eq "Unsupported" -and
+            $osTierServer2008R2.Tier -eq "Unsupported" -and
+            $osTierServer2012R2.Tier -eq "LegacyBestEffort" -and
+            $osTierServer2016.Tier -eq "LegacyBestEffort" -and
+            $osTierServer2019.Tier -eq "Supported" -and
+            $osTierWin10.Tier -eq "Supported" -and
+            $osTierServer2019PS3.Tier -eq "Unsupported" -and
+            $osTierServer2019PS4.Tier -eq "LegacyBestEffort" -and
+            -not [string]::IsNullOrWhiteSpace([string]$osTierWin7.Message) -and
+            -not [string]::IsNullOrWhiteSpace([string]$osTierServer2012R2.Message) -and
+            $null -eq $osTierServer2019.Message
+        ) `
+        -Name "Compatibility/OSSupportTierClassification" `
+        -Failure "Get-BRAVOOSSupportTier має класифікувати Windows 7/Server 2008 R2/PowerShell 3.0 як Unsupported, Server 2012 R2/2016 як LegacyBestEffort, Server 2019+/Windows 10 з PS 5.1 як Supported"
+    $archiveRuntimeTextForOSTier = [IO.File]::ReadAllText(
+        (Join-Path $root "modules\BRAVO.Archive\BRAVO.Archive.Runtime.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    $healthRuntimeTextForOSTier = [IO.File]::ReadAllText(
+        (Join-Path $root "modules\BRAVO.Health\BRAVO.Health.Runtime.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    $maintenanceRuntimeTextForOSTier = [IO.File]::ReadAllText(
+        (Join-Path $root "modules\BRAVO.Maintenance\BRAVO.Maintenance.Runtime.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveRuntimeTextForOSTier.Contains("Get-BRAVOOSSupportTier") -and
+            $archiveRuntimeTextForOSTier.Contains("BRAVO_ALLOW_UNSUPPORTED_OS") -and
+            $healthRuntimeTextForOSTier.Contains("Get-BRAVOOSSupportTier") -and
+            $healthRuntimeTextForOSTier.Contains("BRAVO_ALLOW_UNSUPPORTED_OS") -and
+            $maintenanceRuntimeTextForOSTier.Contains("Get-BRAVOOSSupportTier") -and
+            $maintenanceRuntimeTextForOSTier.Contains("BRAVO_ALLOW_UNSUPPORTED_OS")
+        ) `
+        -Name "Runtime/UnsupportedOSBlocksProductionRun" `
+        -Failure "Archive/Health/Maintenance мають блокувати запуск на Unsupported ОС, окрім явного override через BRAVO_ALLOW_UNSUPPORTED_OS=1 (аудит P0.4)"
+
     $toolIntegrityTestRoot = Join-Path `
         -Path ([IO.Path]::GetTempPath()) `
         -ChildPath ("BRAVO_TOOL_INTEGRITY_SELF_TEST_{0}" -f [guid]::NewGuid().ToString("N"))
