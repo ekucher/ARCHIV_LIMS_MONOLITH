@@ -5,6 +5,6 @@
   "stateSchemaVersion": 1,
   "updaterVersion": "1.0.0",
   "releaseDate": "2026-08-04",
-  "releaseChannel": "development",
+  "releaseChannel": "stable",
   "buildId": "b3f9a12"
 }
