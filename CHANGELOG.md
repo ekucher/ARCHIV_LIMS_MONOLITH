@@ -2,6 +2,21 @@
 
 ## 4.2.13 — 2026-08-04
 
+- P1.6 з плану виправлень (`ARCHIV_LIMS_MONOLITH_AUDIT_FIXES.md`): Health
+  тепер окремо повертає `LocalVerified`/`SftpVerified`/`SmbVerified` у
+  result object (усі 7 гілок `return Complete-BRAVOHealthResult`), а не
+  лише агрегований `Status`/`IssueCount` — зовнішній моніторинг більше не
+  втрачає деталізацію "локальні копії в порядку, а SFTP деградував" за
+  єдиним `Status = "Critical"`. Кожен напрямок обчислюється незалежним
+  викликом (`Get-BackupHealthIssues`/`Get-BAZALocalHealthIssues`/
+  `Get-SFTPHealthIssues`/`Get-SMBHealthIssues`) — жоден не перериває
+  виконання інших при відмові, тому сам механізм перевірок не
+  редагувався, лише додано `Get-BRAVOHealthDestinationSummary`, яка
+  зводить уже наявні незалежні списки issues у три прапорці. Додано
+  self-test `Health/DestinationSummaryAlgorithm` (функціональний, на
+  синтетичних issues) і `Health/DestinationSummaryWiredIntoAllResults`
+  (текстовий, підтверджує підключення до всіх 7 місць повернення).
+
 - P1.8 з плану виправлень (`ARCHIV_LIMS_MONOLITH_AUDIT_FIXES.md`):
   `BRAVO_OPERATION.lock` (спільний exclusive-lock Archive/Maintenance)
   тепер містить структуровані JSON-метадані замість голого

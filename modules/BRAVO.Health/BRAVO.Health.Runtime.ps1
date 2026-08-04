@@ -3033,6 +3033,30 @@ function New-SlackAlertMessage {
     return $lines -join [Environment]::NewLine
 }
 
+function Get-BRAVOHealthDestinationSummary {
+    # Аудит P1.6: раніше health-check повертав лише один агрегований
+    # Status/IssueCount — зовнішній моніторинг не міг побачити "локальні
+    # копії в порядку, а SFTP деградував" окремо від "усе зламано разом".
+    # Кожен вхідний масив уже й так є результатом незалежного виклику
+    # (Get-BackupHealthIssues/Get-BAZALocalHealthIssues/Get-SFTPHealthIssues/
+    # Get-SMBHealthIssues) — жоден з них не перериває виконання інших при
+    # відмові, тому тут лишається тільки звести їх у три прапорці, а не
+    # виправляти саму послідовність перевірок.
+    [CmdletBinding()]
+    param(
+        [array]$LocalIssues = @(),
+        [array]$BazaLocalIssues = @(),
+        [array]$SftpIssues = @(),
+        [array]$SmbIssues = @()
+    )
+
+    return [pscustomobject]@{
+        LocalVerified = (@($LocalIssues) + @($BazaLocalIssues)).Count -eq 0
+        SftpVerified = @($SftpIssues).Count -eq 0
+        SmbVerified = @($SmbIssues).Count -eq 0
+    }
+}
+
 function New-SlackSuccessMessage {
     param([timespan]$Duration)
 
@@ -3453,6 +3477,11 @@ $bazaLocalHealthIssues = if ($bazaLocalHealthEnabled) {
 $sftpHealthIssues = @(Get-SFTPHealthIssues)
 $smbHealthIssues = @(Get-SMBHealthIssues)
 $healthIssues = @($serviceHealthIssues) + @($localHealthIssues) + @($bazaLocalHealthIssues) + @($sftpHealthIssues) + @($smbHealthIssues)
+$destinationSummary = Get-BRAVOHealthDestinationSummary `
+    -LocalIssues $localHealthIssues `
+    -BazaLocalIssues $bazaLocalHealthIssues `
+    -SftpIssues $sftpHealthIssues `
+    -SmbIssues $smbHealthIssues
 
 if ($healthIssues.Count -eq 0) {
     Write-HealthLog "Усі керовані служби працюють, а локальні, SFTP та NAS/SMB-компоненти мають актуальні резервні копії" -Level "SUCCESS"
@@ -3474,6 +3503,9 @@ if ($healthIssues.Count -eq 0) {
                 IssueCount = 0
                 Notification = "Sent"
                 LogPath = $healthLogFile
+                LocalVerified = $destinationSummary.LocalVerified
+                SftpVerified = $destinationSummary.SftpVerified
+                SmbVerified = $destinationSummary.SmbVerified
             })
         } catch {
             Write-HealthLog "Не вдалося відправити успішний звіт у ${NotificationProviderDisplayName}: $($_.Exception.Message)" -Level "ERROR"
@@ -3483,6 +3515,9 @@ if ($healthIssues.Count -eq 0) {
                 Notification = "Failed"
                 LogPath = $healthLogFile
                 Error = $_.Exception.Message
+                LocalVerified = $destinationSummary.LocalVerified
+                SftpVerified = $destinationSummary.SftpVerified
+                SmbVerified = $destinationSummary.SmbVerified
             })
         }
     }
@@ -3492,6 +3527,9 @@ if ($healthIssues.Count -eq 0) {
         IssueCount = 0
         Notification = "NotRequired"
         LogPath = $healthLogFile
+        LocalVerified = $destinationSummary.LocalVerified
+        SftpVerified = $destinationSummary.SftpVerified
+        SmbVerified = $destinationSummary.SmbVerified
     })
 }
 
@@ -3564,6 +3602,9 @@ if ($NoSlack -or $NotificationMode -eq "none") {
         Notification = "Disabled"
         LogPath = $healthLogFile
         Message = $slackMessage
+        LocalVerified = $destinationSummary.LocalVerified
+        SftpVerified = $destinationSummary.SftpVerified
+        SmbVerified = $destinationSummary.SmbVerified
     })
 }
 
@@ -3574,6 +3615,9 @@ if (Test-AlertSuppressed -Fingerprint $alertFingerprint) {
         IssueCount = $healthIssues.Count
         Notification = "Suppressed"
         LogPath = $healthLogFile
+        LocalVerified = $destinationSummary.LocalVerified
+        SftpVerified = $destinationSummary.SftpVerified
+        SmbVerified = $destinationSummary.SmbVerified
     })
 }
 
@@ -3586,6 +3630,9 @@ try {
         IssueCount = $healthIssues.Count
         Notification = "Sent"
         LogPath = $healthLogFile
+        LocalVerified = $destinationSummary.LocalVerified
+        SftpVerified = $destinationSummary.SftpVerified
+        SmbVerified = $destinationSummary.SmbVerified
     })
 } catch {
     Write-HealthLog "Не вдалося відправити повідомлення у ${NotificationProviderDisplayName}: $($_.Exception.Message)" -Level "ERROR"
@@ -3595,6 +3642,9 @@ try {
         Notification = "Failed"
         LogPath = $healthLogFile
         Error = $_.Exception.Message
+        LocalVerified = $destinationSummary.LocalVerified
+        SftpVerified = $destinationSummary.SftpVerified
+        SmbVerified = $destinationSummary.SmbVerified
     })
 }
 

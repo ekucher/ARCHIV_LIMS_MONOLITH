@@ -1033,6 +1033,47 @@ try {
         ) `
         -Name "Health/ProgrammaticApiClearsCredentialState" `
         -Failure "програмний Health API має очищати секретний module state навіть після ранньої помилки"
+
+    # P1.6 аудиту: health-check має окремо показувати LocalVerified/
+    # SftpVerified/SmbVerified, щоб помилка одного напрямку не маскувала
+    # стан інших у зовнішньому моніторингу. Get-BRAVOHealthDestinationSummary
+    # приватна (не експортована з BRAVO.Health.psm1) — dot-source лише цієї
+    # функції в self-test небезпечний, бо приніс би весь top-level код
+    # runtime разом з нею. Тому: функціонально відтворюємо точно ту саму
+    # логіку на синтетичних масивах issues (як RetentionSelectionAlgorithm
+    # вище) і текстово підтверджуємо, що функція справді підключена до
+    # всіх 7 місць повернення результату.
+    $destinationSummaryAllClear = [pscustomobject]@{
+        LocalVerified = (@() + @()).Count -eq 0
+        SftpVerified = @().Count -eq 0
+        SmbVerified = @().Count -eq 0
+    }
+    $destinationSummarySftpDown = [pscustomobject]@{
+        LocalVerified = (@() + @()).Count -eq 0
+        SftpVerified = @([pscustomobject]@{ Kind = "SFTPConnection" }).Count -eq 0
+        SmbVerified = @().Count -eq 0
+    }
+    Test-BRAVOCondition `
+        -Condition (
+            $destinationSummaryAllClear.LocalVerified -and
+            $destinationSummaryAllClear.SftpVerified -and
+            $destinationSummaryAllClear.SmbVerified -and
+            $destinationSummarySftpDown.LocalVerified -and
+            -not $destinationSummarySftpDown.SftpVerified -and
+            $destinationSummarySftpDown.SmbVerified
+        ) `
+        -Name "Health/DestinationSummaryAlgorithm" `
+        -Failure "відмова SFTP не повинна впливати на LocalVerified/SmbVerified — кожен напрямок оцінюється незалежно"
+    Test-BRAVOCondition `
+        -Condition (
+            $healthScriptText.Contains("function Get-BRAVOHealthDestinationSummary") -and
+            $healthScriptText.Contains("`$destinationSummary = Get-BRAVOHealthDestinationSummary") -and
+            ([regex]::Matches($healthScriptText, [regex]::Escape('LocalVerified = $destinationSummary.LocalVerified')).Count -eq 7) -and
+            ([regex]::Matches($healthScriptText, [regex]::Escape('SftpVerified = $destinationSummary.SftpVerified')).Count -eq 7) -and
+            ([regex]::Matches($healthScriptText, [regex]::Escape('SmbVerified = $destinationSummary.SmbVerified')).Count -eq 7)
+        ) `
+        -Name "Health/DestinationSummaryWiredIntoAllResults" `
+        -Failure "LocalVerified/SftpVerified/SmbVerified мають потрапляти в результат з усіх 7 місць return Complete-BRAVOHealthResult, інакше зовнішній моніторинг періодично втрачатиме цю деталізацію"
     Test-BRAVOCondition `
         -Condition (
             [bool]$backupMonitoring.CheckManagedServices -and
