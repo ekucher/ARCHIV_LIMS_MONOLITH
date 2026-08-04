@@ -168,6 +168,14 @@ jobs:
   secret-scan:
     name: Secret scanning (gitleaks)
     runs-on: ubuntu-latest
+    # gitleaks-action на pull_request-подіях звертається до GitHub API за
+    # списком комітів PR (GET /pulls/{n}/commits) — без явного дозволу
+    # pull-requests: read це падає 403 "Resource not accessible by
+    # integration", хоча той самий workflow на push-подіях (де цей
+    # виклик не потрібен) проходив без помилок.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with:
