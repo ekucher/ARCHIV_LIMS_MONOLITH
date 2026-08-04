@@ -47,6 +47,30 @@
 - Версію в `README.md` і `BRAVO_SETUP.md` синхронізовано з `VERSION.json`.
 - Прибрано `REMOVE_OLD_ARCHIV_LIMS.ps1` разом із блоком `Cleanup/*` у
   самотесті, який безумовно читав цей файл і через це падав.
+- Виправлено аудит P1 (ненадійний `$LASTEXITCODE`): у `Archive.Runtime.ps1`
+  повторний `throw` усередині `catch { $script:processExitCode = 1; throw }`
+  ніколи не доходив до власного `Exit` runtime, і код виходу процесу
+  визначала загальна поведінка PowerShell на необроблену помилку, а не
+  керована логіка BRAVO. Усі три `.psm1`-обгортки (Archive/Maintenance/
+  Health) тепер викликають runtime у `try/catch`: на непередбаченому
+  винятку повертається керована `1` (пізніше синхронізовано з новим
+  контрактом exit code — див. вище), повідомлення виводиться через
+  `Write-Error`.
+- Маскування секретів (`Protect-BRAVOLogSecret`) поширено з Archive також
+  на Health (`Write-HealthLog`) і Maintenance (`Write-Log`): раніше вони
+  писали повідомлення без маскування, і виняток WinSCP чи webhook-запиту
+  міг потрапити в лог/консоль разом з обліковими даними. Заразом
+  виправлено дві прогалини самого `Protect-BRAVOLogSecret`: Slack/Discord
+  webhook URL не маскувались зовсім, а коротка форма пароля 7-Zip (`-p`)
+  повторно "з'їдала" вже замасковане правило `-password=***`.
+- Додано integrity preflight для інструментів у `Tools`
+  (`7za.exe`, `WinSCP.com`, `WinSCPnet.dll`): `Get-BRAVOToolIntegrityRecommendation`
+  (`BRAVO.Compatibility`) за моделлю trust-on-first-use на першому запуску
+  фіксує SHA-256 кожного наявного інструмента в `Tools\TOOLS_INTEGRITY.json`,
+  а на кожному наступному звіряє і лише попереджає при розбіжності —
+  виконання свідомо не блокується, підміна файлу могла бути легітимним
+  оновленням. Підключено в Archive/Health/Maintenance поруч із наявними
+  рекомендаціями про PowerShell і Windows.
 
 ## 4.2.11 — 2026-08-03
 
