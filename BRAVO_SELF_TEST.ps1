@@ -1117,6 +1117,25 @@ try {
         -Condition ([int]$schedulerSettings.OperationLockWaitMinutes -gt 0) `
         -Name "Scheduler/OperationLockWait" `
         -Failure "очікування спільного lock має бути більше нуля"
+
+    # P1.8 аудиту: lock раніше містив лише "PID=...; Started=...; Config=...",
+    # тексту. hostname і processStartTime дають змогу відрізнити той самий
+    # PID, перевикористаний іншим процесом після перезавантаження сервера,
+    # від справді активного BRAVO_ARCHIV/BRAVO_MAINTENANCE — важливо на
+    # спільних серверах і при діагностиці "чому lock не звільняється".
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveScriptText.Contains("processStartTime = ") -and
+            $archiveScriptText.Contains("hostname = [Environment]::MachineName") -and
+            $archiveScriptText.Contains('operation = "Archive"') -and
+            $archiveScriptText.Contains("packageVersion = [string]`$ScriptVersion") -and
+            $maintenanceScriptText.Contains("processStartTime = ") -and
+            $maintenanceScriptText.Contains("hostname = [Environment]::MachineName") -and
+            $maintenanceScriptText.Contains('operation = "Maintenance"') -and
+            $maintenanceScriptText.Contains("packageVersion = [string]`$script:ScriptVersion")
+        ) `
+        -Name "Scheduler/OperationLockMetadata" `
+        -Failure "BRAVO_OPERATION.lock має містити pid/processStartTime/hostname/operation/packageVersion (JSON), а не лише голий PID/Started/Config"
     Test-BRAVOCondition `
         -Condition ([bool]$schedulerSettings.RequireProtectedRuntime) `
         -Name "Scheduler/ProtectedRuntime" `

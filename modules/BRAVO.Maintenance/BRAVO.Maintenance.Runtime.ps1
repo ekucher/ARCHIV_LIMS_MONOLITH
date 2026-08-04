@@ -704,12 +704,22 @@ function Enter-BRAVOMaintenanceOperationLock {
         if ($null -eq $stream) {
             throw "lock не звільнився за $waitMinutes хв.: $lastLockError"
         }
-        $lockText = (
-            "Operation=Maintenance; PID={0}; Started={1}; Config={2}" -f
-            $PID,
-            (Get-Date).ToString("o"),
-            $ConfigPath
-        )
+        # JSON замість "Operation=...; PID=...; Started=..." (аудит P1.8):
+        # той самий формат, що й у спільному lock з Archive.Runtime.ps1.
+        $lockProcessStartTime = try {
+            (Get-Process -Id $PID -ErrorAction Stop).StartTime.ToString("o")
+        } catch {
+            $null
+        }
+        $lockText = ([pscustomobject]@{
+            pid = $PID
+            processStartTime = $lockProcessStartTime
+            hostname = [Environment]::MachineName
+            operation = "Maintenance"
+            startedAt = (Get-Date).ToString("o")
+            packageVersion = [string]$script:ScriptVersion
+            config = $ConfigPath
+        } | ConvertTo-Json -Compress)
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($lockText)
         $stream.SetLength(0)
         $stream.Write($bytes, 0, $bytes.Length)

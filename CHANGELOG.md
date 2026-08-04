@@ -2,6 +2,20 @@
 
 ## 4.2.13 — 2026-08-04
 
+- P1.8 з плану виправлень (`ARCHIV_LIMS_MONOLITH_AUDIT_FIXES.md`):
+  `BRAVO_OPERATION.lock` (спільний exclusive-lock Archive/Maintenance)
+  тепер містить структуровані JSON-метадані замість голого
+  `"PID=...; Started=...; Config=..."`: `pid`, `processStartTime`
+  (реальний час старту процесу з `Get-Process`, не лише PID — відрізняє
+  той самий PID, перевикористаний після перезавантаження сервера, від
+  справді активного запуску), `hostname`, `operation`
+  (`Archive`/`Maintenance`), `startedAt`, `packageVersion`, `config`.
+  Сам механізм lock не змінено — це вже реальний ексклюзивний файловий
+  handle (`FileShare.None`), який Windows звільняє автоматично при
+  аварійному завершенні процесу, тому окремої перевірки "живий PID перед
+  видаленням stale lock" не було потрібно, на відміну від класичних
+  PID-файлів. Додано self-test `Scheduler/OperationLockMetadata`.
+
 - P1.9 з плану виправлень (`ARCHIV_LIMS_MONOLITH_AUDIT_FIXES.md`):
   катастрофи ErrorRecord навколо завантаження `BRAVO.config` і читання
   Credential Manager (SFTP/SMB/архів/webhook) в Archive/Health/Maintenance

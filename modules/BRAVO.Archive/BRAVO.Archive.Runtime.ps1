@@ -3122,12 +3122,25 @@ function Enter-BRAVOArchiveProcessLock {
         if ($null -eq $lockStream) {
             throw "lock не звільнився за $waitMinutes хв.: $lastLockError"
         }
-        $lockText = (
-            "PID={0}; Started={1}; Config={2}" -f
-            $PID,
-            (Get-Date).ToString("o"),
-            $configPath
-        )
+        # JSON замість "PID=...; Started=..." (аудит P1.8): processStartTime і
+        # hostname дають змогу відрізнити той самий PID, перевикористаний
+        # іншим процесом після перезавантаження, від справді активного
+        # BRAVO_ARCHIV, а operation — з якого runtime взято спільний lock
+        # (його ділять Archive і Maintenance).
+        $lockProcessStartTime = try {
+            (Get-Process -Id $PID -ErrorAction Stop).StartTime.ToString("o")
+        } catch {
+            $null
+        }
+        $lockText = ([pscustomobject]@{
+            pid = $PID
+            processStartTime = $lockProcessStartTime
+            hostname = [Environment]::MachineName
+            operation = "Archive"
+            startedAt = (Get-Date).ToString("o")
+            packageVersion = [string]$ScriptVersion
+            config = $configPath
+        } | ConvertTo-Json -Compress)
         $lockBytes = [System.Text.Encoding]::UTF8.GetBytes($lockText)
         $lockStream.SetLength(0)
         $lockStream.Write($lockBytes, 0, $lockBytes.Length)
