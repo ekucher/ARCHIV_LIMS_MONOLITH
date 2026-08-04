@@ -450,7 +450,89 @@ function Test-Compatibility {
         Write-BRAVOLog -Component 'STARTUP' -Message $toolIntegrity.Message -Level "WARNING"
     }
 
+    # Еталонний маніфест (version-controlled) — на відміну від
+    # TOFU-базової лінії вище, він здатний ЗАБЛОКУВАТИ запуск. Це
+    # найважливіша перевірка старту: заплановане завдання виконується від
+    # NT AUTHORITY\SYSTEM, тому підмінений 7za.exe/WinSCP.com отримав би
+    # найвищі права в системі.
+    $manifestMode = 'Enforce'
+    $manifestPath = Join-Path $bravoScriptDirectory "TOOLS_MANIFEST.json"
+    if ($toolIntegritySettings -is [System.Collections.IDictionary]) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$toolIntegritySettings.Mode)) {
+            $manifestMode = [string]$toolIntegritySettings.Mode
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$toolIntegritySettings.ManifestPath)) {
+            $manifestPath = [string]$toolIntegritySettings.ManifestPath
+        }
+    }
+
+    $script:BRAVOToolManifest = Test-BRAVOToolManifestIntegrity `
+        -ToolsDirectory $toolsPath `
+        -ManifestPath $manifestPath `
+        -Mode $manifestMode
+
+    if (-not $script:BRAVOToolManifest.IsValid) {
+        $manifestLevel = if ($script:BRAVOToolManifest.ShouldBlock) { "ERROR" } else { "WARNING" }
+        Write-BRAVOLog -Component 'STARTUP' -Message $script:BRAVOToolManifest.Message -Level $manifestLevel
+
+        if ($script:BRAVOToolManifest.ShouldBlock) {
+            Send-ToolIntegrityAlert -Result $script:BRAVOToolManifest
+            exit (Resolve-BRAVOExitCode -ToolIntegrityViolation)
+        }
+    } elseif (-not [string]::IsNullOrWhiteSpace([string]$script:BRAVOToolManifest.Message)) {
+        Write-BRAVOLog -Component 'STARTUP' -Message $script:BRAVOToolManifest.Message -Level "WARNING"
+    }
+
     return $compatibility
+}
+
+function Send-ToolIntegrityAlert {
+    param([Parameter(Mandatory = $true)]$Result)
+
+    # Критичне сповіщення надсилається незалежно від NotifyOnSuccess та
+    # інших "тихих" режимів: це подія безпеки, а не рутинний статус
+    # backup. Єдине, що її придушує, — явно вимкнені сповіщення
+    # (-NoSlack / notificationMode = none) або ненастроєний webhook.
+    if ($NoSlack -or $script:notificationMode -eq "none") {
+        Write-BRAVOLog -Component 'STARTUP' -Message "Критичне сповіщення про цілісність інструментів не відправлено: сповіщення вимкнено параметрами запуску або конфігурацією" -Level "WARNING"
+        return
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$script:notificationWebhookUrl)) {
+        Write-BRAVOLog -Component 'STARTUP' -Message "Критичне сповіщення про цілісність інструментів не відправлено: webhook не налаштовано" -Level "WARNING"
+        return
+    }
+
+    try {
+        $hostInformation = Get-HostInformation
+        $alertText = @(
+            ":rotating_light: КРИТИЧНО: порушено цілісність інструментів BRAVO",
+            "Сервер: $($hostInformation.MachineName) (IP: $($hostInformation.LocalIP))",
+            "Час: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')",
+            "",
+            [string]$Result.Message,
+            "",
+            "Архівацію НЕ виконано (код завершення 32)."
+        ) -join "`n"
+
+        # Discord потребує власного форматування й обмежений довжиною
+        # повідомлення; Slack приймає текст як є.
+        $outboundMessages = if ($script:notificationProvider -eq "discord") {
+            @(Split-DiscordNotificationText -Message (ConvertTo-DiscordNotificationText -Message $alertText))
+        } else {
+            @($alertText)
+        }
+        foreach ($outboundMessage in $outboundMessages) {
+            Send-BRAVOWebhookNotification `
+                -Provider $script:notificationProvider `
+                -WebhookUrl $script:notificationWebhookUrl `
+                -Message $outboundMessage `
+                -TimeoutSeconds $script:notificationRequestTimeoutSeconds
+        }
+        Write-BRAVOLog -Component 'STARTUP' -Message "Критичне сповіщення про цілісність інструментів відправлено у $($script:notificationProviderDisplayName)" -Level "SUCCESS"
+    } catch {
+        # Неможливість сповістити не змінює рішення блокувати запуск.
+        Write-BRAVOLog -Component 'STARTUP' -Message "Не вдалося відправити критичне сповіщення про цілісність інструментів: $(Protect-BRAVOLogSecret -Text $_.Exception.Message)" -Level "ERROR"
+    }
 }
 
 function New-SHA512HashLegacy {

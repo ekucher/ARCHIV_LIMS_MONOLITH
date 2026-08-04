@@ -2710,6 +2710,33 @@ $script:BRAVOToolIntegrity = Get-BRAVOToolIntegrityRecommendation `
 if ($script:BRAVOToolIntegrity.HasIntegrityIssue) {
     Write-Log -Message $script:BRAVOToolIntegrity.Message -Level "WARNING"
 }
+
+# Еталонний version-controlled маніфест: на відміну від TOFU-лінії вище,
+# здатний заблокувати запуск. Maintenance викликає архіватор і WinSCP,
+# тому підмінений інструмент так само отримав би права SYSTEM.
+$script:BRAVOToolManifestMode = 'Enforce'
+$script:BRAVOToolManifestPath = Join-Path $bravoScriptDirectory "TOOLS_MANIFEST.json"
+if ($toolIntegritySettings -is [System.Collections.IDictionary]) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$toolIntegritySettings.Mode)) {
+        $script:BRAVOToolManifestMode = [string]$toolIntegritySettings.Mode
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$toolIntegritySettings.ManifestPath)) {
+        $script:BRAVOToolManifestPath = [string]$toolIntegritySettings.ManifestPath
+    }
+}
+$script:BRAVOToolManifest = Test-BRAVOToolManifestIntegrity `
+    -ToolsDirectory $toolsPath `
+    -ManifestPath $script:BRAVOToolManifestPath `
+    -Mode $script:BRAVOToolManifestMode
+if (-not $script:BRAVOToolManifest.IsValid) {
+    $manifestLevel = if ($script:BRAVOToolManifest.ShouldBlock) { "ERROR" } else { "WARNING" }
+    Write-Log -Message $script:BRAVOToolManifest.Message -Level $manifestLevel
+    if ($script:BRAVOToolManifest.ShouldBlock) {
+        exit (Resolve-BRAVOExitCode -ToolIntegrityViolation)
+    }
+} elseif (-not [string]::IsNullOrWhiteSpace([string]$script:BRAVOToolManifest.Message)) {
+    Write-Log -Message $script:BRAVOToolManifest.Message -Level "WARNING"
+}
 Write-Log -Message "Перевірка вільного місця: усі локальні диски; виключення: $freeSpaceExclusionsText" -NoTimestamp
 if ($BravoMaintenanceEnabled -and $RangeIdMonitoringEnabled) {
     Write-Log -Message "Контроль діапазонів ID: понад $($RangeIdThresholdPercent)% у $RangeIdLogPath" -NoTimestamp

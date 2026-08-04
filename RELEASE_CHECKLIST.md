@@ -30,6 +30,14 @@
 - [ ] GitHub Actions CI (`.github/workflows/ci.yml`) зелений на коміті
       релізу — перевірте вкладку Actions перед тегуванням; CI не блокує
       merge технічно (немає branch protection), тому перевірка ручна.
+- [ ] Якщо оновлювались `Tools/` (`7za.*`, `WinSCP.*`): `TOOLS_MANIFEST.json`
+      оновлено через `ci\Update-BRAVOToolsManifest.ps1 -Apply` **на робочій
+      станції** (не на сервері), `git diff -- TOOLS_MANIFEST.json`
+      переглянуто вручну — нові хеші мають відповідати саме тому файлу,
+      який ви свідомо завантажили з офіційного джерела. Самотест
+      `ToolManifest/RepositoryManifestMatchesTools` не дасть змержити
+      комплект, у якому маніфест розійшовся з реальними `Tools/`, але він
+      не може перевірити ПОХОДЖЕННЯ бінарника — це ваша відповідальність.
 - [ ] Якщо PSScriptAnalyzer заблокував security-правило: додано
       **точковий** `[Diagnostics.CodeAnalysis.SuppressMessageAttribute]`
       із змістовним `Justification` біля конкретної функції — НЕ

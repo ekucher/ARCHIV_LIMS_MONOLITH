@@ -25,6 +25,7 @@ $script:BRAVOExitCodeNames = @{
     20 = "SkippedLockBusy"
     30 = "InvalidConfiguration"
     31 = "CredentialsUnavailable"
+    32 = "ToolIntegrityViolation"
     40 = "LocalArchiveFailed"
     41 = "IntegrityTestFailed"
     50 = "SftpFailed"
@@ -40,6 +41,7 @@ function Resolve-BRAVOExitCode {
         [switch]$LockBusy,
         [switch]$InvalidConfiguration,
         [switch]$CredentialsUnavailable,
+        [switch]$ToolIntegrityViolation,
         [switch]$LocalArchiveFailed,
         [switch]$IntegrityTestFailed,
         [switch]$SftpFailed,
@@ -55,7 +57,13 @@ function Resolve-BRAVOExitCode {
     # (local -> SFTP -> SMB -> maintenance -> health), і лише насамкінець —
     # "були тільки попередження". InternalError має найвищий пріоритет:
     # непередбачений збій ховає будь-яку часткову категоризацію нижче.
+    #
+    # ToolIntegrityViolation стоїть одразу за InternalError і вище навіть
+    # за LockBusy: це подія безпеки (підмінений 7za.exe/WinSCP запускався
+    # б від SYSTEM), і вона не повинна ховатись за буденним "зайнято
+    # іншою операцією" в історії Планувальника чи в Zabbix.
     if ($InternalError) { return 90 }
+    if ($ToolIntegrityViolation) { return 32 }
     if ($LockBusy) { return 20 }
     if ($InvalidConfiguration) { return 30 }
     if ($CredentialsUnavailable) { return 31 }
