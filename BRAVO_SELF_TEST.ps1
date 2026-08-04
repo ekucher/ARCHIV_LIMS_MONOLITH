@@ -1464,7 +1464,7 @@ try {
                 $ciWorkflowText.Contains('Test-BRAVOForbiddenPattern.ps1')
             ) `
             -Name "StaticAnalysis/CiUsesSettingsAndForbiddenPatterns" `
-            -Failure "ci.yml має викликати tools\ci\Invoke-BRAVOSecurityAnalysis.ps1 і tools\ci\Test-BRAVOForbiddenPattern.ps1"
+            -Failure "ci.yml має викликати ci\Invoke-BRAVOSecurityAnalysis.ps1 і ci\Test-BRAVOForbiddenPattern.ps1"
 
         # GitHub Actions записує вміст `run:` у тимчасовий .ps1 БЕЗ BOM,
         # і Windows PowerShell 5.1 читає його в системній ANSI-кодовій

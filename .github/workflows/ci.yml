@@ -80,7 +80,7 @@ jobs:
       # Keep every `run:` block in this workflow ASCII-only.
       - name: Forbidden patterns
         shell: powershell
-        run: .\tools\ci\Test-BRAVOForbiddenPattern.ps1
+        run: .\ci\Test-BRAVOForbiddenPattern.ps1
 
       - name: Markdown-документи не мають BOM
         shell: powershell
@@ -120,7 +120,7 @@ jobs:
       # `run:` block in this workflow ASCII-only.
       - name: PSScriptAnalyzer - security (blocking)
         shell: powershell
-        run: .\tools\ci\Invoke-BRAVOSecurityAnalysis.ps1
+        run: .\ci\Invoke-BRAVOSecurityAnalysis.ps1
 
       # Pass 2 (INFORMATIONAL): everything else -- style that
       # deliberately contradicts this repository's established
@@ -129,7 +129,7 @@ jobs:
       - name: PSScriptAnalyzer - remaining rules (informational)
         shell: powershell
         continue-on-error: true
-        run: .\tools\ci\Invoke-BRAVOSecurityAnalysis.ps1 -Informational
+        run: .\ci\Invoke-BRAVOSecurityAnalysis.ps1 -Informational
 
   self-test:
     name: BRAVO_SELF_TEST.ps1
