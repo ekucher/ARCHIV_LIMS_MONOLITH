@@ -1943,6 +1943,46 @@ try {
         -Name "Documentation/ReadmeDirectoryTreeAndTroubleshootingMatrix" `
         -Failure "README.md не повинен містити дублікат-заглушку 'BRAVO_*.ps1' і має містити матрицю діагностики за кодом завершення"
 
+    # Зовнішнє рев'ю 2026-08-05, P1: README описував модель довіри до Tools
+    # як trust-on-first-use і радив "видаліть TOOLS_INTEGRITY.json, щоб
+    # прийняти нову базову лінію". Код на той момент уже блокував запуск за
+    # TOOLS_MANIFEST.json. Небезпека не теоретична: адміністратор, який
+    # після security-алерту сумлінно виконає застарілу інструкцію, власноруч
+    # легітимізує підмінений бінарник. Документація не повинна пропонувати
+    # процедуру, яка вимикає діючий контроль безпеки.
+    Test-BRAVOCondition `
+        -Condition (
+            $readmeTextForDocFixes.Contains("TOOLS_MANIFEST.json") -and
+            $readmeTextForDocFixes.Contains("Enforce") -and
+            $readmeTextForDocFixes.Contains("Update-BRAVOToolsManifest.ps1")
+        ) `
+        -Name "Documentation/ReadmeDescribesManifestToolTrust" `
+        -Failure "README.md має описувати саме TOOLS_MANIFEST.json + режим Enforce як модель довіри до Tools, із посиланням на ci\Update-BRAVOToolsManifest.ps1"
+
+    # Та сама вимога з іншого боку: README не має радити видалення жодного
+    # з маніфестів як спосіб "полагодити" помилку цілісності.
+    Test-BRAVOCondition `
+        -Condition (
+            -not [regex]::IsMatch(
+                $readmeTextForDocFixes,
+                '(?i)видал[а-яіїєґ]*\s+(файл\s+)?`?(TOOLS_INTEGRITY|TOOLS_MANIFEST|RUNTIME_MANIFEST)'
+            )
+        ) `
+        -Name "Documentation/ReadmeNeverAdvisesDeletingManifest" `
+        -Failure "README.md не повинен радити видаляти маніфест цілісності — це вимикає перевірку, а не усуває причину"
+
+    # Зовнішнє рев'ю 2026-08-05, P1: SECURITY.md публікував порядок
+    # повідомлення про вразливості із заглушками "[заповнити]" замість SLA.
+    # Політика без строків не є політикою.
+    $securityTextForContact = [IO.File]::ReadAllText(
+        (Join-Path $root "SECURITY.md"),
+        [Text.Encoding]::UTF8
+    )
+    Test-BRAVOCondition `
+        -Condition (-not $securityTextForContact.Contains("[заповнити]")) `
+        -Name "Documentation/SecurityPolicyHasNoPlaceholders" `
+        -Failure "SECURITY.md не повинен містити заглушок '[заповнити]' — контакт і строки реакції мають бути конкретними"
+
     # CLAUDE_CODE_TZ_ARCHIV_LIMS_MONOLITH.md: автоматичний Discovery джерел
     # (BRAVO_ROOT/WEB_ROOT/MODEL/BLOG/BRAVOEXCH/BAZA_APP/BAZA_WWW) за
     # встановленою службою BRAVO і активним bravo.ini, з повним ручним
