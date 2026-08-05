@@ -123,6 +123,13 @@ function Format-BRAVOFileSize {
     return "$Bytes Б"
 }
 
+# У класичному хості PowerShell Write-Progress малюється поверх верхніх
+# рядків вікна й повертає їх лише на -Completed. Через це заголовок і перші
+# етапи були невидимі протягом усього запуску — саме тоді, коли оператор
+# дивиться на екран. Порожні рядки перед заголовком зсувають вміст під
+# смугу, тому нічого не перекривається.
+$script:BRAVOConsoleProgressReservedLines = 6
+
 function Write-BRAVOHeader {
     [CmdletBinding()]
     param(
@@ -138,6 +145,12 @@ function Write-BRAVOHeader {
 
     if (-not $script:BRAVOConsoleEnabled) {
         return
+    }
+
+    if ($script:BRAVOProgressEnabled) {
+        for ($i = 0; $i -lt $script:BRAVOConsoleProgressReservedLines; $i++) {
+            Write-Host ''
+        }
     }
 
     Write-Host ''
@@ -239,6 +252,40 @@ function Write-BRAVOConsoleDetail {
     Write-Host ("      " + $Message) -ForegroundColor $Color
 }
 
+# Рівні журналу мають ті самі кольори, що й статуси етапів: оператор не має
+# вчитуватись у префікс, щоб зрозуміти, що сталося. Ключі збігаються з
+# рівнями BRAVO.Logging, тому маплення один-в-один без перекладу.
+$script:BRAVOConsoleLevelColors = @{
+    TRACE   = 'DarkGray'
+    DEBUG   = 'DarkGray'
+    INFO    = 'Gray'
+    SUCCESS = 'Green'
+    WARNING = 'Yellow'
+    ERROR   = 'Red'
+    FATAL   = 'Red'
+}
+
+# Єдина точка, через яку в консоль потрапляє повідомлення журналу. Головне,
+# що вона робить понад вибір кольору — закриває відкритий рядок етапу, інакше
+# WARNING із бізнес-логіки дописався б у хвіст "[3/7] BLOG........." і зламав
+# би розмітку саме тоді, коли щось пішло не так.
+function Write-BRAVOConsoleMessage {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Message,
+
+        [ValidateSet('TRACE', 'DEBUG', 'INFO', 'SUCCESS', 'WARNING', 'ERROR', 'FATAL')]
+        [string]$Level = 'INFO'
+    )
+
+    $color = if ($script:BRAVOConsoleLevelColors.ContainsKey($Level)) {
+        [ConsoleColor]$script:BRAVOConsoleLevelColors[$Level]
+    } else {
+        [ConsoleColor]::Gray
+    }
+    Write-BRAVOConsoleDetail -Message $Message -Color $color
+}
+
 function Write-BRAVOWarning {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string]$Message)
@@ -317,6 +364,8 @@ Export-ModuleMember -Function @(
     'Write-BRAVOHeader',
     'Write-BRAVOStep',
     'Write-BRAVOStepResult',
+    'Write-BRAVOConsoleDetail',
+    'Write-BRAVOConsoleMessage',
     'Write-BRAVOWarning',
     'Write-BRAVOError',
     'Write-BRAVOSummary'

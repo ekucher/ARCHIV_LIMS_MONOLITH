@@ -3346,6 +3346,13 @@ function Main {
     Initialize-BRAVOProgress `
         -Activity ([string]$progressSettings.Activity) `
         -Enabled ([bool]$progressSettings.Enabled)
+    # Консольна половина журналу теж має йти через BRAVO.Console: інакше
+    # WARNING із бізнес-логіки допишеться у хвіст відкритого рядка етапу
+    # ("[3/7] BLOG......... " без переводу рядка) і зламає розмітку.
+    Set-BRAVOLogConsoleWriter -Writer {
+        param($Message, $Level)
+        Write-BRAVOConsoleMessage -Message $Message -Level $Level
+    }
     Write-BRAVOHeader `
         -Title ("BRAVO ARCHIVE {0}" -f $ScriptVersion) `
         -Institution ([string]$bravoSettings.InstitutionName) `
