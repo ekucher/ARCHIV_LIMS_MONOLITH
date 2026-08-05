@@ -82,6 +82,19 @@ jobs:
         shell: powershell
         run: .\ci\Test-BRAVOForbiddenPattern.ps1
 
+      # RELEASE_POLICY.md: branch <-> packageVersion <-> releaseChannel.
+      # AUD-016 moved the channel out of VERSION.json because manual
+      # per-branch synchronisation failed twice on a fast-forward merge.
+      # The policy puts the channel back into the package (a deployed kit
+      # has no .git at all) and replaces that human step with this gate:
+      # a stable version on developer, or a -dev/-rc version on master,
+      # now fails CI instead of reaching a server unnoticed.
+      #
+      # Same ASCII-only reason as the step above: keep `run:` ASCII.
+      - name: Release policy (branch / version / channel)
+        shell: powershell
+        run: .\ci\Test-BRAVOReleasePolicy.ps1
+
       # Integrity manifests must stay in sync with what they describe.
       # A stale manifest would make a freshly deployed kit block itself
       # on the very first run, so this is a build failure, not a warning.
