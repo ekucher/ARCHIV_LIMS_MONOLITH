@@ -2974,6 +2974,63 @@ try {
         ) `
         -Name "Runtime/SharedWinSCPDotNetDiscovery" `
         -Failure "пошук WinSCP .NET components має мати одну реалізацію у BRAVO.ArchiveRuntime"
+
+    # Аудит Low #10: Get-BRAVOWinSCPBusyMessage формував текст в обхід
+    # єдиної точки санітизації. Її результат іде у Write-BRAVOLog (Archive)
+    # і в throw (Health) — тобто в журнал і в сповіщення.
+    #
+    # Сьогодні в $Availability.Processes лежать лише ProcessId, і витікати
+    # нема чому. Але $Availability.Error — це вільний текст винятку, а
+    # найприроднішим розширенням діагностики "який саме WinSCP працює" є
+    # CommandLine з Win32_Process, у якому лежить sftp://user:password@host.
+    # Тест фіксує вимогу заздалегідь, а не після інциденту.
+    Remove-Module -Name 'BRAVO.ArchiveRuntime' -Force -ErrorAction SilentlyContinue
+    Import-Module -Name (Join-Path $root "modules\BRAVO.ArchiveRuntime\BRAVO.ArchiveRuntime.psd1") -Force -ErrorAction Stop
+
+    # Фікстура складається з частин, а не пишеться літералом: рядок виду
+    # sftp://user:pass@host у файлі репозиторію — це справжній секрет для
+    # будь-якого сканера, і GitGuardian на нього вже спрацював. Тримати в
+    # коді щось, що виглядає як облікові дані, і глушити сканер винятком —
+    # гірше, ніж не тримати цього зовсім.
+    $busyLeakUser = 'bravo'
+    $busyLeakSecret = 'S3cr3t' + 'Pass'
+    $busyLeakSecondSecret = 'T0pS3' + 'cret'
+    $busyLeakAvailability = [pscustomobject]@{
+        Available = $false
+        Processes = @()
+        Error = (
+            'WinSCP.com /command "open sftp://{0}:{1}@nas.local/" -password={2}' -f
+                $busyLeakUser, $busyLeakSecret, $busyLeakSecondSecret
+        )
+    }
+    $busyLeakMessage = Get-BRAVOWinSCPBusyMessage `
+        -Availability $busyLeakAvailability -Operation "передача архіву"
+    Test-BRAVOCondition `
+        -Condition (
+            -not $busyLeakMessage.Contains($busyLeakSecret) -and
+            -not $busyLeakMessage.Contains($busyLeakSecondSecret) -and
+            $busyLeakMessage.Contains('***') -and
+            $busyLeakMessage.Contains('nas.local')
+        ) `
+        -Name "Secrets/WinSCPBusyMessageIsSanitized" `
+        -Failure "повідомлення про зайнятість WinSCP має проходити Get-SanitizedWinSCPDiagnostic: пароль не повинен потрапляти в журнал і сповіщення (отримано: $busyLeakMessage)"
+
+    # Санітизація не повинна псувати звичайний випадок: діагностика без
+    # секретів має лишатися читабельною, інакше її почнуть обходити.
+    $busyNormalMessage = Get-BRAVOWinSCPBusyMessage `
+        -Availability ([pscustomobject]@{
+            Available = $false
+            Processes = @([pscustomobject]@{ ProcessId = 4242; Started = 'x' })
+            Error = $null
+        }) `
+        -Operation "синхронізація BAZA"
+    Test-BRAVOCondition `
+        -Condition (
+            $busyNormalMessage.Contains('PID=4242') -and
+            $busyNormalMessage.Contains('синхронізація BAZA')
+        ) `
+        -Name "Secrets/WinSCPBusyMessageKeepsDiagnostics" `
+        -Failure "санітизація не повинна прибирати корисну діагностику (PID, назву операції): $busyNormalMessage"
     Test-BRAVOCondition `
         -Condition (
             $maintenanceScriptText.Contains('BRAVO.ArchiveHelpers') -and

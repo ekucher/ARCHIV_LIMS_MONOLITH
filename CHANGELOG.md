@@ -2,6 +2,28 @@
 
 ## Не випущено
 
+- **Аудит Low #10: `Get-BRAVOWinSCPBusyMessage` формував текст в обхід
+  єдиної точки санітизації.** Її результат іде у `Write-BRAVOLog`
+  (Archive) і в `throw` (Health) — тобто в журнал і в сповіщення, — тоді
+  як `Get-SanitizedWinSCPDiagnostic` застосовувалась лише до
+  stdout/stderr WinSCP.
+
+  Сьогодні витікати нема чому: в `$Availability.Processes` лежать самі
+  `ProcessId`. Але `$Availability.Error` — це вільний текст із
+  `$_.Exception.Message`, а найприроднішим розширенням діагностики «який
+  саме WinSCP зараз працює» є `CommandLine` з `Win32_Process`, у якому
+  лежить `sftp://user:password@host`. Тоді повідомлення про зайнятість
+  стало б місцем витоку пароля в журнал і Slack/Discord.
+
+  Тепер обидві гілки повідомлення проходять спільну санітизацію.
+  Покрито двома самотестами: `Secrets/WinSCPBusyMessageIsSanitized`
+  (пароль у `sftp://` і в `-password=` замаскований) і
+  `Secrets/WinSCPBusyMessageKeepsDiagnostics` (PID і назва операції
+  лишаються читабельними — інакше санітизацію почнуть обходити).
+
+  На цьому закрито всі три Low-зауваження початкового аудиту (#8, #9,
+  #10).
+
 - **Аудит Low #9: вікно між створенням тимчасового WinSCP-файла й
   накладанням ACL.** `New-BRAVOWinSCPTemporaryScriptPath` створювала файл
   через `[IO.File]::Open`, а потім захищала його через `Set-Acl` —

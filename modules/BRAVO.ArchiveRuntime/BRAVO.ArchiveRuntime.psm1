@@ -142,14 +142,28 @@ function Get-BRAVOWinSCPBusyMessage {
         [string]$Operation = "операція SFTP"
     )
 
+    # Результат іде у Write-BRAVOLog (Archive) і в throw (Health), тобто в
+    # журнал і в сповіщення — тому проходить ту саму єдину точку
+    # санітизації, що й stdout/stderr WinSCP.
+    #
+    # ЧОМУ ЦЕ НЕ ЗАЙВЕ (аудит Low #10): $Availability.Error — це вільний
+    # текст, узятий з $_.Exception.Message запиту WMI, а $Availability
+    # описує ЧУЖИЙ процес WinSCP. Сьогодні звідти беруться лише ProcessId,
+    # і витікати нема чому. Але найприроднішим розширенням діагностики
+    # "який саме WinSCP зараз працює" є CommandLine з Win32_Process — а він
+    # містить sftp://user:password@host. Тоді повідомлення про зайнятість
+    # стало б місцем витоку пароля в лог. Санітизація тут робить це
+    # розширення безпечним заздалегідь, а не після інциденту.
     if (-not [string]::IsNullOrWhiteSpace([string]$Availability.Error)) {
-        return "Запуск WinSCP для ${Operation} заблоковано: $($Availability.Error)"
+        return (Get-SanitizedWinSCPDiagnostic `
+            -Text "Запуск WinSCP для ${Operation} заблоковано: $($Availability.Error)")
     }
 
     $processDetails = @($Availability.Processes | ForEach-Object {
         "PID=$($_.ProcessId)"
     }) -join ", "
-    return "Запуск WinSCP для ${Operation} заблоковано: виявлено активний WinSCP.com ($processDetails)"
+    return (Get-SanitizedWinSCPDiagnostic `
+        -Text "Запуск WinSCP для ${Operation} заблоковано: виявлено активний WinSCP.com ($processDetails)")
 }
 
 function Get-SanitizedWinSCPDiagnostic {
