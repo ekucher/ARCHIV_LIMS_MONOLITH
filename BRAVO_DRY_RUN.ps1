@@ -539,6 +539,67 @@ try {
         }
     }
 
+    # Ті самі три перевірки, які виконує кожен production-entrypoint ДО
+    # Import-Module. Без них dry-run звітував «0 помилок» на комплекті, який
+    # гарантовано впав би з кодом 33 при першому ж запуску за розкладом —
+    # рівно це й сталося на тестовому сервері, де в Tools\ лежали залишки
+    # старого розкладання. Перевірка готовності, яка не перевіряє те, що
+    # перевіряє сам запуск, дає хибну впевненість.
+    $dryRunGuardPath = Join-Path $configRoot 'BRAVO_RUNTIME_GUARD.ps1'
+    if (-not (Test-Path -LiteralPath $dryRunGuardPath -PathType Leaf)) {
+        Add-DryRunResult FAIL "Цілісність" "Guard" "відсутній: $dryRunGuardPath"
+    } else {
+        $dryRunGuardLoaded = $false
+        try {
+            . $dryRunGuardPath
+            $dryRunGuardLoaded = $null -ne (
+                Get-Command -Name 'Test-BRAVORuntimeManifestIntegrity' `
+                    -CommandType Function -ErrorAction SilentlyContinue
+            )
+        } catch {
+            $dryRunGuardLoaded = $false
+        }
+
+        if (-not $dryRunGuardLoaded) {
+            Add-DryRunResult FAIL "Цілісність" "Guard" (
+                "не завантажується — перевірка цілісності не виконається й " +
+                "при запуску: $dryRunGuardPath"
+            )
+        } else {
+            $runtimeIntegrityResult = Test-BRAVORuntimeManifestIntegrity `
+                -RuntimeRoot $configRoot `
+                -ManifestPath (Join-Path $configRoot 'RUNTIME_MANIFEST.json') `
+                -Mode 'Enforce'
+            if ($runtimeIntegrityResult.IsValid) {
+                Add-DryRunResult PASS "Цілісність" "Комплект" "RUNTIME_MANIFEST.json відповідає комплекту"
+            } else {
+                Add-DryRunResult FAIL "Цілісність" "Комплект" ([string]$runtimeIntegrityResult.Message)
+            }
+
+            $securitySettingsResult = Test-BRAVORuntimeSecuritySettings `
+                -ConfigPath $resolvedConfigPath `
+                -Mode 'Enforce'
+            if ($securitySettingsResult.IsValid) {
+                Add-DryRunResult PASS "Цілісність" "Перемикачі безпеки" "Enforce + VSS підтверджено в BRAVO.config"
+            } else {
+                Add-DryRunResult FAIL "Цілісність" "Перемикачі безпеки" ([string]$securitySettingsResult.Message)
+            }
+
+            # -NoWrite обов'язковий: dry-run не має права записувати стан
+            # версії, інакше він сам фіксує розгортання, яке ще не відбулося.
+            $versionStateResult = Test-BRAVOVersionDowngrade `
+                -RuntimeRoot $configRoot `
+                -StatePath (Join-Path $configRoot 'LOGS\BRAVO_VERSION_STATE.json') `
+                -Mode 'Enforce' `
+                -NoWrite
+            if ($versionStateResult.IsValid) {
+                Add-DryRunResult PASS "Цілісність" "Версія" "відкат на старішу версію не виявлено"
+            } else {
+                Add-DryRunResult FAIL "Цілісність" "Версія" ([string]$versionStateResult.Message)
+            }
+        }
+    }
+
     $archiverPath = if (-not [string]::IsNullOrWhiteSpace([string]$arcPath)) {
         [string]$arcPath
     } elseif (-not [string]::IsNullOrWhiteSpace([string]$toolsPath)) {

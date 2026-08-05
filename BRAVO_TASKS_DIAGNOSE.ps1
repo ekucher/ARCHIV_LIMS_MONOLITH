@@ -287,10 +287,16 @@ try {
             )
         }
 
-        $results = @(
-            [IO.File]::ReadAllText($resultPath, [Text.Encoding]::UTF8) |
-                ConvertFrom-Json
-        )
+        # ConvertFrom-Json у Windows PowerShell 5.1 віддає JSON-масив ОДНИМ
+        # об'єктом, не розгортаючи його в конвеєр. Через це @(... | ConvertFrom-Json)
+        # давало масив з єдиного елемента-масиву: цикл нижче виконувався один
+        # раз, а $result.Status ставав System.Object[] і друкувався як
+        # "[PASS PASS FAIL ...] Конфігурація Скрипти ...: шлях шлях шлях" —
+        # увесь результат SYSTEM dry-run в одному нечитабельному рядку.
+        # Присвоєння у змінну перед @() зберігає розгортання.
+        $parsedResults = [IO.File]::ReadAllText($resultPath, [Text.Encoding]::UTF8) |
+            ConvertFrom-Json
+        $results = @($parsedResults)
         foreach ($result in $results) {
             $color = switch ([string]$result.Status) {
                 "PASS" { "Green" }

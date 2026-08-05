@@ -2578,6 +2578,140 @@ try {
         -Name "Documentation/ThreatModelHasNoStaleResidualRisk" `
         -Failure "THREAT_MODEL.md містить твердження про залишковий ризик, який код уже закрив: $($foundStaleClaims -join '; ')"
 
+    # ===== DRY-RUN МУСИТЬ ПЕРЕВІРЯТИ ЦІЛІСНІСТЬ =====
+    # Знайдено тестовим розгортанням: dry-run звітував «0 помилок» на
+    # комплекті, у Tools\ якого лежали залишки старого розкладання. Кожен
+    # production-запуск на тому ж комплекті завершився б кодом 33, бо
+    # entrypoint кличе guard, а dry-run — ні. Перевірка готовності, яка не
+    # перевіряє те, що перевіряє сам запуск, дає хибну впевненість, і це
+    # найгірше, що вона може зробити.
+    $dryRunAst = [System.Management.Automation.Language.Parser]::ParseFile(
+        (Join-Path $root 'BRAVO_DRY_RUN.ps1'), [ref]$null, [ref]$null
+    )
+    $dryRunCommands = @(
+        $dryRunAst.FindAll(
+            { param($node) $node -is [System.Management.Automation.Language.CommandAst] },
+            $true
+        ) | ForEach-Object { [string]$_.GetCommandName() }
+    )
+    $dryRunMissingGuardChecks = @(
+        @(
+            'Test-BRAVORuntimeManifestIntegrity',
+            'Test-BRAVORuntimeSecuritySettings',
+            'Test-BRAVOVersionDowngrade'
+        ) | Where-Object { $dryRunCommands -notcontains $_ }
+    )
+    Test-BRAVOCondition `
+        -Condition ($dryRunMissingGuardChecks.Count -eq 0) `
+        -Name "DryRun/VerifiesRuntimeIntegrity" `
+        -Failure "BRAVO_DRY_RUN.ps1 має виконувати ті самі перевірки guard, що й entrypoint; не викликано: $($dryRunMissingGuardChecks -join ', ')"
+
+    # Dry-run не має права записувати стан версії: він фіксував би
+    # розгортання, якого ще не було.
+    $versionDowngradeCallInDryRun = $dryRunAst.Find(
+        {
+            param($node)
+            $node -is [System.Management.Automation.Language.CommandAst] -and
+            ([string]$node.GetCommandName()) -eq 'Test-BRAVOVersionDowngrade'
+        },
+        $true
+    )
+    $dryRunUsesNoWrite = $false
+    if ($null -ne $versionDowngradeCallInDryRun) {
+        $dryRunUsesNoWrite = @(
+            $versionDowngradeCallInDryRun.CommandElements |
+                Where-Object {
+                    $_ -is [System.Management.Automation.Language.CommandParameterAst] -and
+                    $_.ParameterName -eq 'NoWrite'
+                }
+        ).Count -gt 0
+    }
+    Test-BRAVOCondition `
+        -Condition $dryRunUsesNoWrite `
+        -Name "DryRun/DoesNotRecordVersionState" `
+        -Failure "Test-BRAVOVersionDowngrade у BRAVO_DRY_RUN.ps1 має викликатись із -NoWrite — dry-run не змінює стан системи"
+
+    # ===== JSON-МАСИВ НЕ МОЖНА ЗБИРАТИ ЧЕРЕЗ @(конвеєр) =====
+    # Знайдено тестовим розгортанням: ConvertFrom-Json у Windows PowerShell 5.1
+    # віддає JSON-масив ОДНИМ об'єктом, не розгортаючи його в конвеєр. Тому
+    # @(... | ConvertFrom-Json) дає масив з одного елемента-масиву: цикл
+    # виконується один раз, а $result.Status стає System.Object[]. У
+    # BRAVO_TASKS_DIAGNOSE це перетворювало весь результат SYSTEM dry-run на
+    # один нечитабельний рядок саме тоді, коли його читають для діагностики.
+    $jsonArraySample = '[{"Status":"PASS","Name":"A"},{"Status":"FAIL","Name":"B"}]'
+    # Хибну форму будуємо через scriptblock із рядка: інакше сканер нижче
+    # знайшов би її у власному коді самотесту й червонів би завжди.
+    # Кількість рахуємо ВСЕРЕДИНІ scriptblock: оператор & розгортає його
+    # результат у конвеєр і тим самим приховав би саме те згортання, яке
+    # ми перевіряємо.
+    $jsonCollapsingProbe = [scriptblock]::Create(
+        '$collapsed = @($args[0] | ConvertFrom-Json); return $collapsed.Count'
+    )
+    $jsonCollapsedCount = & $jsonCollapsingProbe $jsonArraySample
+    $jsonParsed = $jsonArraySample | ConvertFrom-Json
+    $jsonViaVariable = @($jsonParsed)
+    # Перевіряємо не лише власний код, а й саму поведінку платформи: якщо
+    # майбутня версія PowerShell почне розгортати масив, тест це помітить.
+    Test-BRAVOCondition `
+        -Condition (
+            $jsonViaVariable.Count -eq 2 -and
+            [string]$jsonViaVariable[0].Status -eq 'PASS' -and
+            [string]$jsonViaVariable[1].Status -eq 'FAIL' -and
+            # Друга половина контракту: хибна форма справді згортає масив.
+            # Без цієї перевірки тест лишався б зеленим, навіть якби
+            # проблеми не існувало, і нічого не доводив.
+            $jsonCollapsedCount -eq 1
+        ) `
+        -Name "Json/ArrayEnumeratesThroughVariable" `
+        -Failure "Присвоєння у змінну перед @() має зберігати розгортання JSON-масиву; отримано елементів: $($jsonViaVariable.Count), через @(конвеєр): $jsonCollapsedCount"
+
+    # Той самий патерн не має лишитися в жодному скрипті комплекту.
+    # Пошук по AST, а не підрядком: інакше тест ловив би власні пояснювальні
+    # коментарі — на цих граблях ця гілка вже стояла двічі.
+    $collapsedJsonUsages = @()
+    # -Include мовчки ігнорується разом із -LiteralPath, тому фільтруємо
+    # розширення самі; LOGS виключено окремо — там лежить відкритий
+    # transcript цього ж прогону.
+    foreach ($jsonScriptPath in @(Get-ChildItem -LiteralPath $root -Recurse -File |
+        Where-Object {
+            @('.ps1', '.psm1') -contains $_.Extension.ToLowerInvariant() -and
+            $_.FullName -notlike '*\local-backups\*' -and
+            $_.FullName -notlike '*\LOGS\*'
+        })) {
+        $jsonScriptAst = [System.Management.Automation.Language.Parser]::ParseFile(
+            $jsonScriptPath.FullName, [ref]$null, [ref]$null
+        )
+        $collapsedNode = $jsonScriptAst.Find(
+            {
+                param($node)
+                if ($node -isnot [System.Management.Automation.Language.ArrayExpressionAst]) {
+                    return $false
+                }
+                # Всередині @() шукаємо конвеєр, останній елемент якого —
+                # виклик ConvertFrom-Json. Саме він і згортає масив.
+                $inner = $node.SubExpression.Find(
+                    {
+                        param($pipelineNode)
+                        $pipelineNode -is [System.Management.Automation.Language.PipelineAst] -and
+                        $pipelineNode.PipelineElements.Count -gt 1 -and
+                        ($pipelineNode.PipelineElements[-1] -is [System.Management.Automation.Language.CommandAst]) -and
+                        ([string]$pipelineNode.PipelineElements[-1].GetCommandName()) -eq 'ConvertFrom-Json'
+                    },
+                    $true
+                )
+                return ($null -ne $inner)
+            },
+            $true
+        )
+        if ($null -ne $collapsedNode) {
+            $collapsedJsonUsages += $jsonScriptPath.Name
+        }
+    }
+    Test-BRAVOCondition `
+        -Condition ($collapsedJsonUsages.Count -eq 0) `
+        -Name "Json/NoCollapsedArrayFromPipeline" `
+        -Failure "@(... | ConvertFrom-Json) згортає JSON-масив в один елемент; присвойте у змінну перед @(). Знайдено у: $($collapsedJsonUsages -join ', ')"
+
     # ===== GUARD МУСИТЬ БУТИ FAIL-CLOSED =====
     # Test-Path підтверджує лише наявність файлу. Якщо dot-source не
     # виконався (ExecutionPolicy AllSigned без підпису, синтаксична помилка,
