@@ -1,0 +1,35 @@
+version: 2
+
+# GitGuardian бачить "секрети" там, де їх немає за визначенням:
+# 40-символьні git-hash (commit SHA) і 64-символьні SHA-256 контрольні
+# суми — це високоентропійні hex-рядки, і generic-детектори реагують
+# саме на форму, не на зміст.
+#
+# Обидві категорії публічні за природою:
+#   - commit SHA з'явився через pinning GitHub Actions (аудит P3) і
+#     sourceCommit у VERSION.json (аудит P4) — їх видно в git-історії
+#     та в публічних репозиторіях самих actions;
+#   - SHA-256 у маніфестах цілісності обчислюються з файлів, які й так
+#     є в репозиторії, друкуються в логах і в повідомленнях про помилки.
+#
+# Виняток навмисно вузький: два конкретні файли маніфестів і поіменно
+# перелічені hash. Будь-який справжній секрет у будь-якому іншому місці
+# сканується як і раніше.
+#
+# УВАГА: цей файл читає ggshield (CLI/pre-commit). Перевірка
+# "GitGuardian Security Checks" у PR — це GitHub App, її політика
+# керується в dashboard.gitguardian.com і НЕ налаштовується з
+# репозиторію. Якщо перевірка лишається червоною, інцидент треба
+# закрити як false positive саме в дашборді.
+secret:
+  ignored-paths:
+    - "TOOLS_MANIFEST.json"
+    - "RUNTIME_MANIFEST.json"
+
+  ignored-matches:
+    - name: "actions/checkout@v4 pinned commit SHA (аудит P3)"
+      match: "11d5960a326750d5838078e36cf38b85af677262"
+    - name: "actions/upload-artifact@v4 pinned commit SHA (аудит P3)"
+      match: "ea165f8d65b6e75b540449e92b4886f43607fa02"
+    - name: "gitleaks/gitleaks-action@v2 pinned commit SHA (аудит P3)"
+      match: "ff98106e4c7b2bc287b24eaf42907196329070c7"

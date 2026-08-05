@@ -79,6 +79,7 @@ function Get-BravoVersionMetadata {
             ReleaseChannel = 'legacy'
             ReleaseChannelSource = 'legacy'
             BuildId = $null
+            SourceCommit = $null
             VersionFilePath = $versionPath
             VersionFilePresent = $false
         }
@@ -121,6 +122,17 @@ function Get-BravoVersionMetadata {
         $null
     }
 
+    # sourceCommit (аудит P4) — повний git-hash коміту, з якого зібрано
+    # комплект. buildId (короткий hash) не дає однозначної відповіді на
+    # питання "який саме код зараз на цьому сервері": короткі hash можуть
+    # збігатися, і їх неможливо надійно знайти в історії. Поле необов'язкове
+    # з тієї ж причини, що й buildId — сумісність зі старішими VERSION.json.
+    $sourceCommit = if ($null -ne $versionData.PSObject.Properties['sourceCommit']) {
+        [string]$versionData.sourceCommit
+    } else {
+        $null
+    }
+
     $staticReleaseChannel = [string]$versionData.releaseChannel
     $gitDetectedReleaseChannel = Resolve-BRAVOReleaseChannelFromGit -ConfigRoot $ConfigRoot
     $effectiveReleaseChannel = if (-not [string]::IsNullOrWhiteSpace($gitDetectedReleaseChannel)) {
@@ -144,6 +156,7 @@ function Get-BravoVersionMetadata {
         ReleaseChannel = $effectiveReleaseChannel
         ReleaseChannelSource = $releaseChannelSource
         BuildId = $buildId
+        SourceCommit = $sourceCommit
         VersionFilePath = $versionPath
         VersionFilePresent = $true
     }
