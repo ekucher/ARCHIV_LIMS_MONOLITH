@@ -1945,50 +1945,64 @@ function Clear-BRAVOStaleWinSCPSensitiveTemporaryScripts {
 }
 
 function New-BRAVOWinSCPTemporaryScriptPath {
-    # WinSCP script містить URL з обліковими даними. Створюємо файл атомарно
-    # та залишаємо доступ лише поточному користувачу, SYSTEM і Administrators.
+    # WinSCP script містить URL з обліковими даними, тому файл створюється
+    # ОДРАЗУ з фінальним DACL — доступ лише поточному користувачу, SYSTEM і
+    # Administrators.
+    #
+    # ЧОМУ НЕ "створити, потім Set-Acl" (аудит Low #9): між створенням файлу
+    # й накладанням ACL файл існує з успадкованими від %TEMP% правами. Для
+    # запланованого завдання %TEMP% — це C:\Windows\Temp, куди має доступ
+    # значно ширше коло. Порожній файл у цьому вікні секрету ще не містить,
+    # але Windows перевіряє права в момент ВІДКРИТТЯ дескриптора, а не при
+    # кожному читанні: відкритий у цьому вікні дескриптор переживе зміну ACL
+    # і прочитає облікові дані, які запише сюди викликач. Передача
+    # FileSecurity у конструктор FileStream прибирає вікно повністю — файл
+    # ніколи не існує з успадкованими правами.
     Clear-BRAVOStaleWinSCPSensitiveTemporaryScripts
     $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
     $temporaryPath = Join-Path `
         -Path $temporaryRoot `
         -ChildPath ("BRAVO_WinSCP_{0}.txt" -f [guid]::NewGuid().ToString("N"))
+
+    # DACL будується ДО створення файлу.
+    $security = New-Object System.Security.AccessControl.FileSecurity
+    $security.SetAccessRuleProtection($true, $false)
+    $uniqueSids = @{}
+    foreach ($sid in @(
+            [Security.Principal.WindowsIdentity]::GetCurrent().User,
+            (New-Object Security.Principal.SecurityIdentifier("S-1-5-18")),
+            (New-Object Security.Principal.SecurityIdentifier("S-1-5-32-544"))
+        )) {
+        if ($null -eq $sid -or $uniqueSids.ContainsKey($sid.Value)) {
+            continue
+        }
+        $uniqueSids[$sid.Value] = $true
+        $rule = New-Object `
+            -TypeName System.Security.AccessControl.FileSystemAccessRule `
+            -ArgumentList @(
+                $sid,
+                [Security.AccessControl.FileSystemRights]::FullControl,
+                [Security.AccessControl.AccessControlType]::Allow
+            )
+        [void]$security.AddAccessRule($rule)
+    }
+
     $stream = $null
     try {
-        $stream = [IO.File]::Open(
-            $temporaryPath,
-            [IO.FileMode]::CreateNew,
-            [IO.FileAccess]::Write,
-            [IO.FileShare]::None
-        )
+        $stream = New-Object `
+            -TypeName System.IO.FileStream `
+            -ArgumentList @(
+                $temporaryPath,
+                [IO.FileMode]::CreateNew,
+                [Security.AccessControl.FileSystemRights]::Write,
+                [IO.FileShare]::None,
+                4096,
+                [IO.FileOptions]::None,
+                $security
+            )
         $stream.Dispose()
         $stream = $null
 
-        $acl = Get-Acl -LiteralPath $temporaryPath -ErrorAction Stop
-        $acl.SetAccessRuleProtection($true, $false)
-        foreach ($existingRule in @($acl.Access)) {
-            [void]$acl.RemoveAccessRuleAll($existingRule)
-        }
-
-        $uniqueSids = @{}
-        foreach ($sid in @(
-                [Security.Principal.WindowsIdentity]::GetCurrent().User,
-                (New-Object Security.Principal.SecurityIdentifier("S-1-5-18")),
-                (New-Object Security.Principal.SecurityIdentifier("S-1-5-32-544"))
-            )) {
-            if ($null -eq $sid -or $uniqueSids.ContainsKey($sid.Value)) {
-                continue
-            }
-            $uniqueSids[$sid.Value] = $true
-            $rule = New-Object `
-                -TypeName System.Security.AccessControl.FileSystemAccessRule `
-                -ArgumentList @(
-                    $sid,
-                    [Security.AccessControl.FileSystemRights]::FullControl,
-                    [Security.AccessControl.AccessControlType]::Allow
-                )
-            [void]$acl.AddAccessRule($rule)
-        }
-        Set-Acl -LiteralPath $temporaryPath -AclObject $acl -ErrorAction Stop
         return $temporaryPath
     } catch {
         if ($null -ne $stream) {

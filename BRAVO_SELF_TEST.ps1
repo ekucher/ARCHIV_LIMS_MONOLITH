@@ -1506,8 +1506,23 @@ try {
             }
         )
         $currentSidValue = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        # Жодного успадкованого правила: файл має бути створений одразу з
+        # фінальним DACL, а не "створений і потім захищений" (аудит Low #9).
+        # Успадковане правило тут означало б, що вікно з правами %TEMP%
+        # повернулось.
+        $temporaryInheritedRules = @(
+            $temporaryAcl.Access | Where-Object { $_.IsInherited }
+        )
+        # І жодного зайвого SID понад три очікувані.
+        $temporaryUnexpectedSids = @(
+            $allowedSidValues | Where-Object {
+                $_ -ne $currentSidValue -and $_ -ne "S-1-5-18" -and $_ -ne "S-1-5-32-544"
+            }
+        )
         $temporaryScriptProtected = (
             $temporaryAcl.AreAccessRulesProtected -and
+            $temporaryInheritedRules.Count -eq 0 -and
+            $temporaryUnexpectedSids.Count -eq 0 -and
             $allowedSidValues -contains $currentSidValue -and
             $allowedSidValues -contains "S-1-5-18" -and
             $allowedSidValues -contains "S-1-5-32-544"
@@ -1526,7 +1541,53 @@ try {
     Test-BRAVOCondition `
         -Condition ($temporaryScriptProtected -and $temporaryScriptRemoved) `
         -Name "Runtime/ProtectedWinSCPTemporaryScript" `
-        -Failure "WinSCP-файл має мати закритий ACL і гарантовано видалятися"
+        -Failure "WinSCP-файл має мати закритий ACL без успадкованих і зайвих правил, і гарантовано видалятися"
+
+    # Аудит Low #9: статичний захист від повернення схеми "створити файл,
+    # потім накласти ACL". Функціональний тест вище перевіряє РЕЗУЛЬТАТ, але
+    # результат однаковий в обох схемах — різниця лише у вікні між
+    # створенням і Set-Acl. Windows перевіряє права в момент відкриття
+    # дескриптора, тому відкритий у цьому вікні дескриптор переживе зміну
+    # ACL і прочитає облікові дані, які запише туди викликач.
+    $temporaryScriptFunctionAst = @(
+        [Management.Automation.Language.Parser]::ParseInput(
+            $archiveScriptText, [ref]$null, [ref]$null
+        ).FindAll({
+            param($candidate)
+            $candidate -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $candidate.Name -eq 'New-BRAVOWinSCPTemporaryScriptPath'
+        }, $true)
+    ) | Select-Object -First 1
+    $temporaryScriptFunctionText = if ($null -ne $temporaryScriptFunctionAst) {
+        $temporaryScriptFunctionAst.Extent.Text
+    } else {
+        ''
+    }
+    # Виклик Set-Acl шукається в AST, а не пошуком підрядка: сам текст
+    # функції містить слово "Set-Acl" у коментарі, який пояснює, чому цієї
+    # схеми тут немає. Перша версія перевірки на цьому й спіткнулась.
+    # Присвоєння через проміжну змінну, а не з if-виразу: порожній масив,
+    # повернутий гілкою if, проходить конвеєром і перетворюється на $null —
+    # тоді .Count нижче падає під Set-StrictMode. Та сама пастка вже
+    # траплялась у цій сесії в BRAVO_RUNTIME_GUARD.ps1.
+    $temporaryScriptSetAclCalls = @()
+    if ($null -ne $temporaryScriptFunctionAst) {
+        $temporaryScriptSetAclCalls = @($temporaryScriptFunctionAst.FindAll({
+            param($candidate)
+            $candidate -is [Management.Automation.Language.CommandAst] -and
+            $null -ne $candidate.CommandElements -and
+            $candidate.CommandElements.Count -gt 0 -and
+            "$($candidate.CommandElements[0])" -match '^(Set-Acl|Get-Acl)$'
+        }, $true))
+    }
+    Test-BRAVOCondition `
+        -Condition (
+            $temporaryScriptFunctionText.Contains('System.Security.AccessControl.FileSecurity') -and
+            $temporaryScriptFunctionText.Contains('System.IO.FileStream') -and
+            $temporaryScriptSetAclCalls.Count -eq 0
+        ) `
+        -Name "SFTP/TemporaryScriptCreatedWithFinalAcl" `
+        -Failure "New-BRAVOWinSCPTemporaryScriptPath має створювати файл одразу з FileSecurity у конструкторі FileStream, а не накладати права через Set-Acl після створення"
 
     Test-BRAVOCondition `
         -Condition (
