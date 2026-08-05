@@ -1,10 +1,10 @@
 {
   "product": "BRAVO Archive",
-  "packageVersion": "4.3.0",
+  "packageVersion": "4.4.0",
   "configSchemaVersion": 1,
   "stateSchemaVersion": 1,
   "updaterVersion": "1.0.0",
-  "releaseDate": "2026-08-04",
+  "releaseDate": "2026-08-05",
   "releaseChannel": "stable",
   "buildId": "1be1b50",
   "sourceCommit": "1be1b504fb0578be3afdb33fe344679dd813d8c4"
