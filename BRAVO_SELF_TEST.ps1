@@ -2578,6 +2578,87 @@ try {
         -Name "Documentation/ThreatModelHasNoStaleResidualRisk" `
         -Failure "THREAT_MODEL.md містить твердження про залишковий ризик, який код уже закрив: $($foundStaleClaims -join '; ')"
 
+    # ===== GUARD МУСИТЬ БУТИ FAIL-CLOSED =====
+    # Test-Path підтверджує лише наявність файлу. Якщо dot-source не
+    # виконався (ExecutionPolicy AllSigned без підпису, синтаксична помилка,
+    # блокування файлу), entrypoint раніше мовчки йшов далі: усі три
+    # перевірки падали з CommandNotFound, не зупиняючи запуск, і справа
+    # доходила до Import-Module. Тобто найдешевшим способом вимкнути весь
+    # шар цілісності було не підбирати хеші, а зробити guard незавантажуваним.
+    $guardEntrypoints = @('BRAVO_ARCHIV.ps1', 'BRAVO_HEALTH.ps1', 'BRAVO_MAINTENANCE.ps1')
+    $entrypointsWithUnguardedDotSource = @()
+    foreach ($guardEntrypoint in $guardEntrypoints) {
+        $entrypointAst = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $root $guardEntrypoint), [ref]$null, [ref]$null
+        )
+        # Dot-source guard-а мусить лежати всередині try — інакше помилка
+        # завантаження не має шансу зупинити запуск.
+        $protectedDotSource = $entrypointAst.FindAll(
+            {
+                param($node)
+                $node -is [System.Management.Automation.Language.TryStatementAst] -and
+                ([string]$node.Body.Extent.Text) -match '\.\s+\$runtimeGuardPath'
+            },
+            $true
+        )
+        # Друга лінія: guard міг «завантажитись» і не оголосити функцій.
+        $verifiesGuardFunctions = (
+            ([string]$entrypointAst.Extent.Text) -match "Get-Command\s+-Name\s+\`$guardFunction"
+        )
+        if ($null -eq $protectedDotSource -or -not $verifiesGuardFunctions) {
+            $entrypointsWithUnguardedDotSource += $guardEntrypoint
+        }
+    }
+    Test-BRAVOCondition `
+        -Condition ($entrypointsWithUnguardedDotSource.Count -eq 0) `
+        -Name "RuntimeGuard/EntrypointsFailClosedWhenGuardUnloadable" `
+        -Failure "Завантаження BRAVO_RUNTIME_GUARD.ps1 має бути в try/catch і підтверджуватись Get-Command; не захищено: $($entrypointsWithUnguardedDotSource -join ', ')"
+
+    # Функціональне підтвердження того самого: справжній entrypoint поруч із
+    # guard-ом, який існує, але не парситься. Модулі не потрібні — коректна
+    # поведінка полягає саме в тому, щоб до них не дійти.
+    $failClosedRoot = Join-Path ([IO.Path]::GetTempPath()) ("BRAVO_GUARD_FAILCLOSED_{0}" -f [guid]::NewGuid().ToString('N'))
+    $failClosedResults = @()
+    try {
+        [void][IO.Directory]::CreateDirectory($failClosedRoot)
+        [IO.File]::WriteAllText(
+            (Join-Path $failClosedRoot 'BRAVO_RUNTIME_GUARD.ps1'),
+            "function Test-BRAVORuntimeManifestIntegrity {`r`n",
+            (New-Object Text.UTF8Encoding($true))
+        )
+        foreach ($guardEntrypoint in $guardEntrypoints) {
+            Copy-Item `
+                -LiteralPath (Join-Path $root $guardEntrypoint) `
+                -Destination (Join-Path $failClosedRoot $guardEntrypoint) `
+                -Force
+            # Без пониження ErrorActionPreference незахищений entrypoint
+            # ронить увесь прогін замість чистого [FAIL]: під 2>&1 кожен
+            # рядок stderr нативного exe стає ErrorRecord, а Stop робить
+            # його фатальним. Саме це й показала регресія цього тесту.
+            $previousErrorAction = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+                $null = & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+                    -File (Join-Path $failClosedRoot $guardEntrypoint) 2>&1
+            } finally {
+                $ErrorActionPreference = $previousErrorAction
+            }
+            $failClosedResults += [pscustomobject]@{
+                Script = $guardEntrypoint
+                ExitCode = $LASTEXITCODE
+            }
+        }
+    } finally {
+        Remove-Item -LiteralPath $failClosedRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    $wrongExitCodes = @(
+        $failClosedResults | Where-Object { $_.ExitCode -ne 33 }
+    )
+    Test-BRAVOCondition `
+        -Condition ($failClosedResults.Count -eq 3 -and $wrongExitCodes.Count -eq 0) `
+        -Name "RuntimeGuard/UnloadableGuardBlocksWithCode33" `
+        -Failure "Незавантажуваний guard має зупиняти кожен entrypoint кодом 33; отримано: $(($failClosedResults | ForEach-Object { "$($_.Script)=$($_.ExitCode)" }) -join ', ')"
+
     # ===== ЄДИНИЙ СТИЛЬ ВІДОБРАЖЕННЯ =====
     # Три runtime показували операторові три різні речі: Archive — етапи
     # [1/7] через BRAVO.Console, Health — суцільний потік "[LEVEL] текст",
