@@ -27,6 +27,7 @@ $script:BRAVOExitCodeNames = @{
     31 = "CredentialsUnavailable"
     32 = "ToolIntegrityViolation"
     33 = "RuntimeIntegrityViolation"
+    34 = "SecuritySettingsWeakened"
     40 = "LocalArchiveFailed"
     41 = "IntegrityTestFailed"
     50 = "SftpFailed"
@@ -44,6 +45,7 @@ function Resolve-BRAVOExitCode {
         [switch]$CredentialsUnavailable,
         [switch]$ToolIntegrityViolation,
         [switch]$RuntimeIntegrityViolation,
+        [switch]$SecuritySettingsWeakened,
         [switch]$LocalArchiveFailed,
         [switch]$IntegrityTestFailed,
         [switch]$SftpFailed,
@@ -68,6 +70,10 @@ function Resolve-BRAVOExitCode {
     # Цілісність комплекту перевіряється найпершою (до Import-Module),
     # тому й у контракті стоїть перед цілісністю інструментів.
     if ($RuntimeIntegrityViolation) { return 33 }
+    # Послаблена конфігурація стоїть нижче за порушену цілісність, але вище
+    # за все інше: доки перемикачі безпеки вимкнені, будь-який успішний
+    # результат нижче означає менше, ніж здається.
+    if ($SecuritySettingsWeakened) { return 34 }
     if ($ToolIntegrityViolation) { return 32 }
     if ($LockBusy) { return 20 }
     if ($InvalidConfiguration) { return 30 }

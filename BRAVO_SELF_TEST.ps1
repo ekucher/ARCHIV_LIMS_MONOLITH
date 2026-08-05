@@ -595,7 +595,102 @@ try {
             ) `
             -Name "RuntimeManifest/GuardRunsBeforeImport/$entryPointName" `
             -Failure "$entryPointName має перевіряти цілісність комплекту ДО Import-Module (інакше виконується непepевірений код)"
+
+        # BRAVO.config не входить до маніфесту за задумом, тому перевірка
+        # його перемикачів мусить бути в кожному entrypoint окремо.
+        Test-BRAVOCondition `
+            -Condition (
+                $entryPointText.Contains('Test-BRAVORuntimeSecuritySettings') -and
+                $entryPointText.Contains('exit 34')
+            ) `
+            -Name "ConfigSecurity/CheckedInEntryPoint/$entryPointName" `
+            -Failure "$entryPointName має перевіряти перемикачі безпеки BRAVO.config і завершуватись кодом 34"
     }
+
+    # Перевірка перемикачів безпеки в BRAVO.config. Конфігурація навмисно
+    # не входить до RUNTIME_MANIFEST.json (вона різна на кожному сервері),
+    # тому рядок у ній був найдешевшим способом тихо вимкнути захист:
+    # Mode = "Warn" знімає блокування підміненого 7za, Mode = "Live"
+    # прибирає VSS-узгодженість архівів.
+    $securityGoodConfig = @(
+        '$global:toolIntegritySettings = @{ Mode = "Enforce"; ManifestPath = "z" }',
+        '$global:backupConsistency = @{ Mode = "VSS"; SnapshotContext = "ClientAccessible" }'
+    ) -join [Environment]::NewLine
+
+    $securityBaseline = Test-BRAVORuntimeSecuritySettings `
+        -ConfigPath 'synthetic' -ConfigContent $securityGoodConfig -Mode Enforce -AllowWeakened ''
+    Test-BRAVOCondition `
+        -Condition ($securityBaseline.IsValid -and -not $securityBaseline.ShouldBlock) `
+        -Name "ConfigSecurity/StrictConfigurationPasses" `
+        -Failure "конфігурація з Enforce і VSS має проходити перевірку: $($securityBaseline.Message)"
+
+    $securityWeakTool = Test-BRAVORuntimeSecuritySettings `
+        -ConfigPath 'synthetic' `
+        -ConfigContent $securityGoodConfig.Replace('"Enforce"', '"Warn"') `
+        -Mode Enforce -AllowWeakened ''
+    Test-BRAVOCondition `
+        -Condition (-not $securityWeakTool.IsValid -and $securityWeakTool.ShouldBlock) `
+        -Name "ConfigSecurity/ToolIntegrityWarnBlocks" `
+        -Failure "toolIntegritySettings.Mode = 'Warn' має блокувати запуск без явного override"
+
+    $securityWeakVss = Test-BRAVORuntimeSecuritySettings `
+        -ConfigPath 'synthetic' `
+        -ConfigContent $securityGoodConfig.Replace('"VSS"', '"Live"') `
+        -Mode Enforce -AllowWeakened ''
+    Test-BRAVOCondition `
+        -Condition (-not $securityWeakVss.IsValid -and $securityWeakVss.ShouldBlock) `
+        -Name "ConfigSecurity/BackupConsistencyLiveBlocks" `
+        -Failure "backupConsistency.Mode = 'Live' має блокувати запуск: неузгоджений архів гірший за відсутній"
+
+    # Свідоме послаблення лишається можливим, але вимагає ДРУГОЇ дії в
+    # іншому місці — редагування самого BRAVO.config уже недостатньо.
+    $securityOverride = Test-BRAVORuntimeSecuritySettings `
+        -ConfigPath 'synthetic' `
+        -ConfigContent $securityGoodConfig.Replace('"Enforce"', '"Warn"') `
+        -Mode Enforce -AllowWeakened '1'
+    Test-BRAVOCondition `
+        -Condition (-not $securityOverride.ShouldBlock -and $securityOverride.OverrideApplied) `
+        -Name "ConfigSecurity/ExplicitOverrideAllowsWeakening" `
+        -Failure "BRAVO_ALLOW_WEAKENED_SECURITY=1 має дозволяти тимчасове послаблення, лишаючи слід у виводі"
+
+    # Обхід через обчислюване значення ($m = "Warn"; Mode = $m) має
+    # коштувати щонайменше стільки ж, скільки пряме послаблення.
+    $securityComputed = Test-BRAVORuntimeSecuritySettings `
+        -ConfigPath 'synthetic' `
+        -ConfigContent (@(
+            '$m = "Warn"',
+            '$global:toolIntegritySettings = @{ Mode = $m }',
+            '$global:backupConsistency = @{ Mode = "VSS" }'
+        ) -join [Environment]::NewLine) `
+        -Mode Enforce -AllowWeakened ''
+    Test-BRAVOCondition `
+        -Condition (
+            -not $securityComputed.IsValid -and
+            $securityComputed.ShouldBlock -and
+            $securityComputed.Unverifiable.Count -eq 1
+        ) `
+        -Name "ConfigSecurity/ComputedValueIsNotAnEscapeHatch" `
+        -Failure "значення, обчислене виразом, не підтверджується статично й має блокувати так само, як пряме послаблення"
+
+    # Конфігурація, яка взагалі не згадує ці налаштування, послабленою не
+    # є. Регресія реальна: перше робоче формулювання читало порожній
+    # результат як порожній рядок і блокувало такі конфігурації.
+    $securitySilent = Test-BRAVORuntimeSecuritySettings `
+        -ConfigPath 'synthetic' `
+        -ConfigContent '$global:pathSettings = @{ BackupRoot = "C:\x" }' `
+        -Mode Enforce -AllowWeakened ''
+    Test-BRAVOCondition `
+        -Condition ($securitySilent.IsValid -and -not $securitySilent.ShouldBlock) `
+        -Name "ConfigSecurity/AbsentSettingsAreNotWeakening" `
+        -Failure "конфігурація без цих налаштувань не повинна вважатися послабленою"
+
+    # Реальний BRAVO.config репозиторію мусить проходити власну перевірку.
+    $securityRealConfig = Test-BRAVORuntimeSecuritySettings `
+        -ConfigPath (Join-Path $root "BRAVO.config") -Mode Enforce -AllowWeakened ''
+    Test-BRAVOCondition `
+        -Condition $securityRealConfig.IsValid `
+        -Name "ConfigSecurity/RepositoryConfigIsStrict" `
+        -Failure "BRAVO.config у репозиторії не проходить власну перевірку: $($securityRealConfig.Message)"
 
     # Еталонний маніфест у самому репозиторії має відповідати реальним
     # Tools: інакше свіжий комплект заблокує сам себе на першому ж запуску.
@@ -745,6 +840,19 @@ try {
         ) `
         -Name "ExitCodes/RuntimeIntegrityViolationPriority" `
         -Failure "при одночасних відмовах має перемагати найвищий пріоритет (lock>config>creds>local>integrity>sftp>smb>maintenance>health>warnings), InternalError — найвищий за все"
+
+    # Послаблена конфігурація — нижче за порушену цілісність (там факт
+    # підміни), але вище за все інше: доки перемикачі безпеки вимкнені,
+    # будь-який "успіх" нижче означає менше, ніж здається.
+    Test-BRAVOCondition `
+        -Condition (
+            (Resolve-BRAVOExitCode -SecuritySettingsWeakened) -eq 34 -and
+            (Get-BRAVOExitCodeName -Code 34) -eq "SecuritySettingsWeakened" -and
+            (Resolve-BRAVOExitCode -SecuritySettingsWeakened -ToolIntegrityViolation -LockBusy) -eq 34 -and
+            (Resolve-BRAVOExitCode -SecuritySettingsWeakened -RuntimeIntegrityViolation) -eq 33
+        ) `
+        -Name "ExitCodes/SecuritySettingsWeakenedPriority" `
+        -Failure "послаблена конфігурація має давати код 34, бути нижчою за 33 і вищою за 32/20"
     Test-BRAVOCondition `
         -Condition (
             (Get-BRAVOExitCodeName -Code 0) -eq "Success" -and
@@ -1999,7 +2107,7 @@ try {
         # Кожен код контракту BRAVO.ExitCodes, який реально може побачити
         # оператор, повинен мати розділ у runbook. 0 і 10 — успішні, їх не
         # діагностують; решта означає, що щось потребує рішення людини.
-        $runbookCodes = @('20', '30', '31', '32', '33', '40', '41', '50', '51', '60', '70', '90')
+        $runbookCodes = @('20', '30', '31', '32', '33', '34', '40', '41', '50', '51', '60', '70', '90')
         $missingCodes = @(
             $runbookCodes | Where-Object { -not $operationsText.Contains("## ``$_`` —") }
         )
