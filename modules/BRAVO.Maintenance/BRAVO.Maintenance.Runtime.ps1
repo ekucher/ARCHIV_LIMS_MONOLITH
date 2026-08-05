@@ -1707,7 +1707,16 @@ function Invoke-CommandWithLog {
         if ($null -ne $outputCapture) {
             try {
                 [void](Complete-BRAVOProcessOutputCapture -Capture $outputCapture)
-            } catch {}
+            } catch {
+                # Дренаж потоків уже завершеного процесу. Виконується у
+                # finally на шляху обробки помилки — початкова причина
+                # важливіша, тому DEBUG, але без запису незрозуміло, чому
+                # в лозі немає виводу 7-Zip.
+                Write-BRAVOLog `
+                    -Component 'MAINTENANCE' `
+                    -Message "Не вдалося завершити збір виводу процесу: $($_.Exception.Message)" `
+                    -Level "DEBUG"
+            }
         }
         if ($null -ne $process) {
             $process.Dispose()
