@@ -1,5 +1,88 @@
 # Changelog
 
+## 4.5.0-dev.1 — 2026-08-05
+
+Перший development-реліз циклу `4.5.0`. Відкриває нову модель гілок і
+версій, описану в `RELEASE_POLICY.md`.
+
+- **`RELEASE_POLICY.md`.** Що дозволено випускати з кожної гілки:
+  `developer` — лише `X.Y.Z-dev.N` / `X.Y.Z-rc.N`, `master` — лише
+  `X.Y.Z`; гілки ніколи не несуть однакової версії; stable виникає лише
+  promotion перевіреного RC, без нових функцій. Чек-лист відповідає на
+  питання «що зробити перед випуском», політика — «що взагалі дозволено
+  випускати звідси».
+
+- **`releaseChannel` повернувся у `VERSION.json`.** AUD-016 колись
+  вивів його з `.git/HEAD`, бо ручна синхронізація між гілками двічі
+  підвела на fast-forward merge. Але розгорнутий на сервері комплект
+  приходить ZIP-ом, копіюванням, SFTP або SMB — `.git` там немає взагалі,
+  і канал нізвідки взяти. Причину AUD-016 усунуто інакше: гілки більше
+  не можуть містити однакову версію, тому fast-forward між ними
+  неможливий, а замість людської дисципліни працює механічний gate.
+
+  `Resolve-BRAVOReleaseChannelFromGit` лишилась — уже не як джерело
+  значення, а як перехресна перевірка (`ReleaseChannelMatchesGit`).
+
+- **`ci\Test-BRAVOReleasePolicy.ps1` + крок CI.** Stable-версія на
+  `developer` або `-dev`/`-rc` на `master` тепер валить CI, а не їде на
+  сервер непоміченою. Перевіряє також `ModuleVersion`, наявність версії
+  в `CHANGELOG.md` і заголовки `README.md` / `BRAVO_SETUP.md`. У Pull
+  Request гілка береться з цільової (`GITHUB_BASE_REF`): promotion
+  `developer` → `master` несе вже stable-версію і має перевірятись
+  правилами `master`.
+
+- **`ModuleVersion` = базова частина версії.** `ModuleVersion` це
+  `[System.Version]` — prerelease-суфікса він не приймає, а
+  `New-ModuleManifest` у Windows PowerShell 5.1 не має `-Prerelease`
+  (перевірено на цільовій платформі). Тому маніфести модулів несуть
+  `4.5.0`, а повна версія пакета (`4.5.0-dev.1`) завжди береться з
+  `VERSION.json`.
+
+- Закрито тестами `Version/DeveloperBranchCarriesPrereleaseVersion`,
+  `Version/ReleaseChannelStoredInPackage`, `Version/ModuleManifests`,
+  `Documentation/ReleasePolicyExists`,
+  `Documentation/ReleasePolicyCoversVersionModel`,
+  `ReleasePolicy/CiGateEnforcesBranchVersionChannel`.
+
+- **Ручний запуск не через Планувальник тепер чекає на клавішу — в усіх
+  трьох runtime, а не лише в Archive.** `BRAVO_ARCHIV.ps1` уже мав робочу
+  паузу (`RawUI.ReadKey` з фолбеком на `Read-Host` для ISE);
+  `BRAVO_HEALTH.ps1` приймав `-NoPause`, але ніде його не використовував
+  — Health ніколи не чекав; `BRAVO_MAINTENANCE.ps1` не мав ні параметра,
+  ні паузи взагалі. Обидва тепер працюють так само, як Archive.
+
+  Спільна реалізація — `Wait-BRAVOManualExit` (`BRAVO.Console`) — не
+  спрацьовує без явного дозволу: `-NoPause`, вимкнений `PauseOnExit` у
+  `BRAVO.config`, `[Environment]::UserInteractive = $false` (сесія 0,
+  де й виконуються SYSTEM-завдання) чи перенаправлений stdin — кожна з
+  цих причин самостійно скасовує очікування. Для 6 ранніх `exit`
+  guard-блоку (до `Import-Module`, коли жоден модуль BRAVO ще не
+  довірений) — самодостатній інлайн-варіант без залежності від модулів,
+  за тим самим принципом, що й сам guard.
+
+  `Maintenance.Runtime.ps1` має майже 30 точок `exit`, розкиданих по
+  всьому файлу. Замість редагування кожної — один зовнішній
+  `try/finally`: `exit` усередині `try` гарантовано проходить крізь усі
+  `finally` на своєму шляху, перш ніж процес завершиться (властивість
+  PowerShell, перевірено емпірично, включно з вкладеними
+  `try/catch/finally`), тому один `finally` на весь файл охоплює їх усі.
+
+  Попутно знайдено й закрито реальну прогалину: `BRAVO_TASKS_INSTALL.ps1`
+  додавав `-NoPause` вибірково за типом завдання — `Recovery` і
+  `Maintenance` (нічний, найризикованіший) його не отримували взагалі.
+  Не мало наслідків, доки в цих runtime не було паузи; після цієї зміни
+  було б реальним ризиком зависання нічної автоматизації. Тепер
+  `-NoPause` додається безумовно для кожного типу.
+
+- Закрито тестами `Console/WaitManualExitChecksNoPauseFirst`,
+  `Console/WaitManualExitNoPauseReturnsImmediately`,
+  `Console/EarlyGuardExitsPauseBeforeClosing`,
+  `Console/HealthPausesOnEveryExitPath`,
+  `Console/MaintenancePausesOnEveryExitPath`,
+  `Console/MaintenanceAcceptsNoPauseParameter`,
+  `Console/EntrypointsForwardNoPauseToRuntime`,
+  `Scheduler/EveryTaskTypeGetsNoPauseUnconditionally`.
+
 ## 4.4.2 — 2026-08-05
 
 Виправлення за результатами першого тестового розгортання на реальному

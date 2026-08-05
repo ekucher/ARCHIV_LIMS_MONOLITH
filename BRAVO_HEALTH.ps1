@@ -8,6 +8,31 @@ param(
     [switch]$NoPause
 )
 
+# Пауза перед закриттям вікна тут навмисно самодостатня — див. коментар
+# у BRAVO_ARCHIV.ps1. Дублюється ідентично в трьох entrypoint-ах, як і
+# сам guard-блок нижче.
+function Wait-BRAVOEarlyManualExit {
+    param([switch]$NoPause)
+    if ($NoPause) { return }
+    try {
+        if (-not [Environment]::UserInteractive) { return }
+        if ([Console]::IsInputRedirected) { return }
+    } catch {
+        return
+    }
+    Write-Host ""
+    Write-Host "Натиснiть будь-яку клавiшу для закриття вiкна..." -ForegroundColor Cyan
+    try {
+        [void]$Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    } catch {
+        try {
+            [void](Read-Host)
+        } catch {
+            # Немає жодного способу почекати на ввід (нетиповий хост) — це не привід завершити скрипт помилкою.
+        }
+    }
+}
+
 # Аудит P2 — див. коментар у BRAVO_ARCHIV.ps1: цілісність комплекту
 # перевіряється до Import-Module самодостатнім guard-ом.
 $runtimeGuardPath = Join-Path $PSScriptRoot 'BRAVO_RUNTIME_GUARD.ps1'
@@ -23,6 +48,7 @@ if (Test-Path -LiteralPath $runtimeGuardPath -PathType Leaf) {
         . $runtimeGuardPath
     } catch {
         Write-Host "КРИТИЧНА ПОМИЛКА: не вдалося завантажити BRAVO_RUNTIME_GUARD.ps1: $($_.Exception.Message)" -ForegroundColor Red
+        Wait-BRAVOEarlyManualExit -NoPause:$NoPause
         exit 33
     }
     # Окрема перевірка, бо помилка dot-source не завжди переривальна:
@@ -34,6 +60,7 @@ if (Test-Path -LiteralPath $runtimeGuardPath -PathType Leaf) {
     )) {
         if (-not (Get-Command -Name $guardFunction -CommandType Function -ErrorAction SilentlyContinue)) {
             Write-Host "КРИТИЧНА ПОМИЛКА: BRAVO_RUNTIME_GUARD.ps1 не оголосив $guardFunction — цілісність комплекту не підтверджена" -ForegroundColor Red
+            Wait-BRAVOEarlyManualExit -NoPause:$NoPause
             exit 33
         }
     }
@@ -44,7 +71,7 @@ if (Test-Path -LiteralPath $runtimeGuardPath -PathType Leaf) {
         -Mode $runtimeIntegrityMode
     if (-not $runtimeIntegrity.IsValid) {
         Write-Host $runtimeIntegrity.Message -ForegroundColor Red
-        if ($runtimeIntegrity.ShouldBlock) { exit 33 }
+        if ($runtimeIntegrity.ShouldBlock) { Wait-BRAVOEarlyManualExit -NoPause:$NoPause; exit 33 }
     }
 
     # Маніфест підтверджує, що файли комплекту ті самі. BRAVO.config до
@@ -57,7 +84,7 @@ if (Test-Path -LiteralPath $runtimeGuardPath -PathType Leaf) {
     if (-not $securitySettings.IsValid) {
         $securityColor = if ($securitySettings.ShouldBlock) { 'Red' } else { 'Yellow' }
         Write-Host $securitySettings.Message -ForegroundColor $securityColor
-        if ($securitySettings.ShouldBlock) { exit 34 }
+        if ($securitySettings.ShouldBlock) { Wait-BRAVOEarlyManualExit -NoPause:$NoPause; exit 34 }
     }
 
     # Старіший комплект проходить усі перевірки вище — разом із
@@ -70,10 +97,11 @@ if (Test-Path -LiteralPath $runtimeGuardPath -PathType Leaf) {
     if (-not $versionState.IsValid) {
         $versionColor = if ($versionState.ShouldBlock) { 'Red' } else { 'Yellow' }
         Write-Host $versionState.Message -ForegroundColor $versionColor
-        if ($versionState.ShouldBlock) { exit 35 }
+        if ($versionState.ShouldBlock) { Wait-BRAVOEarlyManualExit -NoPause:$NoPause; exit 35 }
     }
 } else {
     Write-Host "КРИТИЧНА ПОМИЛКА: відсутній BRAVO_RUNTIME_GUARD.ps1 — цілісність комплекту не підтверджена" -ForegroundColor Red
+    Wait-BRAVOEarlyManualExit -NoPause:$NoPause
     exit 33
 }
 
@@ -84,6 +112,7 @@ try {
     # Див. коментар у BRAVO_ARCHIV.ps1 — контракт кодів завершення має
     # діяти навіть при пошкодженому розгортанні. 90 = InternalError.
     Write-Host "КРИТИЧНА ПОМИЛКА: не вдалося завантажити модуль $modulePath : $($_.Exception.Message)" -ForegroundColor Red
+    Wait-BRAVOEarlyManualExit -NoPause:$NoPause
     exit 90
 }
 $parameters = @{
