@@ -443,6 +443,160 @@ try {
         }
     }
 
+    # Аудит P2: цілісність усього PowerShell-комплекту. Guard навмисно
+    # самодостатній (лише .NET, без модулів BRAVO), бо виконується ДО
+    # Import-Module — інакше довелося б завантажити модуль, щоб
+    # перевірити модулі.
+    . (Join-Path $root "BRAVO_RUNTIME_GUARD.ps1")
+
+    $runtimeGuardRoot = Join-Path `
+        -Path ([IO.Path]::GetTempPath()) `
+        -ChildPath ("BRAVO_RUNTIME_GUARD_SELF_TEST_{0}" -f [guid]::NewGuid().ToString("N"))
+    try {
+        $guardModuleDirectory = Join-Path $runtimeGuardRoot "modules\BRAVO.Fake"
+        [void][IO.Directory]::CreateDirectory($guardModuleDirectory)
+        $guardScript = Join-Path $runtimeGuardRoot "BRAVO_FAKE.ps1"
+        $guardModule = Join-Path $guardModuleDirectory "BRAVO.Fake.psm1"
+        [IO.File]::WriteAllText($guardScript, "# genuine entrypoint", (New-Object Text.UTF8Encoding($false)))
+        [IO.File]::WriteAllText($guardModule, "# genuine module", (New-Object Text.UTF8Encoding($false)))
+
+        $guardScriptHash = (Get-BRAVOFileHash -Path $guardScript -Algorithm SHA256).Hash.ToUpperInvariant()
+        $guardModuleHash = (Get-BRAVOFileHash -Path $guardModule -Algorithm SHA256).Hash.ToUpperInvariant()
+        $guardManifest = (
+            '{"schemaVersion":1,"files":{' +
+            '"BRAVO_FAKE.ps1":"' + $guardScriptHash + '",' +
+            '"modules\\BRAVO.Fake\\BRAVO.Fake.psm1":"' + $guardModuleHash + '"}}'
+        )
+
+        $guardCleanRun = Test-BRAVORuntimeManifestIntegrity `
+            -RuntimeRoot $runtimeGuardRoot `
+            -ManifestPath "(інжектовано)" `
+            -ManifestContent $guardManifest `
+            -Mode Enforce
+
+        [IO.File]::WriteAllText($guardModule, "# TAMPERED", (New-Object Text.UTF8Encoding($false)))
+        $guardTamperedEnforce = Test-BRAVORuntimeManifestIntegrity `
+            -RuntimeRoot $runtimeGuardRoot `
+            -ManifestPath "(інжектовано)" `
+            -ManifestContent $guardManifest `
+            -Mode Enforce
+        $guardTamperedWarn = Test-BRAVORuntimeManifestIntegrity `
+            -RuntimeRoot $runtimeGuardRoot `
+            -ManifestPath "(інжектовано)" `
+            -ManifestContent $guardManifest `
+            -Mode Warn
+        [IO.File]::WriteAllText($guardModule, "# genuine module", (New-Object Text.UTF8Encoding($false)))
+
+        # Підкинутий у комплект скрипт: він може бути dot-source-нутий
+        # або підхоплений як модуль, тому теж має блокувати.
+        $guardIntruder = Join-Path $guardModuleDirectory "evil.psm1"
+        [IO.File]::WriteAllText($guardIntruder, "# payload", (New-Object Text.UTF8Encoding($false)))
+        $guardIntruderRun = Test-BRAVORuntimeManifestIntegrity `
+            -RuntimeRoot $runtimeGuardRoot `
+            -ManifestPath "(інжектовано)" `
+            -ManifestContent $guardManifest `
+            -Mode Enforce
+        [IO.File]::Delete($guardIntruder)
+
+        [IO.File]::Delete($guardModule)
+        $guardMissingRun = Test-BRAVORuntimeManifestIntegrity `
+            -RuntimeRoot $runtimeGuardRoot `
+            -ManifestPath "(інжектовано)" `
+            -ManifestContent $guardManifest `
+            -Mode Enforce
+
+        $guardAbsentManifestRun = Test-BRAVORuntimeManifestIntegrity `
+            -RuntimeRoot $runtimeGuardRoot `
+            -ManifestPath (Join-Path $runtimeGuardRoot "NEMAE.json") `
+            -Mode Enforce
+        $guardCorruptManifestRun = Test-BRAVORuntimeManifestIntegrity `
+            -RuntimeRoot $runtimeGuardRoot `
+            -ManifestPath "(інжектовано)" `
+            -ManifestContent "{ це не JSON" `
+            -Mode Enforce
+
+        Test-BRAVOCondition `
+            -Condition ($guardCleanRun.IsValid -and -not $guardCleanRun.ShouldBlock) `
+            -Name "RuntimeManifest/GenuineRuntimePasses" `
+            -Failure "незмінений комплект має проходити перевірку цілісності"
+
+        Test-BRAVOCondition `
+            -Condition (
+                -not $guardTamperedEnforce.IsValid -and
+                $guardTamperedEnforce.ShouldBlock -and
+                $guardTamperedEnforce.MismatchedFiles -contains "modules\BRAVO.Fake\BRAVO.Fake.psm1" -and
+                -not $guardTamperedWarn.ShouldBlock
+            ) `
+            -Name "RuntimeManifest/TamperedModuleBlocksInEnforce" `
+            -Failure "підмінений .psm1 має блокувати запуск у Enforce і лише попереджати у Warn"
+
+        Test-BRAVOCondition `
+            -Condition (
+                $guardIntruderRun.ShouldBlock -and
+                $guardIntruderRun.UnknownFiles -contains "modules\BRAVO.Fake\evil.psm1"
+            ) `
+            -Name "RuntimeManifest/UnknownScriptBlocksInEnforce" `
+            -Failure "підкинутий у комплект скрипт має блокувати запуск"
+
+        Test-BRAVOCondition `
+            -Condition (
+                $guardMissingRun.ShouldBlock -and
+                $guardMissingRun.MissingFiles -contains "modules\BRAVO.Fake\BRAVO.Fake.psm1"
+            ) `
+            -Name "RuntimeManifest/MissingFileBlocksInEnforce" `
+            -Failure "відсутній файл комплекту має блокувати запуск"
+
+        Test-BRAVOCondition `
+            -Condition ($guardAbsentManifestRun.ShouldBlock -and $guardCorruptManifestRun.ShouldBlock) `
+            -Name "RuntimeManifest/AbsentOrCorruptManifestBlocks" `
+            -Failure "видалення чи пошкодження RUNTIME_MANIFEST.json НЕ повинно бути способом обійти перевірку"
+
+        # Guard не має створювати маніфест сам — інакше сторож виписує
+        # перепустку злодію.
+        $guardAutoCreatePath = Join-Path $runtimeGuardRoot "SHOULD_NOT_APPEAR.json"
+        [void](Test-BRAVORuntimeManifestIntegrity `
+            -RuntimeRoot $runtimeGuardRoot `
+            -ManifestPath $guardAutoCreatePath `
+            -Mode Enforce)
+        Test-BRAVOCondition `
+            -Condition (-not (Test-Path -LiteralPath $guardAutoCreatePath)) `
+            -Name "RuntimeManifest/NeverAutoCreatesManifest" `
+            -Failure "RUNTIME_MANIFEST.json не повинен створюватись автоматично"
+    } finally {
+        if (Test-Path -LiteralPath $runtimeGuardRoot -PathType Container) {
+            [IO.Directory]::Delete($runtimeGuardRoot, $true)
+        }
+    }
+
+    # Маніфест у репозиторії має відповідати реальному комплекту: інакше
+    # свіжо розгорнутий комплект заблокує сам себе на першому запуску.
+    $repositoryRuntimeManifest = Test-BRAVORuntimeManifestIntegrity `
+        -RuntimeRoot $root `
+        -ManifestPath (Join-Path $root "RUNTIME_MANIFEST.json") `
+        -Mode Enforce
+    Test-BRAVOCondition `
+        -Condition $repositoryRuntimeManifest.IsValid `
+        -Name "RuntimeManifest/RepositoryManifestMatchesRuntime" `
+        -Failure "RUNTIME_MANIFEST.json не відповідає комплекту (запустіть ci\Update-BRAVORuntimeManifest.ps1 -Apply): $($repositoryRuntimeManifest.Message)"
+
+    # Усі три entrypoint мають перевіряти цілісність ДО Import-Module.
+    foreach ($entryPointName in @('BRAVO_ARCHIV.ps1', 'BRAVO_HEALTH.ps1', 'BRAVO_MAINTENANCE.ps1')) {
+        $entryPointText = [IO.File]::ReadAllText((Join-Path $root $entryPointName), [Text.Encoding]::UTF8)
+        # Порівнюємо з реальним викликом, а не з будь-якою згадкою
+        # "Import-Module": слово трапляється і в коментарях, зокрема в
+        # тому, що пояснює сам порядок перевірки.
+        $guardPosition = $entryPointText.IndexOf('. $runtimeGuardPath')
+        $importPosition = $entryPointText.IndexOf('Import-Module -Name $modulePath')
+        Test-BRAVOCondition `
+            -Condition (
+                $guardPosition -ge 0 -and
+                $importPosition -ge 0 -and
+                $guardPosition -lt $importPosition
+            ) `
+            -Name "RuntimeManifest/GuardRunsBeforeImport/$entryPointName" `
+            -Failure "$entryPointName має перевіряти цілісність комплекту ДО Import-Module (інакше виконується непepевірений код)"
+    }
+
     # Еталонний маніфест у самому репозиторії має відповідати реальним
     # Tools: інакше свіжий комплект заблокує сам себе на першому ж запуску.
     $repositoryToolsDirectory = Join-Path $root "Tools"
@@ -581,6 +735,15 @@ try {
             (Resolve-BRAVOExitCode -InternalError -ToolIntegrityViolation) -eq 90
         ) `
         -Name "ExitCodes/ToolIntegrityViolationPriority" `
+        -Failure "порушення цілісності інструментів має давати код 32 і мати пріоритет над LockBusy"
+
+    Test-BRAVOCondition `
+        -Condition (
+            (Resolve-BRAVOExitCode -RuntimeIntegrityViolation) -eq 33 -and
+            (Get-BRAVOExitCodeName -Code 33) -eq "RuntimeIntegrityViolation" -and
+            (Resolve-BRAVOExitCode -RuntimeIntegrityViolation -ToolIntegrityViolation -LockBusy) -eq 33
+        ) `
+        -Name "ExitCodes/RuntimeIntegrityViolationPriority" `
         -Failure "при одночасних відмовах має перемагати найвищий пріоритет (lock>config>creds>local>integrity>sftp>smb>maintenance>health>warnings), InternalError — найвищий за все"
     Test-BRAVOCondition `
         -Condition (

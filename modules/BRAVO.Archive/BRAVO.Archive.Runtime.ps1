@@ -466,6 +466,18 @@ function Test-Compatibility {
         }
     }
 
+    # BRAVO.config не входить до RUNTIME_MANIFEST.json (він
+    # сервер-специфічний, спільного еталонного хешу не існує), тому
+    # послаблення захисту через один рядок конфігурації має бути
+    # принаймні гучним у лозі, а не тихим.
+    if ($manifestMode -ne 'Enforce') {
+        Write-BRAVOLog -Component 'STARTUP' -Message (
+            "УВАГА: перевірку цілісності інструментів послаблено в конфігурації " +
+            "(toolIntegritySettings.Mode = $manifestMode). Підміна 7za/WinSCP НЕ заблокує запуск. " +
+            "Це тимчасовий режим міграції, не для постійної експлуатації."
+        ) -Level "WARNING"
+    }
+
     $script:BRAVOToolManifest = Test-BRAVOToolManifestIntegrity `
         -ToolsDirectory $toolsPath `
         -ManifestPath $manifestPath `

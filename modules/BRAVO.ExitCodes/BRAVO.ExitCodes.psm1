@@ -26,6 +26,7 @@ $script:BRAVOExitCodeNames = @{
     30 = "InvalidConfiguration"
     31 = "CredentialsUnavailable"
     32 = "ToolIntegrityViolation"
+    33 = "RuntimeIntegrityViolation"
     40 = "LocalArchiveFailed"
     41 = "IntegrityTestFailed"
     50 = "SftpFailed"
@@ -42,6 +43,7 @@ function Resolve-BRAVOExitCode {
         [switch]$InvalidConfiguration,
         [switch]$CredentialsUnavailable,
         [switch]$ToolIntegrityViolation,
+        [switch]$RuntimeIntegrityViolation,
         [switch]$LocalArchiveFailed,
         [switch]$IntegrityTestFailed,
         [switch]$SftpFailed,
@@ -63,6 +65,9 @@ function Resolve-BRAVOExitCode {
     # б від SYSTEM), і вона не повинна ховатись за буденним "зайнято
     # іншою операцією" в історії Планувальника чи в Zabbix.
     if ($InternalError) { return 90 }
+    # Цілісність комплекту перевіряється найпершою (до Import-Module),
+    # тому й у контракті стоїть перед цілісністю інструментів.
+    if ($RuntimeIntegrityViolation) { return 33 }
     if ($ToolIntegrityViolation) { return 32 }
     if ($LockBusy) { return 20 }
     if ($InvalidConfiguration) { return 30 }

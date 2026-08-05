@@ -30,6 +30,12 @@
 - [ ] GitHub Actions CI (`.github/workflows/ci.yml`) зелений на коміті
       релізу — перевірте вкладку Actions перед тегуванням; CI не блокує
       merge технічно (немає branch protection), тому перевірка ручна.
+- [ ] `RUNTIME_MANIFEST.json` перегенеровано **після останньої зміни
+      коду**: `ci\Update-BRAVORuntimeManifest.ps1 -Apply`. Без цього
+      свіжо розгорнутий комплект заблокує сам себе на першому ж запуску
+      (код `33`). Самотест `RuntimeManifest/RepositoryManifestMatchesRuntime`
+      і CI-крок «Integrity manifests are current» це ловлять, але
+      пам'ятайте: маніфест треба оновити ОСТАННІМ, після всіх правок.
 - [ ] Якщо оновлювались `Tools/` (`7za.*`, `WinSCP.*`): `TOOLS_MANIFEST.json`
       оновлено через `ci\Update-BRAVOToolsManifest.ps1 -Apply` **на робочій
       станції** (не на сервері), `git diff -- TOOLS_MANIFEST.json`

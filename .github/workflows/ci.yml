@@ -82,6 +82,23 @@ jobs:
         shell: powershell
         run: .\ci\Test-BRAVOForbiddenPattern.ps1
 
+      # Integrity manifests must stay in sync with what they describe.
+      # A stale manifest would make a freshly deployed kit block itself
+      # on the very first run, so this is a build failure, not a warning.
+      - name: Integrity manifests are current
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\ci\Update-BRAVOToolsManifest.ps1
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          .\ci\Update-BRAVORuntimeManifest.ps1
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          .\BRAVO_RUNTIME_GUARD.ps1
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "::error::RUNTIME_MANIFEST.json is out of date - run ci\Update-BRAVORuntimeManifest.ps1 -Apply"
+              exit 1
+          }
+
       - name: Markdown-документи не мають BOM
         shell: powershell
         run: |

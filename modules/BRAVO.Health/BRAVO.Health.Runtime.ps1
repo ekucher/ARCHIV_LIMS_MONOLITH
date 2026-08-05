@@ -3482,6 +3482,12 @@ if ($toolIntegritySettings -is [System.Collections.IDictionary]) {
         $script:BRAVOToolManifestPath = [string]$toolIntegritySettings.ManifestPath
     }
 }
+if ($script:BRAVOToolManifestMode -ne 'Enforce') {
+    Write-HealthLog (
+        "УВАГА: перевірку цілісності інструментів послаблено в конфігурації " +
+        "(toolIntegritySettings.Mode = $($script:BRAVOToolManifestMode)). Підміна 7za/WinSCP НЕ заблокує запуск."
+    ) -Level "WARNING"
+}
 $script:BRAVOToolManifest = Test-BRAVOToolManifestIntegrity `
     -ToolsDirectory $toolsPath `
     -ManifestPath $script:BRAVOToolManifestPath `
