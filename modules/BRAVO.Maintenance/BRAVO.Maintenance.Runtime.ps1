@@ -2763,18 +2763,24 @@ Initialize-BRAVOProgress `
 # Вимкнений у конфігурації блок не показуємо й не рахуємо — етап існує лише
 # для того, що справді виконуватиметься (так само, як в Archive і Health).
 #
-# «Вимкнено» і «сьогодні не настав час» — різні речі. Реставрація моделі
-# увімкнена, але має свій день: у решту днів вона лишається рядком SKIPPED,
-# бо це нормальний стан увімкненого компонента, а не його відсутність.
 $script:BRAVOMaintenanceCheckSizeStepEnabled = $BravoMaintenanceEnabled -and $CheckSize
-$script:BRAVOMaintenanceModelStepsEnabled = $BravoMaintenanceEnabled
+# Реставрація показується лише тоді, коли вона справді виконуватиметься
+# цього запуску: $shouldRestore уже враховує -ForceRestore, пропущений слот
+# і збіг дня/часу з маркером. У решту днів рядка немає взагалі.
+#
+# Якщо реставрація запланована, але службу BRAVO не вдалося зупинити, етап
+# усе одно друкується — як SKIPPED. Це не «не настав час», а заплановане
+# й невиконане: рівно те, про що оператор мусить дізнатися.
+$script:BRAVOMaintenanceRestoreStepEnabled = $shouldRestore
+$script:BRAVOMaintenanceLogsStepEnabled = $BravoMaintenanceEnabled
 $script:BRAVOMaintenanceArchiveStepEnabled = [bool]$script:EnableArchiveAfterMaintenance
 # Вільне місце, директорії, зупинка служб, відновлення служб і очистка
 # виконуються завжди.
 Initialize-BRAVOMaintenanceSteps -Total (
     5 +
     $(if ($script:BRAVOMaintenanceCheckSizeStepEnabled) { 1 } else { 0 }) +
-    $(if ($script:BRAVOMaintenanceModelStepsEnabled) { 2 } else { 0 }) +
+    $(if ($script:BRAVOMaintenanceRestoreStepEnabled) { 1 } else { 0 }) +
+    $(if ($script:BRAVOMaintenanceLogsStepEnabled) { 1 } else { 0 }) +
     $(if ($script:BRAVOMaintenanceArchiveStepEnabled) { 1 } else { 0 })
 )
 Write-BRAVOHeader `
@@ -3468,27 +3474,26 @@ if ($BravoWebMaintenanceEnabled -and $ApacheEnabled) {
     $logsStepReported = $true
 }
 
-# Реставрація й обробка логів виконуються лише при зупиненій службі BRAVO,
-# причому реставрація ще й лише у свій день. Кожен прапорець окремий: спільний
-# давав би подвійний рядок «Обробка trace і логів» у найзвичайнішому випадку —
-# служба зупинена, реставрація сьогодні не запланована.
+# Реставрація й обробка логів виконуються лише при зупиненій службі BRAVO.
+# Кожен прапорець окремий: спільний давав би подвійний рядок «Обробка trace
+# і логів» у найзвичайнішому випадку — служба зупинена, реставрація сьогодні
+# не запланована.
 #
-# Обидва етапи друкуються, лише якщо компонент BRAVO увімкнений: вимкнений
-# не займає рядка й не входить у знаменник. А от увімкнений, але не
-# виконаний сьогодні, лишається SKIPPED — це його нормальний робочий стан.
-if ($script:BRAVOMaintenanceModelStepsEnabled) {
-    if (-not $restoreStepReported) {
-        Write-BRAVOMaintenanceStep `
-            -Name 'Реставрація моделі' `
-            -Status 'SKIPPED' `
-            -Details 'не заплановано на сьогодні'
-    }
-    if (-not $logsStepReported) {
-        Write-BRAVOMaintenanceStep `
-            -Name 'Обробка trace і логів' `
-            -Status 'SKIPPED' `
-            -Details 'службу BRAVO не було зупинено'
-    }
+# Сюди потрапляємо, лише якщо етап був порахований, але його гілка не
+# відпрацювала — тобто службу BRAVO не вдалося зупинити. Це не «не настав
+# час» (такий запуск взагалі не рахує реставрацію), а заплановане й
+# невиконане, тому рядок обов'язковий.
+if ($script:BRAVOMaintenanceRestoreStepEnabled -and -not $restoreStepReported) {
+    Write-BRAVOMaintenanceStep `
+        -Name 'Реставрація моделі' `
+        -Status 'SKIPPED' `
+        -Details 'службу BRAVO не було зупинено'
+}
+if ($script:BRAVOMaintenanceLogsStepEnabled -and -not $logsStepReported) {
+    Write-BRAVOMaintenanceStep `
+        -Name 'Обробка trace і логів' `
+        -Status 'SKIPPED' `
+        -Details 'службу BRAVO не було зупинено'
 }
 
 } finally {
