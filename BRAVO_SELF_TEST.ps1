@@ -1983,6 +1983,75 @@ try {
         -Name "Documentation/SecurityPolicyHasNoPlaceholders" `
         -Failure "SECURITY.md не повинен містити заглушок '[заповнити]' — контакт і строки реакції мають бути конкретними"
 
+    # Зовнішнє рев'ю 2026-08-05: операторський runbook. README пояснює, як
+    # налаштувати; OPERATIONS.md — що робити, коли вже зламалось. Найдорожча
+    # помилка в історії цього репозиторію (застаріла порада видалити
+    # TOOLS_INTEGRITY.json) належала саме до категорії "чого не робити", якої
+    # в документації не існувало як окремого розділу.
+    $operationsPath = Join-Path $root "OPERATIONS.md"
+    Test-BRAVOCondition `
+        -Condition (Test-Path -LiteralPath $operationsPath -PathType Leaf) `
+        -Name "Documentation/OperationsRunbookExists" `
+        -Failure "OPERATIONS.md має існувати в корені репозиторію"
+    if (Test-Path -LiteralPath $operationsPath -PathType Leaf) {
+        $operationsText = [IO.File]::ReadAllText($operationsPath, [Text.Encoding]::UTF8)
+
+        # Кожен код контракту BRAVO.ExitCodes, який реально може побачити
+        # оператор, повинен мати розділ у runbook. 0 і 10 — успішні, їх не
+        # діагностують; решта означає, що щось потребує рішення людини.
+        $runbookCodes = @('20', '30', '31', '32', '33', '40', '41', '50', '51', '60', '70', '90')
+        $missingCodes = @(
+            $runbookCodes | Where-Object { -not $operationsText.Contains("## ``$_`` —") }
+        )
+        Test-BRAVOCondition `
+            -Condition ($missingCodes.Count -eq 0) `
+            -Name "Documentation/OperationsRunbookCoversAllExitCodes" `
+            -Failure "OPERATIONS.md має мати розділ для кожного коду завершення; відсутні: $($missingCodes -join ', ')"
+
+        # Runbook без "чого не робити" — це переказ README іншими словами.
+        # Саме цей розділ відрізняє його від матриці діагностики.
+        Test-BRAVOCondition `
+            -Condition (
+                ([regex]::Matches($operationsText, '(?i)Чого (категорично )?не робити').Count -ge 8)
+            ) `
+            -Name "Documentation/OperationsRunbookStatesWhatNotToDo" `
+            -Failure "OPERATIONS.md має містити розділ 'Чого не робити' для більшості сценаріїв — саме він відрізняє runbook від переліку симптомів"
+
+        # Сценарії поза кодами завершення, які рев'ю вимагало окремо.
+        $runbookScenarios = @(
+            'ransomware',
+            'Відновлення на чистий сервер',
+            'Discovery',
+            'fingerprint',
+            'VSS',
+            'SYSTEM'
+        )
+        $missingScenarios = @(
+            $runbookScenarios | Where-Object { -not $operationsText.Contains($_) }
+        )
+        Test-BRAVOCondition `
+            -Condition ($missingScenarios.Count -eq 0) `
+            -Name "Documentation/OperationsRunbookCoversCriticalScenarios" `
+            -Failure "OPERATIONS.md має покривати сценарії поза кодами завершення; відсутні: $($missingScenarios -join ', ')"
+
+        # Та сама заборона, що й для README, але runbook читають саме в стані
+        # інциденту — там порада видалити маніфест найнебезпечніша. Проста
+        # заборона підрядка тут не працює: сам runbook мусить писати "не
+        # видаляти TOOLS_MANIFEST.json". Тому перевіряємо кожне входження
+        # окремо й вимагаємо, щоб перед ним стояло заперечення.
+        $deleteManifestMentions = [regex]::Matches(
+            $operationsText,
+            '(?i)(?<negation>не\s+)?видал[а-яіїєґ]*[\s*`]+(файл[\s*`]+)?(TOOLS_INTEGRITY|TOOLS_MANIFEST|RUNTIME_MANIFEST)'
+        )
+        $affirmativeDeleteAdvice = @(
+            $deleteManifestMentions | Where-Object { -not $_.Groups['negation'].Success }
+        )
+        Test-BRAVOCondition `
+            -Condition ($affirmativeDeleteAdvice.Count -eq 0) `
+            -Name "Documentation/OperationsRunbookNeverAdvisesDeletingManifest" `
+            -Failure "OPERATIONS.md не повинен радити видаляти маніфест цілісності; знайдено без заперечення: $(($affirmativeDeleteAdvice | ForEach-Object { $_.Value }) -join '; ')"
+    }
+
     # CLAUDE_CODE_TZ_ARCHIV_LIMS_MONOLITH.md: автоматичний Discovery джерел
     # (BRAVO_ROOT/WEB_ROOT/MODEL/BLOG/BRAVOEXCH/BAZA_APP/BAZA_WWW) за
     # встановленою службою BRAVO і активним bravo.ini, з повним ручним
