@@ -2711,6 +2711,42 @@ try {
         -Name "Console/MaintenanceSeverityScaleMatchesLogging" `
         -Failure "У шкалі рівнів BRAVO.Maintenance SUCCESS має бути НИЖЧЕ за WARNING і ERROR, інакше LogLevel='SUCCESS' приховає помилки"
 
+    # Вимкнений у конфігурації компонент не займає рядка етапу й не входить
+    # у знаменник: етап існує лише для того, що справді виконуватиметься.
+    # Знаменник тому обчислюваний, а не константа — Archive робив так від
+    # початку, Health і Maintenance підтягнуто до нього.
+    $runtimeStepTotals = @(
+        @{ Title = 'Archive';     Initializer = 'Initialize-BRAVOArchiveSteps' },
+        @{ Title = 'Health';      Initializer = 'Initialize-BRAVOHealthSteps' },
+        @{ Title = 'Maintenance'; Initializer = 'Initialize-BRAVOMaintenanceSteps' }
+    )
+    $runtimesWithConstantTotal = @()
+    foreach ($runtimeStepTotal in $runtimeStepTotals) {
+        $initializerCalls = @(
+            $runtimeConsoleAsts[$runtimeStepTotal.Title].FindAll(
+                { param($node) $node -is [System.Management.Automation.Language.CommandAst] },
+                $true
+            ) | Where-Object {
+                [string]$_.GetCommandName() -eq $runtimeStepTotal.Initializer -and
+                # Оголошення функції теж CommandAst не є, але її виклик із
+                # -Total присутній рівно один — саме він нас цікавить.
+                ([string]$_.Extent.Text).Contains('-Total')
+            }
+        )
+        # Обчислюваний знаменник обов'язково містить умову: без жодного if
+        # це константа, тобто вимкнений компонент знову роздуває підсумок.
+        $hasComputedTotal = @(
+            $initializerCalls | Where-Object { ([string]$_.Extent.Text) -match '\bif\b' }
+        ).Count -gt 0
+        if (-not $hasComputedTotal) {
+            $runtimesWithConstantTotal += $runtimeStepTotal.Title
+        }
+    }
+    Test-BRAVOCondition `
+        -Condition ($runtimesWithConstantTotal.Count -eq 0) `
+        -Name "Console/StepTotalCountsOnlyEnabledComponents" `
+        -Failure "Кількість етапів має обчислюватися за увімкненими компонентами, а не бути константою; константа у: $($runtimesWithConstantTotal -join ', ')"
+
     # Об'єкти проблем Health мають різний набір полів: Kind = "Service" не
     # несе ні DifferenceCount, ні ActionCounts. Пряме $_.DifferenceCount під
     # Set-StrictMode валило весь runtime із кодом 90 щоразу, коли лежала

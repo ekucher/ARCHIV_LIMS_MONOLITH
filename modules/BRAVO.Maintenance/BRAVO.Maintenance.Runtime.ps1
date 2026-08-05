@@ -2759,9 +2759,24 @@ Initialize-BRAVOConsole -StepWidth $maintenanceConfiguredStepWidth
 Initialize-BRAVOProgress `
     -Activity 'BRAVO MAINTENANCE' `
     -Enabled ([bool]$progressSettings.Enabled)
-# Дев'ять етапів обслуговування. Вимкнений блок дає SKIPPED, а не зниклий
-# рядок: оператор має бачити різницю між «зроблено» й «не виконувалося».
-Initialize-BRAVOMaintenanceSteps -Total 9
+
+# Вимкнений у конфігурації блок не показуємо й не рахуємо — етап існує лише
+# для того, що справді виконуватиметься (так само, як в Archive і Health).
+#
+# «Вимкнено» і «сьогодні не настав час» — різні речі. Реставрація моделі
+# увімкнена, але має свій день: у решту днів вона лишається рядком SKIPPED,
+# бо це нормальний стан увімкненого компонента, а не його відсутність.
+$script:BRAVOMaintenanceCheckSizeStepEnabled = $BravoMaintenanceEnabled -and $CheckSize
+$script:BRAVOMaintenanceModelStepsEnabled = $BravoMaintenanceEnabled
+$script:BRAVOMaintenanceArchiveStepEnabled = [bool]$script:EnableArchiveAfterMaintenance
+# Вільне місце, директорії, зупинка служб, відновлення служб і очистка
+# виконуються завжди.
+Initialize-BRAVOMaintenanceSteps -Total (
+    5 +
+    $(if ($script:BRAVOMaintenanceCheckSizeStepEnabled) { 1 } else { 0 }) +
+    $(if ($script:BRAVOMaintenanceModelStepsEnabled) { 2 } else { 0 }) +
+    $(if ($script:BRAVOMaintenanceArchiveStepEnabled) { 1 } else { 0 })
+)
 Write-BRAVOHeader `
     -Title ("BRAVO MAINTENANCE {0}" -f $global:ScriptVersion) `
     -Institution ([string]$script:ObjectName) `
@@ -3131,18 +3146,13 @@ Write-BRAVOMaintenanceStep `
 Write-BRAVOProgressPhase -Phase 'Перевірка розмірів .md' -PercentComplete 35
 $checkSizeCriticalBefore = $script:criticalErrorOccurred
 $checkSizeWarningsBefore = $script:BRAVOWarningCount
-if ($BravoMaintenanceEnabled -and $CheckSize) {
+if ($script:BRAVOMaintenanceCheckSizeStepEnabled) {
     Check-MdFileSizes -MODEL_PATH $MODEL_PATH -MAX_MD_FILE_SIZE $MAX_MD_FILE_SIZE -ExcludePatterns $MD_FILE_SIZE_EXCLUSIONS
     Write-BRAVOMaintenanceStep `
         -Name 'Перевірка розмірів .md' `
         -Status (Get-BRAVOMaintenanceStepStatus `
             -CriticalBefore $checkSizeCriticalBefore `
             -WarningsBefore $checkSizeWarningsBefore)
-} else {
-    Write-BRAVOMaintenanceStep `
-        -Name 'Перевірка розмірів .md' `
-        -Status 'SKIPPED' `
-        -Details 'вимкнено в конфігурації'
 }
 
 # ===== ОПЕРАЦІЇ ПІСЛЯ ЗУПИНКИ СЕРВІСІВ =====
@@ -3462,19 +3472,23 @@ if ($BravoWebMaintenanceEnabled -and $ApacheEnabled) {
 # причому реставрація ще й лише у свій день. Кожен прапорець окремий: спільний
 # давав би подвійний рядок «Обробка trace і логів» у найзвичайнішому випадку —
 # служба зупинена, реставрація сьогодні не запланована.
-# Пропущений етап лишається рядком SKIPPED, а не зникає: інакше нумерація
-# «плавала» б від запуску до запуску й етапи не можна було б порівнювати.
-if (-not $restoreStepReported) {
-    Write-BRAVOMaintenanceStep `
-        -Name 'Реставрація моделі' `
-        -Status 'SKIPPED' `
-        -Details $(if ($BravoMaintenanceEnabled) { 'не заплановано на сьогодні' } else { 'компонент вимкнено' })
-}
-if (-not $logsStepReported) {
-    Write-BRAVOMaintenanceStep `
-        -Name 'Обробка trace і логів' `
-        -Status 'SKIPPED' `
-        -Details 'службу BRAVO не було зупинено'
+#
+# Обидва етапи друкуються, лише якщо компонент BRAVO увімкнений: вимкнений
+# не займає рядка й не входить у знаменник. А от увімкнений, але не
+# виконаний сьогодні, лишається SKIPPED — це його нормальний робочий стан.
+if ($script:BRAVOMaintenanceModelStepsEnabled) {
+    if (-not $restoreStepReported) {
+        Write-BRAVOMaintenanceStep `
+            -Name 'Реставрація моделі' `
+            -Status 'SKIPPED' `
+            -Details 'не заплановано на сьогодні'
+    }
+    if (-not $logsStepReported) {
+        Write-BRAVOMaintenanceStep `
+            -Name 'Обробка trace і логів' `
+            -Status 'SKIPPED' `
+            -Details 'службу BRAVO не було зупинено'
+    }
 }
 
 } finally {
@@ -3729,12 +3743,8 @@ if ($script:EnableArchiveAfterMaintenance) {
             -CriticalBefore $archiveCriticalBefore `
             -WarningsBefore $archiveWarningsBefore)
 } else {
-    # Мінімальне інформаційне повідомлення без заголовків
+    # Лише у журнал: вимкнений компонент не займає рядка в консолі.
     Write-Log -Message "Запуск BRAVO_ARCHIV: вимкнено" -Level "DEBUG"
-    Write-BRAVOMaintenanceStep `
-        -Name 'Запуск BRAVO_ARCHIV' `
-        -Status 'SKIPPED' `
-        -Details 'вимкнено в конфігурації'
 }
 
 # ===== ВИКЛИК ФУНКЦІЇ АВТОМАТИЧНОГО ВИМКНЕННЯ =====

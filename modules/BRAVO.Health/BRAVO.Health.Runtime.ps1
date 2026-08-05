@@ -98,13 +98,14 @@ function Complete-BRAVOHealthResult {
     if ($script:BRAVOHealthConsoleReady) {
         # Останній етап друкується тут, бо гілок відправлення сповіщення
         # шість (вимкнено, пригнічено, надіслано, помилка, не потрібно...),
-        # і в кожній його довелося б дублювати. Умова -ge 6 захищає ранні
-        # виходи: без пройдених перевірок «[1/7] Сповіщення» лише збивав би.
-        if ($script:BRAVOHealthStepCurrent -ge 6) {
+        # і в кожній його довелося б дублювати. Умова про передостанній
+        # номер захищає ранні виходи: без пройдених перевірок рядок
+        # «Сповіщення» лише збивав би нумерацію.
+        if ($script:BRAVOHealthNotificationStepEnabled -and
+            $script:BRAVOHealthStepCurrent -eq ($script:BRAVOHealthStepTotal - 1)) {
             $notificationStatus = switch ([string]$Result.Notification) {
                 'Sent'        { 'OK' }
                 'NotRequired' { 'SKIPPED' }
-                'Disabled'    { 'SKIPPED' }
                 'Suppressed'  { 'SKIPPED' }
                 'Failed'      { 'ERROR' }
                 'NotSent'     { 'ERROR' }
@@ -123,17 +124,25 @@ function Complete-BRAVOHealthResult {
         if ($null -ne $Result.PSObject.Properties['IssueCount']) {
             $metrics.Add('Проблем', [int]$Result.IssueCount)
         }
+        # Метрика вимкненого призначення бреше найгірше з усього виводу:
+        # «NAS/SMB: True» читається як «перевірено й усе гаразд», хоча
+        # перевірки не було взагалі. Вимкнений компонент не показуємо тут
+        # рівно так само, як не показуємо його етап.
         foreach ($destination in @(
-            @{ Property = 'LocalVerified'; Title = 'Локальні копії' },
-            @{ Property = 'SftpVerified';  Title = 'SFTP' },
-            @{ Property = 'SmbVerified';   Title = 'NAS/SMB' }
+            @{ Property = 'LocalVerified'; Title = 'Локальні копії'; Enabled = $true },
+            @{ Property = 'SftpVerified';  Title = 'SFTP';           Enabled = $script:BRAVOHealthSftpStepEnabled },
+            @{ Property = 'SmbVerified';   Title = 'NAS/SMB';        Enabled = $script:BRAVOHealthSmbStepEnabled }
         )) {
+            if (-not $destination.Enabled) {
+                continue
+            }
             $property = $Result.PSObject.Properties[$destination.Property]
             if ($null -ne $property -and $null -ne $property.Value) {
                 $metrics.Add($destination.Title, $property.Value)
             }
         }
-        if ($null -ne $Result.PSObject.Properties['Notification']) {
+        if ($script:BRAVOHealthNotificationStepEnabled -and
+            $null -ne $Result.PSObject.Properties['Notification']) {
             $metrics.Add('Сповіщення', [string]$Result.Notification)
         }
 
@@ -459,10 +468,22 @@ $healthConfiguredStepWidth = if ($null -ne $consoleSettings.StepWidth) {
 }
 Initialize-BRAVOConsole -StepWidth $healthConfiguredStepWidth
 Initialize-BRAVOProgress -Activity 'BRAVO HEALTH' -Enabled ([bool]$progressSettings.Enabled)
-# Сім етапів: середовище, служби, локальні копії, BAZA, SFTP, NAS/SMB,
-# сповіщення. Вимкнений компонент дає SKIPPED, а не зниклий рядок — інакше
-# оператор не побачить різниці між «перевірено» й «не перевірялося».
-Initialize-BRAVOHealthSteps -Total 7
+
+# Вимкнений у конфігурації компонент не показуємо й не рахуємо: етап існує
+# лише для того, що справді перевірятиметься. Та сама логіка, що в Archive
+# (Initialize-BRAVOArchiveSteps) — вимкнений SFTP чи NAS не створює порожніх
+# рядків і не роздуває знаменник.
+$script:BRAVOHealthSftpStepEnabled = $sftpCredentialRequired
+$script:BRAVOHealthSmbStepEnabled = $smbCredentialRequired
+$script:BRAVOHealthNotificationStepEnabled = ($NotificationMode -ne 'none') -and (-not $NoSlack)
+# Середовище, керовані служби й локальні копії виконуються завжди.
+Initialize-BRAVOHealthSteps -Total (
+    3 +
+    $(if ($bazaLocalHealthEnabled) { 1 } else { 0 }) +
+    $(if ($script:BRAVOHealthSftpStepEnabled) { 1 } else { 0 }) +
+    $(if ($script:BRAVOHealthSmbStepEnabled) { 1 } else { 0 }) +
+    $(if ($script:BRAVOHealthNotificationStepEnabled) { 1 } else { 0 })
+)
 Write-BRAVOHeader `
     -Title ("BRAVO HEALTH {0}" -f $global:ScriptVersion) `
     -Institution ([string]$bravoSettings.InstitutionName) `
@@ -3797,27 +3818,28 @@ $bazaLocalHealthIssues = if ($bazaLocalHealthEnabled) {
         -Details (Get-BRAVOHealthStepDetails -IssueCount $bazaLocalResult.Count)
     $bazaLocalResult
 } else {
+    # Лише у журнал: вимкнений компонент не займає рядка в консолі.
     Write-HealthLog "Локальну перевірку BAZA пропущено: componentSettings.Synchronization.BAZALocal = `$false"
-    Write-BRAVOHealthStep `
-        -Name 'BAZA (локальна копія)' `
-        -Status 'SKIPPED' `
-        -Details 'вимкнено в конфігурації'
     @()
 }
 
 Write-BRAVOProgressPhase -Phase 'SFTP' -PercentComplete 60
 $sftpHealthIssues = @(Get-SFTPHealthIssues)
-Write-BRAVOHealthStep `
-    -Name 'SFTP' `
-    -Status (Get-BRAVOHealthStepStatus -IssueCount $sftpHealthIssues.Count) `
-    -Details (Get-BRAVOHealthStepDetails -IssueCount $sftpHealthIssues.Count)
+if ($script:BRAVOHealthSftpStepEnabled) {
+    Write-BRAVOHealthStep `
+        -Name 'SFTP' `
+        -Status (Get-BRAVOHealthStepStatus -IssueCount $sftpHealthIssues.Count) `
+        -Details (Get-BRAVOHealthStepDetails -IssueCount $sftpHealthIssues.Count)
+}
 
 Write-BRAVOProgressPhase -Phase 'NAS/SMB' -PercentComplete 80
 $smbHealthIssues = @(Get-SMBHealthIssues)
-Write-BRAVOHealthStep `
-    -Name 'NAS/SMB' `
-    -Status (Get-BRAVOHealthStepStatus -IssueCount $smbHealthIssues.Count) `
-    -Details (Get-BRAVOHealthStepDetails -IssueCount $smbHealthIssues.Count)
+if ($script:BRAVOHealthSmbStepEnabled) {
+    Write-BRAVOHealthStep `
+        -Name 'NAS/SMB' `
+        -Status (Get-BRAVOHealthStepStatus -IssueCount $smbHealthIssues.Count) `
+        -Details (Get-BRAVOHealthStepDetails -IssueCount $smbHealthIssues.Count)
+}
 
 Write-BRAVOProgressPhase -Phase 'Сповіщення' -PercentComplete 95
 $healthIssues = @($serviceHealthIssues) + @($localHealthIssues) + @($bazaLocalHealthIssues) + @($sftpHealthIssues) + @($smbHealthIssues)
