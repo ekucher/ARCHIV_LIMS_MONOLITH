@@ -1329,33 +1329,34 @@ try {
             $currentGitBranch = $null
         }
     }
+    # RELEASE_POLICY.md, розділи 2 і 5.3: гілка визначає і формат версії,
+    # і канал. Повний gate (разом із ModuleVersion, CHANGELOG і
+    # заголовками документації) — ci\Test-BRAVOReleasePolicy.ps1; тут
+    # перевіряється те саме твердження на тій гілці, де самотест реально
+    # запускається.
     if ($currentGitBranch -in @('master', 'main')) {
         Test-BRAVOCondition `
             -Condition (
-                [string]$loadedConfiguration.Version.ReleaseChannel -ne 'development'
+                [string]$loadedConfiguration.Version.ReleaseChannel -eq 'stable' -and
+                [string]$loadedConfiguration.Version.PackageVersion -match '^\d+\.\d+\.\d+$'
             ) `
             -Name "Version/StableBranchNotDevelopmentChannel" `
-            -Failure "гілка '$currentGitBranch' не повинна мати releaseChannel=development у VERSION.json"
+            -Failure "гілка '$currentGitBranch' має нести stable-версію X.Y.Z і releaseChannel='stable' у VERSION.json (RELEASE_POLICY.md, розділи 2.2 і 5.3)"
     }
     if ($currentGitBranch -eq 'developer') {
         Test-BRAVOCondition `
             -Condition (
-                [string]$loadedConfiguration.Version.ReleaseChannel -eq 'development' -and
-                [string]$loadedConfiguration.Version.ReleaseChannelSource -eq 'git-branch'
+                [string]$loadedConfiguration.Version.ReleaseChannel -in @('development', 'prerelease') -and
+                [string]$loadedConfiguration.Version.PackageVersion -match '^\d+\.\d+\.\d+-(dev|rc)\.\d+$' -and
+                [string]$loadedConfiguration.Version.ReleaseChannelSource -eq 'VERSION.json'
             ) `
-            -Name "Version/DeveloperBranchResolvesToDevelopmentViaGit" `
-            -Failure "на гілці developer releaseChannel має визначатися динамічно з .git/HEAD як 'development', а не братися статично з VERSION.json"
+            -Name "Version/DeveloperBranchCarriesPrereleaseVersion" `
+            -Failure "гілка developer має нести prerelease-версію X.Y.Z-dev.N або X.Y.Z-rc.N і відповідний releaseChannel, записаний саме у VERSION.json (RELEASE_POLICY.md, розділи 2.1 і 5.3)"
     }
 
-    # AUD-016 (аудит): releaseChannel більше не зберігається як буквальне
-    # значення, що вручну різниться між гілками (кожен merge
-    # developer->master вимагав ручного follow-up commit — двічі забувся
-    # саме в цій сесії через fast-forward, що мовчки протягував значення
-    # в обидва боки). Тепер VERSION.json на обох гілках містить ОДНАКОВИЙ
-    # fallback ("stable" — безпечний дефолт для розгорнутих production-
-    # копій без .git), а Resolve-BRAVOReleaseChannelFromGit
-    # (BRAVO_CONFIG_LOADER.ps1) визначає реальний channel із поточної
-    # гілки напряму з файлової системи (.git/HEAD), без виклику git.exe.
+    # Resolve-BRAVOReleaseChannelFromGit більше не джерело каналу
+    # (RELEASE_POLICY.md, розділ 5.4), але лишається перехресною
+    # перевіркою — тому мапінг гілок має бути правильним і далі.
     Test-BRAVOCondition `
         -Condition (
             (Resolve-BRAVOReleaseChannelFromGit -ConfigRoot $root -GitHeadContent "ref: refs/heads/master`n") -eq 'stable' -and
@@ -1368,24 +1369,33 @@ try {
         -Name "Version/ReleaseChannelResolvedFromGitBranch" `
         -Failure "Resolve-BRAVOReleaseChannelFromGit має мапити master/main->stable, developer->development, і повертати \$null для інших гілок, detached HEAD або порожнього вмісту"
 
-    $versionJsonTextForNeutralChannel = [IO.File]::ReadAllText(
-        (Join-Path $root "VERSION.json"),
-        [Text.Encoding]::UTF8
-    )
+    # RELEASE_POLICY.md, розділ 5.3: канал релізу читається з пакета, а не
+    # виводиться з гілки. Розгорнутий на сервері комплект приходить ZIP-ом
+    # або копіюванням — .git там немає взагалі, і канал нізвідки взяти.
+    $versionMetadataForChannelSource = Get-BravoVersionMetadata -ConfigRoot $root
     Test-BRAVOCondition `
-        -Condition ($versionJsonTextForNeutralChannel.Contains('"releaseChannel": "stable"')) `
-        -Name "Version/StaticReleaseChannelIsNeutralFallback" `
-        -Failure "VERSION.json має містити нейтральний fallback releaseChannel='stable' (однаковий на обох гілках) — реальний channel визначається Resolve-BRAVOReleaseChannelFromGit"
+        -Condition (
+            [string]$versionMetadataForChannelSource.ReleaseChannelSource -eq 'VERSION.json' -and
+            [string]$versionMetadataForChannelSource.ReleaseChannel -in @('stable', 'development', 'prerelease') -and
+            $false -ne $versionMetadataForChannelSource.ReleaseChannelMatchesGit
+        ) `
+        -Name "Version/ReleaseChannelStoredInPackage" `
+        -Failure "releaseChannel має братися з VERSION.json (джерело 'VERSION.json') і не суперечити гілці в .git/HEAD — RELEASE_POLICY.md, розділи 5.3-5.4"
 
     $moduleManifests = @(Get-ChildItem -LiteralPath (Join-Path $root 'modules') -Recurse -Filter '*.psd1' -File)
+    # RELEASE_POLICY.md, розділ 3.4: ModuleVersion це [System.Version] —
+    # prerelease-суфікса він не приймає, а New-ModuleManifest у Windows
+    # PowerShell 5.1 не має -Prerelease. Тому маніфести несуть БАЗОВУ
+    # частину packageVersion, а повна версія завжди береться з VERSION.json.
+    $expectedModuleVersion = ([string]$loadedConfiguration.Version.PackageVersion) -replace '-.*$', ''
     $moduleVersionsMatch = @($moduleManifests | Where-Object {
             [string](Test-ModuleManifest -Path $_.FullName -ErrorAction Stop).Version -ne
-            [string]$loadedConfiguration.Version.PackageVersion
+            $expectedModuleVersion
         }).Count -eq 0
     Test-BRAVOCondition `
         -Condition ($moduleManifests.Count -gt 0 -and $moduleVersionsMatch) `
         -Name "Version/ModuleManifests" `
-        -Failure "ModuleVersion усіх manifests має відповідати packageVersion у VERSION.json"
+        -Failure "ModuleVersion усіх manifests має відповідати базовій частині packageVersion у VERSION.json (без prerelease-суфікса)"
     $archiveScriptTextForBuildId = [IO.File]::ReadAllText(
         (Join-Path $root "modules\BRAVO.Archive\BRAVO.Archive.Runtime.ps1"),
         [Text.Encoding]::UTF8
@@ -2415,6 +2425,113 @@ try {
             -Name "Documentation/ReleaseChecklistCoversRequiredSteps" `
             -Failure "RELEASE_CHECKLIST.md має покривати VERSION.json, CHANGELOG.md, self-test, BOM і git tag"
     }
+
+    # RELEASE_POLICY.md: яка версія в якій гілці дозволена. Чек-лист
+    # відповідає на питання "що зробити перед випуском", політика — на
+    # питання "що взагалі дозволено випускати з цієї гілки".
+    $releasePolicyPath = Join-Path $root "RELEASE_POLICY.md"
+    Test-BRAVOCondition `
+        -Condition (Test-Path -LiteralPath $releasePolicyPath -PathType Leaf) `
+        -Name "Documentation/ReleasePolicyExists" `
+        -Failure "RELEASE_POLICY.md має існувати в корені репозиторію"
+    if (Test-Path -LiteralPath $releasePolicyPath -PathType Leaf) {
+        $releasePolicyText = [IO.File]::ReadAllText($releasePolicyPath, [Text.Encoding]::UTF8)
+        Test-BRAVOCondition `
+            -Condition (
+                $releasePolicyText.Contains('X.Y.Z-dev.N') -and
+                $releasePolicyText.Contains('X.Y.Z-rc.N') -and
+                $releasePolicyText.Contains('releaseChannel') -and
+                $releasePolicyText.Contains('ci\Test-BRAVOReleasePolicy.ps1') -and
+                $releasePolicyText.Contains('ModuleVersion')
+            ) `
+            -Name "Documentation/ReleasePolicyCoversVersionModel" `
+            -Failure "RELEASE_POLICY.md має описувати prerelease-формати (dev/rc), releaseChannel, правило ModuleVersion і CI-gate ci\Test-BRAVOReleasePolicy.ps1"
+    }
+
+    # Політика, яку ніхто не перевіряє механічно, тримається лише на
+    # людській дисципліні — а саме вона вже двічі підвела на
+    # fast-forward merge (AUD-016). Тому gate має бути і в репозиторії,
+    # і в workflow.
+    $releasePolicyGatePath = Join-Path $root 'ci\Test-BRAVOReleasePolicy.ps1'
+    $ciWorkflowTextForPolicy = [IO.File]::ReadAllText(
+        (Join-Path $root '.github\workflows\ci.yml'),
+        [Text.Encoding]::UTF8
+    )
+    Test-BRAVOCondition `
+        -Condition (
+            (Test-Path -LiteralPath $releasePolicyGatePath -PathType Leaf) -and
+            $ciWorkflowTextForPolicy.Contains('ci\Test-BRAVOReleasePolicy.ps1')
+        ) `
+        -Name "ReleasePolicy/CiGateEnforcesBranchVersionChannel" `
+        -Failure "ci\Test-BRAVOReleasePolicy.ps1 має існувати і викликатися з .github\workflows\ci.yml — інакше відповідність гілки, версії та каналу тримається лише на пам'яті людини"
+
+    # Функціональна перевірка самого gate-скрипта, а не лише факту його
+    # існування. X.Y.Z завжди є підрядком X.Y.Z-dev.N/-rc.N — саме в
+    # момент promotion у master, де ця перевірка найважливіша,
+    # .Contains() дав би хибний PASS на забутому старому заголовку
+    # ("## 4.5.0-dev.1" містить підрядок "4.5.0"). Ізольований мінімальний
+    # комплект відтворює обидва випадки: справжнє оновлення і забутий крок.
+    $releasePolicyProbeRoot = Join-Path ([IO.Path]::GetTempPath()) ("BRAVO_RELEASE_POLICY_PROBE_{0}" -f [guid]::NewGuid().ToString('N'))
+    $releasePolicyProbeResults = @{}
+    try {
+        [void][IO.Directory]::CreateDirectory((Join-Path $releasePolicyProbeRoot 'modules\BRAVO.Fake'))
+        # Маркер кореня репозиторію для власної перевірки скрипта; вміст
+        # не читається, потрібен лише факт існування файлу.
+        [IO.File]::WriteAllText((Join-Path $releasePolicyProbeRoot 'BRAVO_SELF_TEST.ps1'), '', (New-Object Text.UTF8Encoding($true)))
+        Copy-Item -LiteralPath (Join-Path $root 'BRAVO_CONFIG_LOADER.ps1') -Destination (Join-Path $releasePolicyProbeRoot 'BRAVO_CONFIG_LOADER.ps1') -Force
+        [IO.File]::WriteAllText(
+            (Join-Path $releasePolicyProbeRoot 'modules\BRAVO.Fake\BRAVO.Fake.psd1'),
+            "@{`r`n    ModuleVersion = '4.5.0'`r`n    GUID = '11111111-1111-1111-1111-111111111111'`r`n    Author = 'BRAVO self-test'`r`n}`r`n",
+            (New-Object Text.UTF8Encoding($true))
+        )
+
+        function Set-BRAVOReleasePolicyProbeContent {
+            param(
+                [Parameter(Mandatory = $true)][string]$ProbeRoot,
+                [Parameter(Mandatory = $true)][string]$ChangelogHeading,
+                [Parameter(Mandatory = $true)][string]$ReadmeHeader
+            )
+            $utf8NoBom = New-Object Text.UTF8Encoding($false)
+            [IO.File]::WriteAllText((Join-Path $ProbeRoot 'VERSION.json'), '{"packageVersion":"4.5.0","releaseChannel":"stable"}', $utf8NoBom)
+            [IO.File]::WriteAllText((Join-Path $ProbeRoot 'CHANGELOG.md'), "# Changelog`r`n`r`n$ChangelogHeading`r`n`r`nОпис.`r`n", $utf8NoBom)
+            [IO.File]::WriteAllText((Join-Path $ProbeRoot 'README.md'), "$ReadmeHeader`r`n", $utf8NoBom)
+            [IO.File]::WriteAllText((Join-Path $ProbeRoot 'BRAVO_SETUP.md'), "$ReadmeHeader`r`n", $utf8NoBom)
+        }
+
+        $releasePolicyGateScript = Join-Path $root 'ci\Test-BRAVOReleasePolicy.ps1'
+        # Без пониження ErrorActionPreference stderr дочірнього процесу
+        # ронить увесь прогін замість чистого [FAIL] (той самий патерн,
+        # що й у RuntimeGuard/EntrypointsFailClosedWhenGuardUnloadable).
+        $previousErrorAction = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            # Справжній promotion: CHANGELOG і заголовки дійсно оновлені
+            # на stable-версію.
+            Set-BRAVOReleasePolicyProbeContent -ProbeRoot $releasePolicyProbeRoot -ChangelogHeading '## 4.5.0 — 2026-08-05' -ReadmeHeader '# BRAVO 4.5.0 — опис'
+            $null = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $releasePolicyGateScript -Root $releasePolicyProbeRoot -Branch 'master' 2>&1
+            $releasePolicyProbeResults['Genuine'] = $LASTEXITCODE
+
+            # Забутий крок promotion: CHANGELOG і заголовки лишились зі
+            # старої prerelease-версії.
+            Set-BRAVOReleasePolicyProbeContent -ProbeRoot $releasePolicyProbeRoot -ChangelogHeading '## 4.5.0-dev.1 — 2026-08-05' -ReadmeHeader '# BRAVO 4.5.0-dev.1 — опис'
+            $null = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $releasePolicyGateScript -Root $releasePolicyProbeRoot -Branch 'master' 2>&1
+            $releasePolicyProbeResults['StaleFromDev'] = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousErrorAction
+        }
+    } finally {
+        Remove-Item -LiteralPath $releasePolicyProbeRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    Test-BRAVOCondition `
+        -Condition ($releasePolicyProbeResults['Genuine'] -eq 0) `
+        -Name "ReleasePolicy/AcceptsGenuineStableRelease" `
+        -Failure "ci\Test-BRAVOReleasePolicy.ps1 має пропускати комплект, де CHANGELOG.md і заголовки дійсно оновлені на stable-версію (код виходу: $($releasePolicyProbeResults['Genuine']))"
+
+    Test-BRAVOCondition `
+        -Condition ($releasePolicyProbeResults['StaleFromDev'] -ne 0) `
+        -Name "ReleasePolicy/RejectsStaleChangelogAndHeaderOnPromotion" `
+        -Failure "ci\Test-BRAVOReleasePolicy.ps1 має блокувати promotion, якщо CHANGELOG.md і заголовки README.md/BRAVO_SETUP.md лишились зі старої prerelease-версії — X.Y.Z як підрядок X.Y.Z-dev.N не повинен рахуватись збігом; код виходу: $($releasePolicyProbeResults['StaleFromDev'])"
 
     # P2.7 аудиту: дрібні зауваження документації. Дерево каталогів мало
     # дублікат "BRAVO_*.ps1" двома окремими рядками; додано матрицю

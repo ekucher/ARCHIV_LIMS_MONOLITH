@@ -3,17 +3,21 @@
 Set-StrictMode -Version 2.0
 
 function Resolve-BRAVOReleaseChannelFromGit {
-    # AUD-016 (аудит): releaseChannel раніше зберігався як буквальне
-    # значення у VERSION.json, яке різнилось між гілками master/developer
-    # — кожен merge developer->master вимагав ручного follow-up commit,
-    # інакше fast-forward мовчки протягував "development" на master (і
-    # навпаки — виправлення на master могло так само мовчки протягнутись
-    # назад у developer при наступному злитті). Джерело тепер зберігає
-    # ОДНАКОВЕ значення на обох гілках (нейтральний fallback для
-    # розгорнутих production-копій без .git); коли поруч є .git-каталог
-    # (git-checkout, а не скопійований дистрибутив), реальний release
-    # channel визначається з поточної гілки напряму з файлової системи —
-    # без виклику git.exe (може бути відсутній на production-сервері).
+    # Визначає release channel із поточної гілки напряму з файлової
+    # системи (.git/HEAD), без виклику git.exe — його може не бути на
+    # production-сервері.
+    #
+    # AUD-016 (аудит): певний час ця функція БУЛА джерелом каналу, бо
+    # ручна синхронізація VERSION.json між гілками двічі підвела на
+    # fast-forward merge. RELEASE_POLICY.md (розділи 5.3, 5.4) повернув
+    # джерело істини в пакет: розгорнутий комплект узагалі не має .git,
+    # і канал тоді нізвідки взяти. Причину AUD-016 усунуто інакше —
+    # гілки більше ніколи не містять однакової версії (розділ 4), тому
+    # fast-forward між ними неможливий, а узгодженість гілки, версії та
+    # каналу тепер механічно охороняє ci\Test-BRAVOReleasePolicy.ps1.
+    #
+    # Тут результат лишається як безкоштовна перехресна перевірка: поки
+    # .git поруч, розбіжність із VERSION.json видно (ReleaseChannelMatchesGit).
     #
     # -GitHeadContent дозволяє self-test підставити синтетичний вміст
     # .git/HEAD замість реального файлу (той самий injectable-патерн, що
@@ -78,6 +82,8 @@ function Get-BravoVersionMetadata {
             ReleaseDate = $null
             ReleaseChannel = 'legacy'
             ReleaseChannelSource = 'legacy'
+            GitBranchReleaseChannel = $null
+            ReleaseChannelMatchesGit = $null
             BuildId = $null
             SourceCommit = $null
             VersionFilePath = $versionPath
@@ -133,17 +139,25 @@ function Get-BravoVersionMetadata {
         $null
     }
 
+    # RELEASE_POLICY.md, розділи 5.3-5.4: канал релізу зберігається в
+    # самому пакеті. Пакет на сервері приходить ZIP-ом, копіюванням,
+    # SFTP або SMB — .git там немає, і виведений із гілки канал у
+    # production просто недоступний. .git, коли він поруч, лишається
+    # перехресною перевіркою: розбіжність видно в ReleaseChannelMatchesGit
+    # (у CI її ловить ci\Test-BRAVOReleasePolicy.ps1).
     $staticReleaseChannel = [string]$versionData.releaseChannel
     $gitDetectedReleaseChannel = Resolve-BRAVOReleaseChannelFromGit -ConfigRoot $ConfigRoot
-    $effectiveReleaseChannel = if (-not [string]::IsNullOrWhiteSpace($gitDetectedReleaseChannel)) {
-        $gitDetectedReleaseChannel
+    $effectiveReleaseChannel = $staticReleaseChannel
+    $releaseChannelSource = 'VERSION.json'
+    $releaseChannelMatchesGit = if ([string]::IsNullOrWhiteSpace($gitDetectedReleaseChannel)) {
+        # Гілки немає (розгорнутий пакет, detached HEAD, feature/*) —
+        # порівнювати нема з чим; це не "не збігається".
+        $null
+    } elseif ($gitDetectedReleaseChannel -eq 'stable') {
+        $staticReleaseChannel -eq 'stable'
     } else {
-        $staticReleaseChannel
-    }
-    $releaseChannelSource = if (-not [string]::IsNullOrWhiteSpace($gitDetectedReleaseChannel)) {
-        'git-branch'
-    } else {
-        'VERSION.json'
+        # developer несе і 'development' (dev.N), і 'prerelease' (rc.N).
+        $staticReleaseChannel -in @('development', 'prerelease')
     }
 
     return [pscustomobject]@{
@@ -155,6 +169,8 @@ function Get-BravoVersionMetadata {
         ReleaseDate = [string]$versionData.releaseDate
         ReleaseChannel = $effectiveReleaseChannel
         ReleaseChannelSource = $releaseChannelSource
+        GitBranchReleaseChannel = $gitDetectedReleaseChannel
+        ReleaseChannelMatchesGit = $releaseChannelMatchesGit
         BuildId = $buildId
         SourceCommit = $sourceCommit
         VersionFilePath = $versionPath
