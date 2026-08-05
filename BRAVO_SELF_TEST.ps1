@@ -2974,6 +2974,52 @@ try {
         ) `
         -Name "Runtime/SharedWinSCPDotNetDiscovery" `
         -Failure "пошук WinSCP .NET components має мати одну реалізацію у BRAVO.ArchiveRuntime"
+
+    # Аудит Low #10: Get-BRAVOWinSCPBusyMessage формував текст в обхід
+    # єдиної точки санітизації. Її результат іде у Write-BRAVOLog (Archive)
+    # і в throw (Health) — тобто в журнал і в сповіщення.
+    #
+    # Сьогодні в $Availability.Processes лежать лише ProcessId, і витікати
+    # нема чому. Але $Availability.Error — це вільний текст винятку, а
+    # найприроднішим розширенням діагностики "який саме WinSCP працює" є
+    # CommandLine з Win32_Process, у якому лежить sftp://user:password@host.
+    # Тест фіксує вимогу заздалегідь, а не після інциденту.
+    Remove-Module -Name 'BRAVO.ArchiveRuntime' -Force -ErrorAction SilentlyContinue
+    Import-Module -Name (Join-Path $root "modules\BRAVO.ArchiveRuntime\BRAVO.ArchiveRuntime.psd1") -Force -ErrorAction Stop
+
+    $busyLeakAvailability = [pscustomobject]@{
+        Available = $false
+        Processes = @()
+        Error = 'WinSCP.com /command "open sftp://bravo:S3cr3tPass@nas.local/" -password=T0pS3cret'
+    }
+    $busyLeakMessage = Get-BRAVOWinSCPBusyMessage `
+        -Availability $busyLeakAvailability -Operation "передача архіву"
+    Test-BRAVOCondition `
+        -Condition (
+            -not $busyLeakMessage.Contains('S3cr3tPass') -and
+            -not $busyLeakMessage.Contains('T0pS3cret') -and
+            $busyLeakMessage.Contains('***') -and
+            $busyLeakMessage.Contains('nas.local')
+        ) `
+        -Name "Secrets/WinSCPBusyMessageIsSanitized" `
+        -Failure "повідомлення про зайнятість WinSCP має проходити Get-SanitizedWinSCPDiagnostic: пароль не повинен потрапляти в журнал і сповіщення (отримано: $busyLeakMessage)"
+
+    # Санітизація не повинна псувати звичайний випадок: діагностика без
+    # секретів має лишатися читабельною, інакше її почнуть обходити.
+    $busyNormalMessage = Get-BRAVOWinSCPBusyMessage `
+        -Availability ([pscustomobject]@{
+            Available = $false
+            Processes = @([pscustomobject]@{ ProcessId = 4242; Started = 'x' })
+            Error = $null
+        }) `
+        -Operation "синхронізація BAZA"
+    Test-BRAVOCondition `
+        -Condition (
+            $busyNormalMessage.Contains('PID=4242') -and
+            $busyNormalMessage.Contains('синхронізація BAZA')
+        ) `
+        -Name "Secrets/WinSCPBusyMessageKeepsDiagnostics" `
+        -Failure "санітизація не повинна прибирати корисну діагностику (PID, назву операції): $busyNormalMessage"
     Test-BRAVOCondition `
         -Condition (
             $maintenanceScriptText.Contains('BRAVO.ArchiveHelpers') -and
