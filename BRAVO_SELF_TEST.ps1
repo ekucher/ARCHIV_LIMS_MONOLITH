@@ -2578,6 +2578,59 @@ try {
         -Name "Documentation/ThreatModelHasNoStaleResidualRisk" `
         -Failure "THREAT_MODEL.md містить твердження про залишковий ризик, який код уже закрив: $($foundStaleClaims -join '; ')"
 
+    # ===== DRY-RUN МУСИТЬ ПЕРЕВІРЯТИ ЦІЛІСНІСТЬ =====
+    # Знайдено тестовим розгортанням: dry-run звітував «0 помилок» на
+    # комплекті, у Tools\ якого лежали залишки старого розкладання. Кожен
+    # production-запуск на тому ж комплекті завершився б кодом 33, бо
+    # entrypoint кличе guard, а dry-run — ні. Перевірка готовності, яка не
+    # перевіряє те, що перевіряє сам запуск, дає хибну впевненість, і це
+    # найгірше, що вона може зробити.
+    $dryRunAst = [System.Management.Automation.Language.Parser]::ParseFile(
+        (Join-Path $root 'BRAVO_DRY_RUN.ps1'), [ref]$null, [ref]$null
+    )
+    $dryRunCommands = @(
+        $dryRunAst.FindAll(
+            { param($node) $node -is [System.Management.Automation.Language.CommandAst] },
+            $true
+        ) | ForEach-Object { [string]$_.GetCommandName() }
+    )
+    $dryRunMissingGuardChecks = @(
+        @(
+            'Test-BRAVORuntimeManifestIntegrity',
+            'Test-BRAVORuntimeSecuritySettings',
+            'Test-BRAVOVersionDowngrade'
+        ) | Where-Object { $dryRunCommands -notcontains $_ }
+    )
+    Test-BRAVOCondition `
+        -Condition ($dryRunMissingGuardChecks.Count -eq 0) `
+        -Name "DryRun/VerifiesRuntimeIntegrity" `
+        -Failure "BRAVO_DRY_RUN.ps1 має виконувати ті самі перевірки guard, що й entrypoint; не викликано: $($dryRunMissingGuardChecks -join ', ')"
+
+    # Dry-run не має права записувати стан версії: він фіксував би
+    # розгортання, якого ще не було.
+    $versionDowngradeCallInDryRun = $dryRunAst.Find(
+        {
+            param($node)
+            $node -is [System.Management.Automation.Language.CommandAst] -and
+            ([string]$node.GetCommandName()) -eq 'Test-BRAVOVersionDowngrade'
+        },
+        $true
+    )
+    $dryRunUsesNoWrite = $false
+    if ($null -ne $versionDowngradeCallInDryRun) {
+        $dryRunUsesNoWrite = @(
+            $versionDowngradeCallInDryRun.CommandElements |
+                Where-Object {
+                    $_ -is [System.Management.Automation.Language.CommandParameterAst] -and
+                    $_.ParameterName -eq 'NoWrite'
+                }
+        ).Count -gt 0
+    }
+    Test-BRAVOCondition `
+        -Condition $dryRunUsesNoWrite `
+        -Name "DryRun/DoesNotRecordVersionState" `
+        -Failure "Test-BRAVOVersionDowngrade у BRAVO_DRY_RUN.ps1 має викликатись із -NoWrite — dry-run не змінює стан системи"
+
     # ===== JSON-МАСИВ НЕ МОЖНА ЗБИРАТИ ЧЕРЕЗ @(конвеєр) =====
     # Знайдено тестовим розгортанням: ConvertFrom-Json у Windows PowerShell 5.1
     # віддає JSON-масив ОДНИМ об'єктом, не розгортаючи його в конвеєр. Тому
