@@ -23,7 +23,7 @@ param (
 $bravoScriptDirectory = $RuntimeRoot
 
 # Спільні PowerShell-модулі runtime.
-foreach ($moduleName in @('BRAVO.Compatibility', 'BRAVO.Credentials', 'BRAVO.ArchiveHelpers', 'BRAVO.Logging', 'BRAVO.ExitCodes')) {
+foreach ($moduleName in @('BRAVO.Compatibility', 'BRAVO.Credentials', 'BRAVO.ArchiveHelpers', 'BRAVO.Logging', 'BRAVO.Console', 'BRAVO.ExitCodes')) {
     $modulePath = Join-Path $bravoScriptDirectory "modules\$moduleName\$moduleName.psd1"
     if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) {
         throw "Не знайдено спільний PowerShell-модуль: $modulePath"
@@ -802,6 +802,59 @@ if ($ArchiveAfterMaintenance -notin @("on", "off")) {
 
 $script:EnableArchiveAfterMaintenance = ($ArchiveAfterMaintenance -eq "on")
 
+# ===== ОПЕРАЦІЙНА КОНСОЛЬ =====
+# Нумерація етапів: [1/9], [2/9], ... Ті самі елементи виводу, що в Archive
+# і Health: заголовок, етапи, підсумок.
+$script:BRAVOMaintenanceStepCurrent = 0
+$script:BRAVOMaintenanceStepTotal = 0
+
+function Initialize-BRAVOMaintenanceSteps {
+    param([Parameter(Mandatory = $true)][int]$Total)
+
+    $script:BRAVOMaintenanceStepCurrent = 0
+    $script:BRAVOMaintenanceStepTotal = [Math]::Max(1, $Total)
+}
+
+# Статус етапу рахується від ЗРІЗУ лічильників перед блоком, а не від
+# їхнього абсолютного значення: $script:criticalErrorOccurred накопичується
+# до кінця запуску, тому без зрізу одна рання помилка пофарбувала б у
+# червоне всі наступні етапи, які насправді відпрацювали.
+function Get-BRAVOMaintenanceStepStatus {
+    param(
+        [bool]$CriticalBefore,
+        [int]$WarningsBefore,
+        [switch]$Skipped
+    )
+
+    if ($Skipped) {
+        return 'SKIPPED'
+    }
+    if ($script:criticalErrorOccurred -and -not $CriticalBefore) {
+        return 'ERROR'
+    }
+    if ($script:BRAVOWarningCount -gt $WarningsBefore) {
+        return 'WARNING'
+    }
+    return 'OK'
+}
+
+function Write-BRAVOMaintenanceStep {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [ValidateSet('OK', 'SKIPPED', 'WARNING', 'ERROR')]
+        [string]$Status = 'OK',
+        [string]$Details
+    )
+
+    $script:BRAVOMaintenanceStepCurrent++
+    Write-BRAVOStepResult `
+        -Current $script:BRAVOMaintenanceStepCurrent `
+        -Total $script:BRAVOMaintenanceStepTotal `
+        -Name $Name `
+        -Status $Status `
+        -Details $Details
+}
+
 # ===== ФУНКЦІЯ ЛОГУВАННЯ =====
 function Write-Log {
     param(
@@ -819,85 +872,94 @@ function Write-Log {
         $script:BRAVOWarningCount++
     }
 
-    # Перевірка рівня логування
-    $logLevels = @{"DEBUG"=0; "INFO"=1; "WARNING"=2; "ERROR"=3; "SUCCESS"=4}
-    
+    # Шкала спільна з BRAVO.Logging. SUCCESS свідомо НИЖЧЕ за WARNING:
+    # у старій локальній шкалі (SUCCESS=4, ERROR=3) значення LogLevel="SUCCESS"
+    # відсікало помилки й попередження, тобто найвища детальність ховала
+    # рівно те, заради чого журнал читають.
+    $logLevels = @{"TRACE"=0; "DEBUG"=1; "INFO"=2; "SUCCESS"=3; "WARNING"=4; "ERROR"=5; "FATAL"=6}
+
     # Отримуємо поточний рівень логування з глобальної змінної
-    $currentLogLevel = if ($script:LogLevel -and $logLevels.ContainsKey($script:LogLevel)) { 
-        $logLevels[$script:LogLevel] 
-    } else { 
-        1 # Значення за замовчуванням - INFO
+    $currentLogLevel = if ($script:LogLevel -and $logLevels.ContainsKey($script:LogLevel)) {
+        $logLevels[$script:LogLevel]
+    } else {
+        $logLevels["INFO"]
     }
-    
-    $messageLevel = if ($logLevels.ContainsKey($Level)) { 
-        $logLevels[$Level] 
-    } else { 
-        1 # Значення за замовчуванням - INFO
+
+    $messageLevel = if ($logLevels.ContainsKey($Level)) {
+        $logLevels[$Level]
+    } else {
+        $logLevels["INFO"]
     }
+
+    # Поріг консолі — окремий від файлового, з тієї самої секції BRAVO.config,
+    # що й в Archive та Health.
+    $consoleLevelName = if ($null -ne $consoleSettings.ConsoleLevel) {
+        [string]$consoleSettings.ConsoleLevel
+    } else {
+        'WARNING'
+    }
+    $consoleThreshold = if ($logLevels.ContainsKey($consoleLevelName)) {
+        $logLevels[$consoleLevelName]
+    } else {
+        $logLevels["WARNING"]
+    }
+    $normalizedLevel = if ($logLevels.ContainsKey($Level)) { $Level } else { 'INFO' }
     
     # Пропускаємо повідомлення нижчого рівня
     if ($messageLevel -lt $currentLogLevel) {
         return
     }
     
-    # Обробка спеціальних повідомлень-роздільників
+    # Роздільники й заголовки формували структуру старої консолі. Тепер її
+    # задають етапи (Write-BRAVOMaintenanceStep), тому в консоль вони більше
+    # не йдуть — але лишаються у файлі, щоб хронологія читалася як раніше.
     if ($Message -eq "=" -or $Message -eq "===") {
-        $separator = "=" * $SeparatorLength
-        Write-Host $separator -ForegroundColor White
-        try {
-            if (-not (Test-Path $LOG_DIR)) {
-                New-Item -ItemType Directory -Path $LOG_DIR -Force | Out-Null
-            }
-            $separator | Out-File -FilePath $LOG_FILE -Append -Encoding UTF8
-        } catch {
-            Write-Host "Помилка запису у файл логу: $($_.Exception.Message)" -ForegroundColor Red
-        }
+        Write-BRAVOMaintenanceLogFile -Entry ("=" * $SeparatorLength)
         return
     }
-    
-    # Обробка заголовків
+
     if ($Message -match "^=== .* ===$") {
-        Write-Host $Message -ForegroundColor Yellow
-        try {
-            if (-not (Test-Path $LOG_DIR)) {
-                New-Item -ItemType Directory -Path $LOG_DIR -Force | Out-Null
-            }
-            $Message | Out-File -FilePath $LOG_FILE -Append -Encoding UTF8
-        } catch {
-            Write-Host "Помилка запису у файл логу: $($_.Exception.Message)" -ForegroundColor Red
-        }
+        Write-BRAVOMaintenanceLogFile -Entry $Message
         return
     }
-    
+
     # Звичайні повідомлення
     if ($NoTimestamp) {
         $logEntry = $Message
-        Write-Host $logEntry -ForegroundColor White
+        $consoleEntry = $Message
     } else {
         $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         $logEntry = "[$timestamp] [$Level] $Message"
         $consoleEntry = if ($consoleSettings.ShowTimestampsInConsole) {
             $logEntry
         } else {
-            "[$Level] $Message"
-        }
-        
-        switch ($Level) {
-            "SUCCESS" { Write-Host $consoleEntry -ForegroundColor Green }
-            "ERROR"   { Write-Host $consoleEntry -ForegroundColor Red }
-            "WARNING" { Write-Host $consoleEntry -ForegroundColor Yellow }
-            "DEBUG"   { Write-Host $consoleEntry -ForegroundColor Gray }
-            default   { Write-Host $consoleEntry -ForegroundColor White }
+            $Message
         }
     }
-    
+
+    if ($messageLevel -ge $consoleThreshold) {
+        Write-BRAVOConsoleMessage -Message $consoleEntry -Level $normalizedLevel
+    }
+
+    Write-BRAVOMaintenanceLogFile -Entry $logEntry
+}
+
+# Виділено з Write-Log: запис у файл повторювався чотири рази, і в кожній
+# копії помилка запису йшла в консоль власним Write-Host повз розмітку.
+function Write-BRAVOMaintenanceLogFile {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Entry)
+
     try {
         if (-not (Test-Path $LOG_DIR)) {
             New-Item -ItemType Directory -Path $LOG_DIR -Force | Out-Null
         }
-        $logEntry | Out-File -FilePath $LOG_FILE -Append -Encoding UTF8
+        $Entry | Out-File -FilePath $LOG_FILE -Append -Encoding UTF8
     } catch {
-        Write-Host "Помилка запису у файл логу: $($_.Exception.Message)" -ForegroundColor Red
+        # Не через Write-Log: журнал саме зараз недоступний, і рекурсія лише
+        # поглибила б проблему.
+        Write-BRAVOConsoleMessage `
+            -Message "Помилка запису у файл логу: $($_.Exception.Message)" `
+            -Level 'WARNING'
     }
 }
 
@@ -2688,6 +2750,45 @@ $freeSpaceExclusionsText = if ($FREE_SPACE_EXCLUDED_DRIVES.Count -gt 0) {
 
 # ===== СТВОРЕННЯ НЕОБХІДНИХ ДИРЕКТОРІЙ =====
 # ===== ПОЧАТОК ВИКОНАННЯ =====
+$maintenanceConfiguredStepWidth = if ($null -ne $consoleSettings.StepWidth) {
+    [int]$consoleSettings.StepWidth
+} else {
+    58
+}
+Initialize-BRAVOConsole -StepWidth $maintenanceConfiguredStepWidth
+Initialize-BRAVOProgress `
+    -Activity 'BRAVO MAINTENANCE' `
+    -Enabled ([bool]$progressSettings.Enabled)
+
+# Вимкнений у конфігурації блок не показуємо й не рахуємо — етап існує лише
+# для того, що справді виконуватиметься (так само, як в Archive і Health).
+#
+$script:BRAVOMaintenanceCheckSizeStepEnabled = $BravoMaintenanceEnabled -and $CheckSize
+# Реставрація показується лише тоді, коли вона справді виконуватиметься
+# цього запуску: $shouldRestore уже враховує -ForceRestore, пропущений слот
+# і збіг дня/часу з маркером. У решту днів рядка немає взагалі.
+#
+# Якщо реставрація запланована, але службу BRAVO не вдалося зупинити, етап
+# усе одно друкується — як SKIPPED. Це не «не настав час», а заплановане
+# й невиконане: рівно те, про що оператор мусить дізнатися.
+$script:BRAVOMaintenanceRestoreStepEnabled = $shouldRestore
+$script:BRAVOMaintenanceLogsStepEnabled = $BravoMaintenanceEnabled
+$script:BRAVOMaintenanceArchiveStepEnabled = [bool]$script:EnableArchiveAfterMaintenance
+# Вільне місце, директорії, зупинка служб, відновлення служб і очистка
+# виконуються завжди.
+Initialize-BRAVOMaintenanceSteps -Total (
+    5 +
+    $(if ($script:BRAVOMaintenanceCheckSizeStepEnabled) { 1 } else { 0 }) +
+    $(if ($script:BRAVOMaintenanceRestoreStepEnabled) { 1 } else { 0 }) +
+    $(if ($script:BRAVOMaintenanceLogsStepEnabled) { 1 } else { 0 }) +
+    $(if ($script:BRAVOMaintenanceArchiveStepEnabled) { 1 } else { 0 })
+)
+Write-BRAVOHeader `
+    -Title ("BRAVO MAINTENANCE {0}" -f $global:ScriptVersion) `
+    -Institution ([string]$script:ObjectName) `
+    -InstitutionCode ([string]$bravoSettings.InstitutionCode) `
+    -StartedAt $script:ScriptStartTime
+
 Write-Log -Message "==="
 Write-Log -Message "=== СИСТЕМА ОБСЛУГОВУВАННЯ BRAVOSOFT ЗАПУЩЕНА ==="
 Write-Log -Message "=== УСТАНОВА: $($script:ObjectName) ==="
@@ -2795,13 +2896,17 @@ if ($BravoMaintenanceEnabled) {
 }
 Write-Log -Message "==="
 Write-Log -Message "=== ПЕРЕВІРКА ВІЛЬНОГО МІСЦЯ ==="
+Write-BRAVOProgressPhase -Phase 'Перевірка вільного місця' -PercentComplete 5
 $spaceCheckResult = Check-FreeSpace -ROOT_LIMS $ROOT_LIMS -ExcludedDrives $FREE_SPACE_EXCLUDED_DRIVES
 
 # Перевірка критичних помилок після перевірки місця
 if (-not $spaceCheckResult) {
+    Write-BRAVOMaintenanceStep -Name 'Перевірка вільного місця' -Status 'ERROR' -Details 'недостатньо місця'
     Write-Log -Message "Критична помилка перевірки місця. Завершення скрипта." -Level "ERROR"
+    Complete-BRAVOProgress
     exit 60
 }
+Write-BRAVOMaintenanceStep -Name 'Перевірка вільного місця' -Status 'OK'
 
 # ===== СТВОРЕННЯ НЕОБХІДНИХ ДИРЕКТОРІЙ =====
 # Перевіряємо, чи потрібно створювати будь-які директорії
@@ -2847,14 +2952,25 @@ if ($missingDirs.Count -gt 0 -or $script:criticalErrorOccurred) {
     if ($createdDirs.Count -gt 0) {
         Write-Log -Message "Створено $($createdDirs.Count) директорій" -Level "SUCCESS"
     }
+    Write-BRAVOMaintenanceStep `
+        -Name 'Створення необхідних директорій' `
+        -Status $(if ($script:criticalErrorOccurred) { 'ERROR' } else { 'OK' }) `
+        -Details $(if ($createdDirs.Count -gt 0) { "створено: $($createdDirs.Count)" } else { $null })
+} else {
+    Write-BRAVOMaintenanceStep `
+        -Name 'Створення необхідних директорій' `
+        -Status 'SKIPPED' `
+        -Details 'усі вже існують'
 }
 
+Write-BRAVOProgressPhase -Phase 'Зупинка служб' -PercentComplete 20
 $maintenanceLockResult = Enter-BRAVOMaintenanceOperationLock
 if (-not $maintenanceLockResult.Success) {
     Write-Log -Message (
         "Maintenance відкладено: BRAVO_ARCHIV або інший maintenance уже працює; " +
         "lock=$($maintenanceLockResult.Path); $($maintenanceLockResult.Error)"
     ) -Level "ERROR"
+    Complete-BRAVOProgress
     exit 20
 }
 $script:maintenanceOperationLock = $maintenanceLockResult.Stream
@@ -2912,6 +3028,12 @@ try {
         Write-Log -Message "==="
         Write-Log -Message "=== ЗУПИНКА СЛУЖБ ==="
     }
+
+$stopServicesRequired = $serviceWasRunning.Bravo -or
+    $serviceWasRunning.ExchangeApi -or
+    $serviceWasRunning.BravoWeb
+$stopServicesCriticalBefore = $script:criticalErrorOccurred
+$stopServicesWarningsBefore = $script:BRAVOWarningCount
 
 # 1. Зупинка BRAVO Web
 if ($BravoWebMaintenanceEnabled) {
@@ -3019,12 +3141,32 @@ if ($BravoMaintenanceEnabled) {
     Write-Log -Message "Службу $BravoServiceName не встановлено - компонент BRAVO пропущено" -Level "INFO"
 }
 
+Write-BRAVOMaintenanceStep `
+    -Name 'Зупинка служб' `
+    -Status (Get-BRAVOMaintenanceStepStatus `
+        -CriticalBefore $stopServicesCriticalBefore `
+        -WarningsBefore $stopServicesWarningsBefore `
+        -Skipped:(-not $stopServicesRequired))
+
 # ===== ПЕРЕВІРКА РОЗМІРІВ ФАЙЛІВ .md =====
-if ($BravoMaintenanceEnabled -and $CheckSize) {
+Write-BRAVOProgressPhase -Phase 'Перевірка розмірів .md' -PercentComplete 35
+$checkSizeCriticalBefore = $script:criticalErrorOccurred
+$checkSizeWarningsBefore = $script:BRAVOWarningCount
+if ($script:BRAVOMaintenanceCheckSizeStepEnabled) {
     Check-MdFileSizes -MODEL_PATH $MODEL_PATH -MAX_MD_FILE_SIZE $MAX_MD_FILE_SIZE -ExcludePatterns $MD_FILE_SIZE_EXCLUSIONS
+    Write-BRAVOMaintenanceStep `
+        -Name 'Перевірка розмірів .md' `
+        -Status (Get-BRAVOMaintenanceStepStatus `
+            -CriticalBefore $checkSizeCriticalBefore `
+            -WarningsBefore $checkSizeWarningsBefore)
 }
 
 # ===== ОПЕРАЦІЇ ПІСЛЯ ЗУПИНКИ СЕРВІСІВ =====
+Write-BRAVOProgressPhase -Phase 'Реставрація моделі' -PercentComplete 45
+$restoreCriticalBefore = $script:criticalErrorOccurred
+$restoreWarningsBefore = $script:BRAVOWarningCount
+$restoreStepReported = $false
+$logsStepReported = $false
 $bravoStatus = if ($BravoMaintenanceEnabled) { (Get-Service -Name $BravoServiceName).Status } else { 'Unavailable' }
 if ($BravoMaintenanceEnabled -and $bravoStatus -ne "Running") {
     if ($shouldRestore) {
@@ -3206,9 +3348,19 @@ if ($BravoMaintenanceEnabled -and $bravoStatus -ne "Running") {
             $script:criticalErrorOccurred = $true
             $script:restoreArchiveFailed = $true
         }
+        Write-BRAVOMaintenanceStep `
+            -Name 'Реставрація моделі' `
+            -Status (Get-BRAVOMaintenanceStepStatus `
+                -CriticalBefore $restoreCriticalBefore `
+                -WarningsBefore $restoreWarningsBefore) `
+            -Details $restoreReason
+        $restoreStepReported = $true
     }
-    
+
     # Обробка Trace належить лише до компонента основної служби BRAVO.
+    Write-BRAVOProgressPhase -Phase 'Обробка trace і логів' -PercentComplete 60
+    $logsCriticalBefore = $script:criticalErrorOccurred
+    $logsWarningsBefore = $script:BRAVOWarningCount
     try {
         $outFiles = Get-ChildItem -Path "$ROOT_LIMS" -Filter "*.out" -ErrorAction SilentlyContinue
         if ($outFiles) {
@@ -3308,9 +3460,46 @@ if ($BravoWebMaintenanceEnabled -and $ApacheEnabled) {
         Send-SlackAlert -Message $errorMsg
         $script:criticalErrorOccurred = $true
     }
+
+    $processedLogCounts = $traceOutputProcessedCount +
+        $exchangAPILogsProcessedCount +
+        $webApacheLogsProcessedCount +
+        $webWwwLogsProcessedCount
+    Write-BRAVOMaintenanceStep `
+        -Name 'Обробка trace і логів' `
+        -Status (Get-BRAVOMaintenanceStepStatus `
+            -CriticalBefore $logsCriticalBefore `
+            -WarningsBefore $logsWarningsBefore) `
+        -Details $(if ($processedLogCounts -gt 0) { "оброблено файлів: $processedLogCounts" } else { $null })
+    $logsStepReported = $true
+}
+
+# Реставрація й обробка логів виконуються лише при зупиненій службі BRAVO.
+# Кожен прапорець окремий: спільний давав би подвійний рядок «Обробка trace
+# і логів» у найзвичайнішому випадку — служба зупинена, реставрація сьогодні
+# не запланована.
+#
+# Сюди потрапляємо, лише якщо етап був порахований, але його гілка не
+# відпрацювала — тобто службу BRAVO не вдалося зупинити. Це не «не настав
+# час» (такий запуск взагалі не рахує реставрацію), а заплановане й
+# невиконане, тому рядок обов'язковий.
+if ($script:BRAVOMaintenanceRestoreStepEnabled -and -not $restoreStepReported) {
+    Write-BRAVOMaintenanceStep `
+        -Name 'Реставрація моделі' `
+        -Status 'SKIPPED' `
+        -Details 'службу BRAVO не було зупинено'
+}
+if ($script:BRAVOMaintenanceLogsStepEnabled -and -not $logsStepReported) {
+    Write-BRAVOMaintenanceStep `
+        -Name 'Обробка trace і логів' `
+        -Status 'SKIPPED' `
+        -Details 'службу BRAVO не було зупинено'
 }
 
 } finally {
+Write-BRAVOProgressPhase -Phase 'Відновлення стану служб' -PercentComplete 75
+$restoreServicesCriticalBefore = $script:criticalErrorOccurred
+$restoreServicesWarningsBefore = $script:BRAVOWarningCount
 Write-Log -Message "==="
 Write-Log -Message "=== ВІДНОВЛЕННЯ ПОЧАТКОВОГО СТАНУ СЛУЖБ ==="
 
@@ -3392,6 +3581,12 @@ if ($serviceWasRunning.BravoWeb) {
         $script:criticalErrorOccurred = $true
     }
 }
+
+Write-BRAVOMaintenanceStep `
+    -Name 'Відновлення стану служб' `
+    -Status (Get-BRAVOMaintenanceStepStatus `
+        -CriticalBefore $restoreServicesCriticalBefore `
+        -WarningsBefore $restoreServicesWarningsBefore)
 }
 
 if ($BravoMaintenanceEnabled -and $RangeIdMonitoringEnabled) {
@@ -3402,6 +3597,10 @@ if ($BravoMaintenanceEnabled -and $RangeIdMonitoringEnabled) {
 }
 
 # ===== ОЧИСТКА СТАРИХ ДАНИХ =====
+Write-BRAVOProgressPhase -Phase 'Очистка старих даних' -PercentComplete 88
+$cleanupCriticalBefore = $script:criticalErrorOccurred
+$cleanupWarningsBefore = $script:BRAVOWarningCount
+
 # Перевіряємо, чи є що очищати
 $hasDataToClean = $false
 
@@ -3495,7 +3694,18 @@ if ($exchangAPIServiceEnabled -and $exchangAPIOldLogs.Count -gt 0) {
     Remove-OldLogFiles -Path $EXCHANGAPI_ARCHIV_DIR -RetentionDays $LOG_RETENTION_DAYS
 }
 
+Write-BRAVOMaintenanceStep `
+    -Name 'Очистка старих даних' `
+    -Status (Get-BRAVOMaintenanceStepStatus `
+        -CriticalBefore $cleanupCriticalBefore `
+        -WarningsBefore $cleanupWarningsBefore `
+        -Skipped:(-not $hasDataToClean)) `
+    -Details $(if (-not $hasDataToClean) { 'немає чого видаляти' } else { $null })
+
 # ===== ЗАПУСК ДОДАТКОВОГО СКРИПТУ BRAVO_ARCHIV =====
+Write-BRAVOProgressPhase -Phase 'Запуск BRAVO_ARCHIV' -PercentComplete 95
+$archiveCriticalBefore = $script:criticalErrorOccurred
+$archiveWarningsBefore = $script:BRAVOWarningCount
 if ($script:EnableArchiveAfterMaintenance) {
     # Дочірній BRAVO_ARCHIV сам захоплює той самий lock. Перед передачею
     # керування звільняємо maintenance-lock; служби вже повернуті до
@@ -3532,8 +3742,13 @@ if ($script:EnableArchiveAfterMaintenance) {
         Write-Log -Message "Помилка під час запуску скрипту BRAVO_ARCHIV.ps1: $($_.Exception.Message)" -Level "ERROR"
         $script:criticalErrorOccurred = $true
     }
+    Write-BRAVOMaintenanceStep `
+        -Name 'Запуск BRAVO_ARCHIV' `
+        -Status (Get-BRAVOMaintenanceStepStatus `
+            -CriticalBefore $archiveCriticalBefore `
+            -WarningsBefore $archiveWarningsBefore)
 } else {
-    # Мінімальне інформаційне повідомлення без заголовків
+    # Лише у журнал: вимкнений компонент не займає рядка в консолі.
     Write-Log -Message "Запуск BRAVO_ARCHIV: вимкнено" -Level "DEBUG"
 }
 
@@ -3568,6 +3783,26 @@ Write-Log -Message "=== УСТАНОВА: $($script:ObjectName) ==="
 Write-Log -Message "=== ЧАС ВИКОНАННЯ: $(Format-Duration $totalTime) ==="
 Write-Log -Message "=== СТАТУС: $(if ($script:criticalErrorOccurred) {'З ПОМИЛКАМИ'} else {'УСПІШНО'}) ==="
 Write-Log -Message "==="
+
+Complete-BRAVOProgress
+$maintenanceMetrics = New-Object System.Collections.Specialized.OrderedDictionary
+$maintenanceMetrics.Add('Попереджень', $script:BRAVOWarningCount)
+$maintenanceMetrics.Add('Установа', [string]$script:ObjectName)
+# ЧАСТКОВО, а не ПОМИЛКА, за самих лише попереджень: обслуговування
+# відпрацювало, але щось потребує уваги. ПОМИЛКА лишається за критичним
+# збоєм — тим самим, що дає ненульовий код завершення.
+$maintenanceSummaryResult = if ($script:criticalErrorOccurred) {
+    'ПОМИЛКА'
+} elseif ($script:BRAVOWarningCount -gt 0) {
+    'ЧАСТКОВО'
+} else {
+    'УСПІШНО'
+}
+Write-BRAVOSummary `
+    -Result $maintenanceSummaryResult `
+    -Duration $totalTime `
+    -Metrics $maintenanceMetrics `
+    -LogFile $LOG_FILE
 } finally {
     Exit-BRAVOMaintenanceOperationLock
 }

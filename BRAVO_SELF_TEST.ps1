@@ -2542,6 +2542,227 @@ try {
             -Failure "OPERATIONS.md не повинен радити видаляти маніфест цілісності; знайдено без заперечення: $(($affirmativeDeleteAdvice | ForEach-Object { $_.Value }) -join '; ')"
     }
 
+    # THREAT_MODEL.md — та сама категорія дефекту, що й README у PR #19:
+    # документ описував залишкові ризики, які код уже закрив (коди 34 і 35,
+    # SecureString). Модель загроз, що перебільшує ризик, шкодить не менше
+    # за ту, що применшує: власник ухвалює інфраструктурні рішення саме за
+    # її списком пріоритетів.
+    $threatModelText = [IO.File]::ReadAllText(
+        (Join-Path $root "THREAT_MODEL.md"),
+        [Text.Encoding]::UTF8
+    )
+    $closedControls = @(
+        @{ Marker = '`34`'; What = 'блокування послаблених перемикачів безпеки' },
+        @{ Marker = '`35`'; What = 'блокування відкату версії' },
+        @{ Marker = 'SecureString'; What = 'секрет як SecureString' }
+    )
+    $unmentionedControls = @(
+        $closedControls | Where-Object { -not $threatModelText.Contains($_.Marker) }
+    )
+    Test-BRAVOCondition `
+        -Condition ($unmentionedControls.Count -eq 0) `
+        -Name "Documentation/ThreatModelReflectsImplementedControls" `
+        -Failure "THREAT_MODEL.md має описувати вже реалізовані контролі; не згадані: $(($unmentionedControls | ForEach-Object { $_.What }) -join '; ')"
+
+    # Конкретні застарілі твердження, які вже були в документі й описували
+    # закритий ризик як відкритий.
+    $staleThreatClaims = @(
+        'Downgrade **не блокується**',
+        'Секрет проходить через звичайний .NET `string`'
+    )
+    $foundStaleClaims = @(
+        $staleThreatClaims | Where-Object { $threatModelText.Contains($_) }
+    )
+    Test-BRAVOCondition `
+        -Condition ($foundStaleClaims.Count -eq 0) `
+        -Name "Documentation/ThreatModelHasNoStaleResidualRisk" `
+        -Failure "THREAT_MODEL.md містить твердження про залишковий ризик, який код уже закрив: $($foundStaleClaims -join '; ')"
+
+    # ===== ЄДИНИЙ СТИЛЬ ВІДОБРАЖЕННЯ =====
+    # Три runtime показували операторові три різні речі: Archive — етапи
+    # [1/7] через BRAVO.Console, Health — суцільний потік "[LEVEL] текст",
+    # Maintenance — "=== ЗАГОЛОВОК ===" і власну палітру. BRAVO.Console існував,
+    # але користувався ним лише Archive.
+    $runtimeConsoleFiles = @(
+        @{ Path = "modules\BRAVO.Archive\BRAVO.Archive.Runtime.ps1";         Title = 'Archive' },
+        @{ Path = "modules\BRAVO.Health\BRAVO.Health.Runtime.ps1";           Title = 'Health' },
+        @{ Path = "modules\BRAVO.Maintenance\BRAVO.Maintenance.Runtime.ps1"; Title = 'Maintenance' }
+    )
+    # Мінімальний спільний словник: без будь-якого з цих викликів вивід
+    # runtime перестає бути тим самим виводом.
+    $requiredConsoleCommands = @(
+        'Initialize-BRAVOConsole',
+        'Write-BRAVOHeader',
+        'Write-BRAVOStepResult',
+        'Write-BRAVOSummary'
+    )
+    $runtimeConsoleAsts = @{}
+    $runtimesMissingConsole = @()
+    foreach ($runtimeConsoleFile in $runtimeConsoleFiles) {
+        $runtimeConsolePath = Join-Path $root $runtimeConsoleFile.Path
+        $runtimeConsoleAst = [System.Management.Automation.Language.Parser]::ParseFile(
+            $runtimeConsolePath, [ref]$null, [ref]$null
+        )
+        $runtimeConsoleAsts[$runtimeConsoleFile.Title] = $runtimeConsoleAst
+
+        # Саме CommandAst, а не пошук підрядка: інакше тест зарахував би
+        # згадку імені функції у власному пояснювальному коментарі.
+        $invokedCommands = @(
+            $runtimeConsoleAst.FindAll(
+                { param($node) $node -is [System.Management.Automation.Language.CommandAst] },
+                $true
+            ) | ForEach-Object { [string]$_.GetCommandName() }
+        )
+        foreach ($requiredConsoleCommand in $requiredConsoleCommands) {
+            if ($invokedCommands -notcontains $requiredConsoleCommand) {
+                $runtimesMissingConsole += "$($runtimeConsoleFile.Title): $requiredConsoleCommand"
+            }
+        }
+    }
+    Test-BRAVOCondition `
+        -Condition ($runtimesMissingConsole.Count -eq 0) `
+        -Name "Console/AllRuntimesRenderThroughSharedConsole" `
+        -Failure "Archive, Health і Maintenance мають рендерити консоль через BRAVO.Console; не викликано: $($runtimesMissingConsole -join '; ')"
+
+    # Health мігровано повністю: у ньому не лишилося жодного Write-Host.
+    # Archive і Maintenance зберігають кілька — усі до підняття консолі
+    # (права адміністратора, версія PowerShell, збій завантаження
+    # конфігурації), де BRAVO.Console ще не існує.
+    $healthWriteHostCalls = @(
+        $runtimeConsoleAsts['Health'].FindAll(
+            { param($node) $node -is [System.Management.Automation.Language.CommandAst] },
+            $true
+        ) | Where-Object { [string]$_.GetCommandName() -eq 'Write-Host' }
+    )
+    Test-BRAVOCondition `
+        -Condition ($healthWriteHostCalls.Count -eq 0) `
+        -Name "Console/HealthRendersNoRawWriteHost" `
+        -Failure "BRAVO.Health.Runtime.ps1 не повинен містити Write-Host — увесь вивід іде через BRAVO.Console; знайдено викликів: $($healthWriteHostCalls.Count)"
+
+    # Консольна половина журналу теж має проходити через BRAVO.Console,
+    # інакше WARNING із бізнес-логіки допише себе у хвіст відкритого рядка
+    # етапу ("[3/7] BLOG......... ") і зламає розмітку.
+    Remove-Module -Name 'BRAVO.Logging' -Force -ErrorAction SilentlyContinue
+    Import-Module -Name (Join-Path $root "modules\BRAVO.Logging\BRAVO.Logging.psd1") -Force -ErrorAction Stop
+    Test-BRAVOCondition `
+        -Condition ($null -ne (Get-Command -Name 'Set-BRAVOLogConsoleWriter' -ErrorAction SilentlyContinue)) `
+        -Name "Console/LoggingExposesConsoleWriterHook" `
+        -Failure "BRAVO.Logging має експортувати Set-BRAVOLogConsoleWriter — через нього консольний канал журналу віддається BRAVO.Console"
+
+    # Функціональна перевірка самого містка: запис журналу мусить потрапити
+    # у зареєстрований writer, а не у Write-Host.
+    #
+    # Перевірка наявності команди тут не зайва: без неї відсутній місток
+    # обривав увесь прогін фатальною помилкою й ховав решту результатів —
+    # рівно це й показала регресія цього тесту.
+    $capturedConsoleWrites = New-Object System.Collections.ArrayList
+    $consoleWriterProbeLog = Join-Path $env:TEMP ("BRAVO_CONSOLE_WRITER_{0}.log" -f ([guid]::NewGuid().ToString('N')))
+    if ($null -eq (Get-Command -Name 'Set-BRAVOLogConsoleWriter' -ErrorAction SilentlyContinue)) {
+        [void]$capturedConsoleWrites.Add('Set-BRAVOLogConsoleWriter недоступна')
+    } else {
+    try {
+        [void](Initialize-BRAVOLog -LogFile $consoleWriterProbeLog -ConsoleLevel 'WARNING')
+        Set-BRAVOLogConsoleWriter -Writer {
+            param($Message, $Level)
+            [void]$capturedConsoleWrites.Add("$Level|$Message")
+        }
+        Write-BRAVOLog -Message 'Тестове попередження стилю' -Level 'WARNING' -Component 'SELFTEST'
+        # DEBUG нижчий за поріг консолі — не має дійти до writer узагалі.
+        Write-BRAVOLog -Message 'Тестова деталь' -Level 'DEBUG' -Component 'SELFTEST'
+    } finally {
+        Set-BRAVOLogConsoleWriter -Writer $null
+        Remove-Item -LiteralPath $consoleWriterProbeLog -Force -ErrorAction SilentlyContinue
+    }
+    }
+    Test-BRAVOCondition `
+        -Condition (
+            $capturedConsoleWrites.Count -eq 1 -and
+            [string]$capturedConsoleWrites[0] -eq 'WARNING|Тестове попередження стилю'
+        ) `
+        -Name "Console/LogConsoleChannelReachesWriter" `
+        -Failure "Консольний канал Write-BRAVOLog має йти у зареєстрований writer і поважати поріг рівня; отримано: $($capturedConsoleWrites -join ' / ')"
+
+    # Та сама пастка, яку BRAVO.Logging уже виправив, лишалася в Maintenance:
+    # у локальній шкалі SUCCESS=4 стояв ВИЩЕ за ERROR=3, тому LogLevel="SUCCESS"
+    # відсікав помилки й попередження — найвища детальність ховала рівно те,
+    # заради чого журнал читають.
+    $maintenanceScaleAst = $runtimeConsoleAsts['Maintenance'].Find(
+        {
+            param($node)
+            $node -is [System.Management.Automation.Language.HashtableAst] -and
+            ($node.KeyValuePairs | ForEach-Object { [string]$_.Item1.Extent.Text }) -contains '"SUCCESS"' -and
+            ($node.KeyValuePairs | ForEach-Object { [string]$_.Item1.Extent.Text }) -contains '"ERROR"'
+        },
+        $true
+    )
+    $maintenanceScaleOrdered = $false
+    if ($null -ne $maintenanceScaleAst) {
+        $maintenanceScale = @{}
+        foreach ($pair in $maintenanceScaleAst.KeyValuePairs) {
+            $maintenanceScale[([string]$pair.Item1.Extent.Text).Trim('"')] = [int]$pair.Item2.Extent.Text
+        }
+        $maintenanceScaleOrdered = (
+            $maintenanceScale['SUCCESS'] -lt $maintenanceScale['WARNING'] -and
+            $maintenanceScale['WARNING'] -lt $maintenanceScale['ERROR']
+        )
+    }
+    Test-BRAVOCondition `
+        -Condition $maintenanceScaleOrdered `
+        -Name "Console/MaintenanceSeverityScaleMatchesLogging" `
+        -Failure "У шкалі рівнів BRAVO.Maintenance SUCCESS має бути НИЖЧЕ за WARNING і ERROR, інакше LogLevel='SUCCESS' приховає помилки"
+
+    # Вимкнений у конфігурації компонент не займає рядка етапу й не входить
+    # у знаменник: етап існує лише для того, що справді виконуватиметься.
+    # Знаменник тому обчислюваний, а не константа — Archive робив так від
+    # початку, Health і Maintenance підтягнуто до нього.
+    $runtimeStepTotals = @(
+        @{ Title = 'Archive';     Initializer = 'Initialize-BRAVOArchiveSteps' },
+        @{ Title = 'Health';      Initializer = 'Initialize-BRAVOHealthSteps' },
+        @{ Title = 'Maintenance'; Initializer = 'Initialize-BRAVOMaintenanceSteps' }
+    )
+    $runtimesWithConstantTotal = @()
+    foreach ($runtimeStepTotal in $runtimeStepTotals) {
+        $initializerCalls = @(
+            $runtimeConsoleAsts[$runtimeStepTotal.Title].FindAll(
+                { param($node) $node -is [System.Management.Automation.Language.CommandAst] },
+                $true
+            ) | Where-Object {
+                [string]$_.GetCommandName() -eq $runtimeStepTotal.Initializer -and
+                # Оголошення функції теж CommandAst не є, але її виклик із
+                # -Total присутній рівно один — саме він нас цікавить.
+                ([string]$_.Extent.Text).Contains('-Total')
+            }
+        )
+        # Обчислюваний знаменник обов'язково містить умову: без жодного if
+        # це константа, тобто вимкнений компонент знову роздуває підсумок.
+        $hasComputedTotal = @(
+            $initializerCalls | Where-Object { ([string]$_.Extent.Text) -match '\bif\b' }
+        ).Count -gt 0
+        if (-not $hasComputedTotal) {
+            $runtimesWithConstantTotal += $runtimeStepTotal.Title
+        }
+    }
+    Test-BRAVOCondition `
+        -Condition ($runtimesWithConstantTotal.Count -eq 0) `
+        -Name "Console/StepTotalCountsOnlyEnabledComponents" `
+        -Failure "Кількість етапів має обчислюватися за увімкненими компонентами, а не бути константою; константа у: $($runtimesWithConstantTotal -join ', ')"
+
+    # Об'єкти проблем Health мають різний набір полів: Kind = "Service" не
+    # несе ні DifferenceCount, ні ActionCounts. Пряме $_.DifferenceCount під
+    # Set-StrictMode валило весь runtime із кодом 90 щоразу, коли лежала
+    # керована служба — тобто тривога "служба не працює" не доходила ніколи.
+    $healthRuntimeText = [IO.File]::ReadAllText(
+        (Join-Path $root "modules\BRAVO.Health\BRAVO.Health.Runtime.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    Test-BRAVOCondition `
+        -Condition (
+            $healthRuntimeText.Contains('function Get-BRAVOHealthIssueField') -and
+            -not [regex]::IsMatch($healthRuntimeText, '\$\(\$_\.DifferenceCount\)\|')
+        ) `
+        -Name "Health/AlertFingerprintToleratesMissingIssueFields" `
+        -Failure "Get-AlertFingerprint має читати поля проблеми через Get-BRAVOHealthIssueField — пряме звернення падає під Set-StrictMode для проблем без DifferenceCount"
+
     # CLAUDE_CODE_TZ_ARCHIV_LIMS_MONOLITH.md: автоматичний Discovery джерел
     # (BRAVO_ROOT/WEB_ROOT/MODEL/BLOG/BRAVOEXCH/BAZA_APP/BAZA_WWW) за
     # встановленою службою BRAVO і активним bravo.ini, з повним ручним

@@ -6,3 +6,6 @@
 BRAVO_OPERATION.lock
 WinSCP.ini
 LOGS/
+
+# Локальні налаштування IDE — особисті, не частина комплекту
+.vscode/

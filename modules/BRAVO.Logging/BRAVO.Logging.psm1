@@ -15,6 +15,16 @@ $script:BRAVOLogActive = $false
 $script:BRAVOLogWarningCount = 0
 $script:BRAVOLogErrorCount = 0
 
+# Куди саме йде консольна половина запису. За замовчуванням — Write-Host,
+# щоб модуль лишався самодостатнім. Runtime, який рендерить операційну
+# консоль, підмінює це на BRAVO.Console: інакше WARNING із бізнес-логіки
+# дописався б у хвіст відкритого рядка етапу.
+#
+# Це навмисно callback, а не залежність від BRAVO.Console: журналювання —
+# нижчий шар, і воно має працювати там, де консолі немає взагалі
+# (допоміжні скрипти, -AsJson, виклик із планувальника).
+$script:BRAVOLogConsoleWriter = $null
+
 # Порядок важливий: SUCCESS свідомо нижче за WARNING, щоб підняття порога
 # ніколи не приховало попереджень і помилок. У старому $global:logLevels
 # SUCCESS=4 був вище за ERROR=3, через що $LogLevel="SUCCESS" ховав збої.
@@ -162,12 +172,34 @@ function Write-BRAVOLog {
         return
     }
 
+    if ($null -ne $script:BRAVOLogConsoleWriter) {
+        # Помилка рендера консолі не має ховати сам запис: файл уже
+        # записано вище, тому тут лишається дати оператору побачити текст
+        # хоч у сирому вигляді.
+        try {
+            & $script:BRAVOLogConsoleWriter $safeMessage $Level
+            return
+        } catch {
+            Write-Warning "Не вдалося відрендерити запис журналу в консоль: $($_.Exception.Message)"
+        }
+    }
+
     $color = if ($script:BRAVOLogColors.ContainsKey($Level)) {
         $script:BRAVOLogColors[$Level]
     } else {
         'White'
     }
     Write-Host $safeMessage -ForegroundColor $color
+}
+
+# Runtime викликає це один раз після імпорту BRAVO.Console. Виклик без
+# -Writer повертає стандартний Write-Host — потрібно для допоміжних
+# скриптів і машинних режимів, де операційної консолі немає.
+function Set-BRAVOLogConsoleWriter {
+    [CmdletBinding()]
+    param([AllowNull()][scriptblock]$Writer)
+
+    $script:BRAVOLogConsoleWriter = $Writer
 }
 
 function Write-BRAVOLogException {
@@ -226,6 +258,7 @@ function Complete-BRAVOLog {
 
 Export-ModuleMember -Function @(
     'Initialize-BRAVOLog',
+    'Set-BRAVOLogConsoleWriter',
     'Write-BRAVOLog',
     'Write-BRAVOLogException',
     'Protect-BRAVOLogSecret',

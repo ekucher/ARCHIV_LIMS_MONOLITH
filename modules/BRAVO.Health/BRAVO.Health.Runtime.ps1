@@ -23,15 +23,145 @@ function Invoke-BRAVOHealth {
         [switch]$SkipIfBackupTaskRunning
     )
 
+# Нумерація етапів операційної консолі: [1/7], [2/7], ... Health має рівно
+# ті самі елементи виводу, що й Archive: заголовок, етапи, підсумок.
+$script:BRAVOHealthStepCurrent = 0
+$script:BRAVOHealthStepTotal = 0
+$script:BRAVOHealthConsoleReady = $false
+
+function Initialize-BRAVOHealthSteps {
+    param([Parameter(Mandatory = $true)][int]$Total)
+
+    $script:BRAVOHealthStepCurrent = 0
+    $script:BRAVOHealthStepTotal = [Math]::Max(1, $Total)
+}
+
+function Write-BRAVOHealthStep {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [ValidateSet('OK', 'SKIPPED', 'WARNING', 'ERROR')]
+        [string]$Status = 'OK',
+        [string]$Details
+    )
+
+    $script:BRAVOHealthStepCurrent++
+    Write-BRAVOStepResult `
+        -Current $script:BRAVOHealthStepCurrent `
+        -Total $script:BRAVOHealthStepTotal `
+        -Name $Name `
+        -Status $Status `
+        -Details $Details
+}
+
+# Health не «виконує» компоненти, а перевіряє їх, тому статус етапу — це
+# просто наявність знайдених проблем. ERROR, а не WARNING: будь-яка проблема
+# резервної копії означає, що відновлення може не спрацювати.
+function Get-BRAVOHealthStepStatus {
+    param([int]$IssueCount)
+
+    if ($IssueCount -gt 0) { return 'ERROR' }
+    return 'OK'
+}
+
+function Get-BRAVOHealthStepDetails {
+    param([int]$IssueCount)
+
+    if ($IssueCount -gt 0) { return "проблем: $IssueCount" }
+    return $null
+}
+
+# Статуси Health -> три результати спільної консолі. Deferred/Skipped/Disabled
+# свідомо не «УСПІШНО»: перевірка не виконувалась, і показувати зелений
+# результат там, де нічого не перевірено, — це рівно той тип брехливого
+# моніторингу, проти якого існує цей runtime.
+function Get-BRAVOHealthSummaryResult {
+    param([string]$Status, [int]$WarningCount)
+
+    switch ($Status) {
+        'Healthy' {
+            if ($WarningCount -gt 0) { return 'ЧАСТКОВО' }
+            return 'УСПІШНО'
+        }
+        'Deferred' { return 'ЧАСТКОВО' }
+        'Skipped'  { return 'ЧАСТКОВО' }
+        'Disabled' { return 'ЧАСТКОВО' }
+        default    { return 'ПОМИЛКА' }
+    }
+}
+
 function Complete-BRAVOHealthResult {
     param([Parameter(Mandatory = $true)]$Result)
+
+    # Через цю функцію проходить КОЖЕН шлях виходу Health, тому підсумок тут
+    # неможливо забути додати в новій гілці — на відміну від друку підсумку
+    # в кінці основного потоку.
+    if ($script:BRAVOHealthConsoleReady) {
+        # Останній етап друкується тут, бо гілок відправлення сповіщення
+        # шість (вимкнено, пригнічено, надіслано, помилка, не потрібно...),
+        # і в кожній його довелося б дублювати. Умова про передостанній
+        # номер захищає ранні виходи: без пройдених перевірок рядок
+        # «Сповіщення» лише збивав би нумерацію.
+        if ($script:BRAVOHealthNotificationStepEnabled -and
+            $script:BRAVOHealthStepCurrent -eq ($script:BRAVOHealthStepTotal - 1)) {
+            $notificationStatus = switch ([string]$Result.Notification) {
+                'Sent'        { 'OK' }
+                'NotRequired' { 'SKIPPED' }
+                'Suppressed'  { 'SKIPPED' }
+                'Failed'      { 'ERROR' }
+                'NotSent'     { 'ERROR' }
+                default       { 'SKIPPED' }
+            }
+            Write-BRAVOHealthStep `
+                -Name 'Сповіщення' `
+                -Status $notificationStatus `
+                -Details ([string]$Result.Notification)
+        }
+
+        Complete-BRAVOProgress
+
+        $metrics = New-Object System.Collections.Specialized.OrderedDictionary
+        $metrics.Add('Стан', [string]$Result.Status)
+        if ($null -ne $Result.PSObject.Properties['IssueCount']) {
+            $metrics.Add('Проблем', [int]$Result.IssueCount)
+        }
+        # Метрика вимкненого призначення бреше найгірше з усього виводу:
+        # «NAS/SMB: True» читається як «перевірено й усе гаразд», хоча
+        # перевірки не було взагалі. Вимкнений компонент не показуємо тут
+        # рівно так само, як не показуємо його етап.
+        foreach ($destination in @(
+            @{ Property = 'LocalVerified'; Title = 'Локальні копії'; Enabled = $true },
+            @{ Property = 'SftpVerified';  Title = 'SFTP';           Enabled = $script:BRAVOHealthSftpStepEnabled },
+            @{ Property = 'SmbVerified';   Title = 'NAS/SMB';        Enabled = $script:BRAVOHealthSmbStepEnabled }
+        )) {
+            if (-not $destination.Enabled) {
+                continue
+            }
+            $property = $Result.PSObject.Properties[$destination.Property]
+            if ($null -ne $property -and $null -ne $property.Value) {
+                $metrics.Add($destination.Title, $property.Value)
+            }
+        }
+        if ($script:BRAVOHealthNotificationStepEnabled -and
+            $null -ne $Result.PSObject.Properties['Notification']) {
+            $metrics.Add('Сповіщення', [string]$Result.Notification)
+        }
+
+        Write-BRAVOSummary `
+            -Result (Get-BRAVOHealthSummaryResult `
+                -Status ([string]$Result.Status) `
+                -WarningCount $script:BRAVOWarningCount) `
+            -Duration ((Get-Date) - $healthCheckStarted) `
+            -Metrics $metrics `
+            -LogFile ([string]$Result.LogPath)
+    }
+
     return $Result
 }
 
 $bravoScriptDirectory = $RuntimeRoot
 
 # Health використовує спільні модулі, а не копії з архіватора.
-foreach ($moduleName in @('BRAVO.Compatibility', 'BRAVO.Credentials', 'BRAVO.ArchiveRuntime', 'BRAVO.Logging', 'BRAVO.ExitCodes')) {
+foreach ($moduleName in @('BRAVO.Compatibility', 'BRAVO.Credentials', 'BRAVO.ArchiveRuntime', 'BRAVO.Logging', 'BRAVO.Console', 'BRAVO.ExitCodes')) {
     $modulePath = Join-Path $bravoScriptDirectory "modules\$moduleName\$moduleName.psd1"
     if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) {
         throw "Не знайдено спільний PowerShell-модуль: $modulePath"
@@ -282,6 +412,85 @@ $NotificationRequestTimeoutSeconds = if ($null -ne $backupMonitoring.Notificatio
 }
 $NotificationProviderDisplayName = if ($NotificationProvider -eq "discord") { "Discord" } else { "Slack" }
 
+# Ті самі рівні й та сама шкала, що в BRAVO.Logging: SUCCESS свідомо нижче
+# за WARNING, щоб підняття порога ніколи не приховало попереджень.
+$script:BRAVOHealthLevelSeverity = @{
+    TRACE   = 0
+    DEBUG   = 1
+    INFO    = 2
+    SUCCESS = 3
+    WARNING = 4
+    ERROR   = 5
+    FATAL   = 6
+}
+
+function Get-BRAVOHealthLevelSeverity {
+    param([string]$Level)
+
+    if (-not [string]::IsNullOrWhiteSpace($Level)) {
+        $normalized = $Level.Trim().ToUpperInvariant()
+        if ($script:BRAVOHealthLevelSeverity.ContainsKey($normalized)) {
+            return [int]$script:BRAVOHealthLevelSeverity[$normalized]
+        }
+    }
+    return [int]$script:BRAVOHealthLevelSeverity['INFO']
+}
+
+# Нормалізація потрібна саме тут: Write-HealthLog історично приймає будь-який
+# рядок рівня, а Write-BRAVOConsoleMessage має ValidateSet і впав би на
+# друкарській помилці в одному з понад ста викликів.
+function Get-BRAVOHealthNormalizedLevel {
+    param([string]$Level)
+
+    if (-not [string]::IsNullOrWhiteSpace($Level)) {
+        $normalized = $Level.Trim().ToUpperInvariant()
+        if ($script:BRAVOHealthLevelSeverity.ContainsKey($normalized)) {
+            return $normalized
+        }
+    }
+    return 'INFO'
+}
+
+# Поріг консолі береться з тієї самої секції BRAVO.config, що й в Archive,
+# тому оператор налаштовує детальність один раз для всіх трьох runtime.
+$healthConfiguredConsoleLevel = if ($null -ne $consoleSettings.ConsoleLevel) {
+    [string]$consoleSettings.ConsoleLevel
+} else {
+    'WARNING'
+}
+$script:BRAVOHealthConsoleThreshold = Get-BRAVOHealthLevelSeverity `
+    -Level $healthConfiguredConsoleLevel
+
+$healthConfiguredStepWidth = if ($null -ne $consoleSettings.StepWidth) {
+    [int]$consoleSettings.StepWidth
+} else {
+    58
+}
+Initialize-BRAVOConsole -StepWidth $healthConfiguredStepWidth
+Initialize-BRAVOProgress -Activity 'BRAVO HEALTH' -Enabled ([bool]$progressSettings.Enabled)
+
+# Вимкнений у конфігурації компонент не показуємо й не рахуємо: етап існує
+# лише для того, що справді перевірятиметься. Та сама логіка, що в Archive
+# (Initialize-BRAVOArchiveSteps) — вимкнений SFTP чи NAS не створює порожніх
+# рядків і не роздуває знаменник.
+$script:BRAVOHealthSftpStepEnabled = $sftpCredentialRequired
+$script:BRAVOHealthSmbStepEnabled = $smbCredentialRequired
+$script:BRAVOHealthNotificationStepEnabled = ($NotificationMode -ne 'none') -and (-not $NoSlack)
+# Середовище, керовані служби й локальні копії виконуються завжди.
+Initialize-BRAVOHealthSteps -Total (
+    3 +
+    $(if ($bazaLocalHealthEnabled) { 1 } else { 0 }) +
+    $(if ($script:BRAVOHealthSftpStepEnabled) { 1 } else { 0 }) +
+    $(if ($script:BRAVOHealthSmbStepEnabled) { 1 } else { 0 }) +
+    $(if ($script:BRAVOHealthNotificationStepEnabled) { 1 } else { 0 })
+)
+Write-BRAVOHeader `
+    -Title ("BRAVO HEALTH {0}" -f $global:ScriptVersion) `
+    -Institution ([string]$bravoSettings.InstitutionName) `
+    -InstitutionCode ([string]$bravoSettings.InstitutionCode) `
+    -StartedAt $healthCheckStarted
+$script:BRAVOHealthConsoleReady = $true
+
 function Write-HealthLog {
     param(
         [string]$Message,
@@ -298,12 +507,22 @@ function Write-HealthLog {
 
     $timestamp = Get-Date -Format $logTimestampFormat
     $entry = "[$timestamp] [$Level] $Message"
-    $consoleEntry = if ($consoleSettings.ShowTimestampsInConsole) {
-        $entry
-    } else {
-        "[$Level] $Message"
+
+    # Консоль і файл — два незалежні канали, як в Archive. У файл іде все,
+    # оператору показуємо лише те, що дотягує до порога: структуру запуску
+    # задають етапи (Write-BRAVOHealthStep), а не потік записів журналу.
+    # Раніше сюди вивалювався кожен рядок, і знайти серед них WARNING було
+    # неможливо — саме це й робило вивід Health несумісним із Archive.
+    if ((Get-BRAVOHealthLevelSeverity -Level $Level) -ge $script:BRAVOHealthConsoleThreshold) {
+        $consoleEntry = if ($consoleSettings.ShowTimestampsInConsole) {
+            $entry
+        } else {
+            $Message
+        }
+        Write-BRAVOConsoleMessage `
+            -Message $consoleEntry `
+            -Level (Get-BRAVOHealthNormalizedLevel -Level $Level)
     }
-    Write-Host $consoleEntry
 
     try {
         if (-not (Test-Path -Path $logPath -PathType Container)) {
@@ -311,7 +530,11 @@ function Write-HealthLog {
         }
         $entry | Out-File -FilePath $healthLogFile -Append -Encoding $logFileEncoding
     } catch {
-        Write-Host "Не вдалося записати health-check лог: $($_.Exception.Message)"
+        # Не через Write-HealthLog: журнал саме зараз недоступний, тому
+        # рекурсія лише поглибила б проблему.
+        Write-BRAVOConsoleMessage `
+            -Message "Не вдалося записати health-check лог: $($_.Exception.Message)" `
+            -Level 'WARNING'
     }
 }
 
@@ -3157,6 +3380,24 @@ function New-SlackSuccessMessage {
     return $lines -join [Environment]::NewLine
 }
 
+# Різні види проблем несуть різний набір полів: об'єкт Kind = "Service"
+# не має ні DifferenceCount, ні ActionCounts. Під Set-StrictMode звернення
+# до неоголошеної властивості — помилка, тому пряме $_.DifferenceCount
+# валило весь runtime із кодом 90 щоразу, коли лежала керована служба:
+# замість тривоги «служба не працює» оператор не отримував нічого.
+function Get-BRAVOHealthIssueField {
+    param([object]$Issue, [string]$Name)
+
+    if ($null -eq $Issue) {
+        return ''
+    }
+    $property = $Issue.PSObject.Properties[$Name]
+    if ($null -eq $property -or $null -eq $property.Value) {
+        return ''
+    }
+    return [string]$property.Value
+}
+
 function Get-AlertFingerprint {
     param([array]$Issues)
 
@@ -3167,7 +3408,30 @@ function Get-AlertFingerprint {
             # створювати новий fingerprint та обходити RepeatAlertAfterHours.
             "$($_.Kind)|$($_.Component)|$($_.Reason)|$($_.Location)"
         } else {
-            "$($_.Kind)|$($_.Component)|$($_.Reason)|$($_.FileName)|$($_.LastWriteTime)|$($_.Location)|$($_.DifferenceCount)|$($_.ExpectedSizeBytes)|$($_.ActualSizeBytes)|$($_.ActionCounts.New)|$($_.ActionCounts.Updated)|$($_.ActionCounts.RemoteExtra)|$($_.ActionCounts.Other)"
+            $issue = $_
+            $actionCounts = $issue.PSObject.Properties['ActionCounts']
+            $actionValues = if ($null -eq $actionCounts -or $null -eq $actionCounts.Value) {
+                @('', '', '', '')
+            } else {
+                @(
+                    (Get-BRAVOHealthIssueField -Issue $actionCounts.Value -Name 'New'),
+                    (Get-BRAVOHealthIssueField -Issue $actionCounts.Value -Name 'Updated'),
+                    (Get-BRAVOHealthIssueField -Issue $actionCounts.Value -Name 'RemoteExtra'),
+                    (Get-BRAVOHealthIssueField -Issue $actionCounts.Value -Name 'Other')
+                )
+            }
+            $fields = @(
+                (Get-BRAVOHealthIssueField -Issue $issue -Name 'Kind'),
+                (Get-BRAVOHealthIssueField -Issue $issue -Name 'Component'),
+                (Get-BRAVOHealthIssueField -Issue $issue -Name 'Reason'),
+                (Get-BRAVOHealthIssueField -Issue $issue -Name 'FileName'),
+                (Get-BRAVOHealthIssueField -Issue $issue -Name 'LastWriteTime'),
+                (Get-BRAVOHealthIssueField -Issue $issue -Name 'Location'),
+                (Get-BRAVOHealthIssueField -Issue $issue -Name 'DifferenceCount'),
+                (Get-BRAVOHealthIssueField -Issue $issue -Name 'ExpectedSizeBytes'),
+                (Get-BRAVOHealthIssueField -Issue $issue -Name 'ActualSizeBytes')
+            ) + $actionValues
+            $fields -join '|'
         }
     }) -join "`n")
 
@@ -3514,16 +3778,70 @@ if ($bazaWWWSFTPHealthEnabled) {
     }
 }
 Write-HealthLog "Початок перевірки резервних копій за останні $($backupMonitoring.MaxBackupAgeHours) год."
+
+# Етап 1 уже відпрацював вище (сумісність, підтримка ОС, цілісність
+# інструментів); тут лише його результат для оператора.
+$environmentStepStatus = 'OK'
+$environmentStepDetails = $null
+if ($null -ne $script:BRAVOToolManifest -and -not $script:BRAVOToolManifest.IsValid) {
+    $environmentStepStatus = 'ERROR'
+    $environmentStepDetails = 'порушено цілісність інструментів'
+} elseif ($script:BRAVOOSSupportTier.Tier -ne 'Supported') {
+    $environmentStepStatus = 'WARNING'
+    $environmentStepDetails = "підтримка ОС: $($script:BRAVOOSSupportTier.Tier)"
+}
+Write-BRAVOHealthStep `
+    -Name 'Середовище й цілісність інструментів' `
+    -Status $environmentStepStatus `
+    -Details $environmentStepDetails
+
+Write-BRAVOProgressPhase -Phase 'Керовані служби' -PercentComplete 15
 $serviceHealthIssues = @(Get-ManagedServiceHealthIssues)
+Write-BRAVOHealthStep `
+    -Name 'Керовані служби' `
+    -Status (Get-BRAVOHealthStepStatus -IssueCount $serviceHealthIssues.Count) `
+    -Details (Get-BRAVOHealthStepDetails -IssueCount $serviceHealthIssues.Count)
+
+Write-BRAVOProgressPhase -Phase 'Локальні резервні копії' -PercentComplete 30
 $localHealthIssues = @(Get-BackupHealthIssues)
+Write-BRAVOHealthStep `
+    -Name 'Локальні резервні копії' `
+    -Status (Get-BRAVOHealthStepStatus -IssueCount $localHealthIssues.Count) `
+    -Details (Get-BRAVOHealthStepDetails -IssueCount $localHealthIssues.Count)
+
+Write-BRAVOProgressPhase -Phase 'BAZA (локальна копія)' -PercentComplete 45
 $bazaLocalHealthIssues = if ($bazaLocalHealthEnabled) {
-    @(Get-BAZALocalHealthIssues)
+    $bazaLocalResult = @(Get-BAZALocalHealthIssues)
+    Write-BRAVOHealthStep `
+        -Name 'BAZA (локальна копія)' `
+        -Status (Get-BRAVOHealthStepStatus -IssueCount $bazaLocalResult.Count) `
+        -Details (Get-BRAVOHealthStepDetails -IssueCount $bazaLocalResult.Count)
+    $bazaLocalResult
 } else {
+    # Лише у журнал: вимкнений компонент не займає рядка в консолі.
     Write-HealthLog "Локальну перевірку BAZA пропущено: componentSettings.Synchronization.BAZALocal = `$false"
     @()
 }
+
+Write-BRAVOProgressPhase -Phase 'SFTP' -PercentComplete 60
 $sftpHealthIssues = @(Get-SFTPHealthIssues)
+if ($script:BRAVOHealthSftpStepEnabled) {
+    Write-BRAVOHealthStep `
+        -Name 'SFTP' `
+        -Status (Get-BRAVOHealthStepStatus -IssueCount $sftpHealthIssues.Count) `
+        -Details (Get-BRAVOHealthStepDetails -IssueCount $sftpHealthIssues.Count)
+}
+
+Write-BRAVOProgressPhase -Phase 'NAS/SMB' -PercentComplete 80
 $smbHealthIssues = @(Get-SMBHealthIssues)
+if ($script:BRAVOHealthSmbStepEnabled) {
+    Write-BRAVOHealthStep `
+        -Name 'NAS/SMB' `
+        -Status (Get-BRAVOHealthStepStatus -IssueCount $smbHealthIssues.Count) `
+        -Details (Get-BRAVOHealthStepDetails -IssueCount $smbHealthIssues.Count)
+}
+
+Write-BRAVOProgressPhase -Phase 'Сповіщення' -PercentComplete 95
 $healthIssues = @($serviceHealthIssues) + @($localHealthIssues) + @($bazaLocalHealthIssues) + @($sftpHealthIssues) + @($smbHealthIssues)
 $destinationSummary = Get-BRAVOHealthDestinationSummary `
     -LocalIssues $localHealthIssues `
