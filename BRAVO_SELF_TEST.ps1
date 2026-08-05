@@ -2542,6 +2542,42 @@ try {
             -Failure "OPERATIONS.md не повинен радити видаляти маніфест цілісності; знайдено без заперечення: $(($affirmativeDeleteAdvice | ForEach-Object { $_.Value }) -join '; ')"
     }
 
+    # THREAT_MODEL.md — та сама категорія дефекту, що й README у PR #19:
+    # документ описував залишкові ризики, які код уже закрив (коди 34 і 35,
+    # SecureString). Модель загроз, що перебільшує ризик, шкодить не менше
+    # за ту, що применшує: власник ухвалює інфраструктурні рішення саме за
+    # її списком пріоритетів.
+    $threatModelText = [IO.File]::ReadAllText(
+        (Join-Path $root "THREAT_MODEL.md"),
+        [Text.Encoding]::UTF8
+    )
+    $closedControls = @(
+        @{ Marker = '`34`'; What = 'блокування послаблених перемикачів безпеки' },
+        @{ Marker = '`35`'; What = 'блокування відкату версії' },
+        @{ Marker = 'SecureString'; What = 'секрет як SecureString' }
+    )
+    $unmentionedControls = @(
+        $closedControls | Where-Object { -not $threatModelText.Contains($_.Marker) }
+    )
+    Test-BRAVOCondition `
+        -Condition ($unmentionedControls.Count -eq 0) `
+        -Name "Documentation/ThreatModelReflectsImplementedControls" `
+        -Failure "THREAT_MODEL.md має описувати вже реалізовані контролі; не згадані: $(($unmentionedControls | ForEach-Object { $_.What }) -join '; ')"
+
+    # Конкретні застарілі твердження, які вже були в документі й описували
+    # закритий ризик як відкритий.
+    $staleThreatClaims = @(
+        'Downgrade **не блокується**',
+        'Секрет проходить через звичайний .NET `string`'
+    )
+    $foundStaleClaims = @(
+        $staleThreatClaims | Where-Object { $threatModelText.Contains($_) }
+    )
+    Test-BRAVOCondition `
+        -Condition ($foundStaleClaims.Count -eq 0) `
+        -Name "Documentation/ThreatModelHasNoStaleResidualRisk" `
+        -Failure "THREAT_MODEL.md містить твердження про залишковий ризик, який код уже закрив: $($foundStaleClaims -join '; ')"
+
     # CLAUDE_CODE_TZ_ARCHIV_LIMS_MONOLITH.md: автоматичний Discovery джерел
     # (BRAVO_ROOT/WEB_ROOT/MODEL/BLOG/BRAVOEXCH/BAZA_APP/BAZA_WWW) за
     # встановленою службою BRAVO і активним bravo.ini, з повним ручним
