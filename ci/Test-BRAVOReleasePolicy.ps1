@@ -124,16 +124,27 @@ if ($baseVersion -notmatch $stablePattern) {
 # RELEASE_POLICY 14.3: версія має бути описана в CHANGELOG.md і в
 # заголовках документації — інакше на сервері неможливо звірити, що саме
 # розгорнуто.
+#
+# .Contains() тут навмисно НЕ використовується: X.Y.Z завжди є підрядком
+# X.Y.Z-dev.N і X.Y.Z-rc.N. Саме в момент promotion у master — де ця
+# перевірка найважливіша — .Contains('4.5.0') повернув би true навіть на
+# забутому старому заголовку "## 4.5.0-dev.1" чи "# BRAVO 4.5.0-rc.2",
+# бо обидва містять підрядок "4.5.0". Межу токена перевіряємо з обох
+# боків: ані перед, ані після версії не повинно бути цифри, крапки чи
+# дефіса — інакше збіг є частиною довшої версії (наприклад "4.5.0" не
+# повинен зараховуватись усередині "24.5.0" чи "4.5.0-dev.1").
+$versionAsExactToken = '(?<![\d.\-])' + [regex]::Escape($packageVersion) + '(?![\d.\-])'
+
 $changelogText = [IO.File]::ReadAllText((Join-Path $Root 'CHANGELOG.md'), [Text.Encoding]::UTF8)
-if (-not $changelogText.Contains($packageVersion)) {
-    Add-BRAVOReleasePolicyFailure "RELEASE_POLICY 14.3: CHANGELOG.md не містить розділу для версії '$packageVersion'."
+if ($changelogText -notmatch $versionAsExactToken) {
+    Add-BRAVOReleasePolicyFailure "RELEASE_POLICY 14.3: CHANGELOG.md не містить розділу саме для версії '$packageVersion' (входження як частини довшої prerelease-версії не рахується)."
 }
 
 foreach ($documentName in @('README.md', 'BRAVO_SETUP.md')) {
     $documentPath = Join-Path $Root $documentName
     $firstLine = ([IO.File]::ReadAllLines($documentPath, [Text.Encoding]::UTF8))[0]
-    if (-not $firstLine.Contains($packageVersion)) {
-        Add-BRAVOReleasePolicyFailure "RELEASE_POLICY 14.3: заголовок $documentName ('$firstLine') не містить версії '$packageVersion'."
+    if ($firstLine -notmatch $versionAsExactToken) {
+        Add-BRAVOReleasePolicyFailure "RELEASE_POLICY 14.3: заголовок $documentName ('$firstLine') не містить версії '$packageVersion' як самостійного значення (лише як частину довшої prerelease-версії не рахується)."
     }
 }
 

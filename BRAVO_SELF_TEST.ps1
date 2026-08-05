@@ -2465,6 +2465,74 @@ try {
         -Name "ReleasePolicy/CiGateEnforcesBranchVersionChannel" `
         -Failure "ci\Test-BRAVOReleasePolicy.ps1 має існувати і викликатися з .github\workflows\ci.yml — інакше відповідність гілки, версії та каналу тримається лише на пам'яті людини"
 
+    # Функціональна перевірка самого gate-скрипта, а не лише факту його
+    # існування. X.Y.Z завжди є підрядком X.Y.Z-dev.N/-rc.N — саме в
+    # момент promotion у master, де ця перевірка найважливіша,
+    # .Contains() дав би хибний PASS на забутому старому заголовку
+    # ("## 4.5.0-dev.1" містить підрядок "4.5.0"). Ізольований мінімальний
+    # комплект відтворює обидва випадки: справжнє оновлення і забутий крок.
+    $releasePolicyProbeRoot = Join-Path ([IO.Path]::GetTempPath()) ("BRAVO_RELEASE_POLICY_PROBE_{0}" -f [guid]::NewGuid().ToString('N'))
+    $releasePolicyProbeResults = @{}
+    try {
+        [void][IO.Directory]::CreateDirectory((Join-Path $releasePolicyProbeRoot 'modules\BRAVO.Fake'))
+        # Маркер кореня репозиторію для власної перевірки скрипта; вміст
+        # не читається, потрібен лише факт існування файлу.
+        [IO.File]::WriteAllText((Join-Path $releasePolicyProbeRoot 'BRAVO_SELF_TEST.ps1'), '', (New-Object Text.UTF8Encoding($true)))
+        Copy-Item -LiteralPath (Join-Path $root 'BRAVO_CONFIG_LOADER.ps1') -Destination (Join-Path $releasePolicyProbeRoot 'BRAVO_CONFIG_LOADER.ps1') -Force
+        [IO.File]::WriteAllText(
+            (Join-Path $releasePolicyProbeRoot 'modules\BRAVO.Fake\BRAVO.Fake.psd1'),
+            "@{`r`n    ModuleVersion = '4.5.0'`r`n    GUID = '11111111-1111-1111-1111-111111111111'`r`n    Author = 'BRAVO self-test'`r`n}`r`n",
+            (New-Object Text.UTF8Encoding($true))
+        )
+
+        function Set-BRAVOReleasePolicyProbeContent {
+            param(
+                [Parameter(Mandatory = $true)][string]$ProbeRoot,
+                [Parameter(Mandatory = $true)][string]$ChangelogHeading,
+                [Parameter(Mandatory = $true)][string]$ReadmeHeader
+            )
+            $utf8NoBom = New-Object Text.UTF8Encoding($false)
+            [IO.File]::WriteAllText((Join-Path $ProbeRoot 'VERSION.json'), '{"packageVersion":"4.5.0","releaseChannel":"stable"}', $utf8NoBom)
+            [IO.File]::WriteAllText((Join-Path $ProbeRoot 'CHANGELOG.md'), "# Changelog`r`n`r`n$ChangelogHeading`r`n`r`nОпис.`r`n", $utf8NoBom)
+            [IO.File]::WriteAllText((Join-Path $ProbeRoot 'README.md'), "$ReadmeHeader`r`n", $utf8NoBom)
+            [IO.File]::WriteAllText((Join-Path $ProbeRoot 'BRAVO_SETUP.md'), "$ReadmeHeader`r`n", $utf8NoBom)
+        }
+
+        $releasePolicyGateScript = Join-Path $root 'ci\Test-BRAVOReleasePolicy.ps1'
+        # Без пониження ErrorActionPreference stderr дочірнього процесу
+        # ронить увесь прогін замість чистого [FAIL] (той самий патерн,
+        # що й у RuntimeGuard/EntrypointsFailClosedWhenGuardUnloadable).
+        $previousErrorAction = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            # Справжній promotion: CHANGELOG і заголовки дійсно оновлені
+            # на stable-версію.
+            Set-BRAVOReleasePolicyProbeContent -ProbeRoot $releasePolicyProbeRoot -ChangelogHeading '## 4.5.0 — 2026-08-05' -ReadmeHeader '# BRAVO 4.5.0 — опис'
+            $null = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $releasePolicyGateScript -Root $releasePolicyProbeRoot -Branch 'master' 2>&1
+            $releasePolicyProbeResults['Genuine'] = $LASTEXITCODE
+
+            # Забутий крок promotion: CHANGELOG і заголовки лишились зі
+            # старої prerelease-версії.
+            Set-BRAVOReleasePolicyProbeContent -ProbeRoot $releasePolicyProbeRoot -ChangelogHeading '## 4.5.0-dev.1 — 2026-08-05' -ReadmeHeader '# BRAVO 4.5.0-dev.1 — опис'
+            $null = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $releasePolicyGateScript -Root $releasePolicyProbeRoot -Branch 'master' 2>&1
+            $releasePolicyProbeResults['StaleFromDev'] = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousErrorAction
+        }
+    } finally {
+        Remove-Item -LiteralPath $releasePolicyProbeRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    Test-BRAVOCondition `
+        -Condition ($releasePolicyProbeResults['Genuine'] -eq 0) `
+        -Name "ReleasePolicy/AcceptsGenuineStableRelease" `
+        -Failure "ci\Test-BRAVOReleasePolicy.ps1 має пропускати комплект, де CHANGELOG.md і заголовки дійсно оновлені на stable-версію (код виходу: $($releasePolicyProbeResults['Genuine']))"
+
+    Test-BRAVOCondition `
+        -Condition ($releasePolicyProbeResults['StaleFromDev'] -ne 0) `
+        -Name "ReleasePolicy/RejectsStaleChangelogAndHeaderOnPromotion" `
+        -Failure "ci\Test-BRAVOReleasePolicy.ps1 має блокувати promotion, якщо CHANGELOG.md і заголовки README.md/BRAVO_SETUP.md лишились зі старої prerelease-версії — X.Y.Z як підрядок X.Y.Z-dev.N не повинен рахуватись збігом; код виходу: $($releasePolicyProbeResults['StaleFromDev'])"
+
     # P2.7 аудиту: дрібні зауваження документації. Дерево каталогів мало
     # дублікат "BRAVO_*.ps1" двома окремими рядками; додано матрицю
     # діагностики за кодом завершення (розділ 12).

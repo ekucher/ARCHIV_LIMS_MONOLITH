@@ -206,9 +206,9 @@ modules\*.psd1 ModuleVersion  = 4.5.0
 
 `ModuleVersion` дорівнює **базовій частині** `packageVersion` (без
 суфікса). Самотест `Version/ModuleManifests` перевіряє саме це, а
-`Version/PackageVersionMatchesBranchPolicy` — що суфікс відповідає гілці.
-Повна версія пакета завжди береться з `VERSION.json`, а не з маніфестів
-модулів.
+`Version/DeveloperBranchCarriesPrereleaseVersion` — що суфікс
+відповідає гілці. Повна версія пакета завжди береться з `VERSION.json`,
+а не з маніфестів модулів.
 
 ---
 
