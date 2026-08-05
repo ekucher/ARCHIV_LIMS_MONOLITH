@@ -815,6 +815,61 @@ try {
             }
         }
     }
+    # Рядок, що ВИГЛЯДАЄ як облікові дані, — це справжній секрет для будь-якого
+    # сканера, навіть якщо значення вигадане. Такі фікстури вже кілька разів
+    # піднімали інциденти GitGuardian, які доводилось закривати вручну;
+    # альтернатива "додати виняток сканеру" гірша, бо виняток глушить і
+    # справжній витік у тому самому файлі.
+    #
+    # Перевіряються лише СТРОКОВІ ЛІТЕРАЛИ з AST — коментарі й документація
+    # свідомо поза межами: там форма URL з обліковими даними потрібна, щоб
+    # пояснити, що саме маскується.
+    $credentialShapedLiterals = New-Object System.Collections.ArrayList
+    # Плейсхолдери, які нічого не розкривають: узагальнені слова, маска,
+    # підстановка формату й посилання на змінну. Останнє обов'язкове:
+    # New-BRAVOSftpUrl будує саме такий рядок із ${escapedPassword} —
+    # це робочий код, а не фікстура, і перша версія перевірки на ньому
+    # спіткнулась.
+    $placeholderPassword = '^(pass|password|\*{3}|\{\d+\}|\$\{?\w+\}?)$'
+    foreach ($analyzedFile in $powerShellFiles) {
+        if ($analyzedFile.Extension -notin @('.ps1', '.psm1')) { continue }
+
+        $literalTokens = $null
+        $literalErrors = $null
+        $literalAst = [System.Management.Automation.Language.Parser]::ParseFile(
+            $analyzedFile.FullName, [ref]$literalTokens, [ref]$literalErrors)
+        if ($null -eq $literalAst) { continue }
+
+        $literalNodes = @($literalAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.StringConstantExpressionAst] -or
+            $node -is [System.Management.Automation.Language.ExpandableStringExpressionAst]
+        }, $true))
+
+        foreach ($literalNode in $literalNodes) {
+            $literalValue = [string]$literalNode.Extent.Text
+            foreach ($credentialMatch in [regex]::Matches(
+                    $literalValue, '(?i)sftp://[^:@\s/]+:([^@\s/]+)@')) {
+                $passwordPart = $credentialMatch.Groups[1].Value
+                if ($passwordPart -notmatch $placeholderPassword) {
+                    [void]$credentialShapedLiterals.Add(
+                        ("{0}:{1} (sftp)" -f $analyzedFile.Name, $literalNode.Extent.StartLineNumber))
+                }
+            }
+            if ([regex]::IsMatch($literalValue,
+                    '(?i)(hooks\.slack\.com/services|discord\.com/api/webhooks)/[^/\s"'']+/[^/\s"'']+/?[^/\s"'']*') -and
+                $literalValue -notmatch '\*{3}' -and
+                $literalValue -notmatch '\{\d+\}') {
+                [void]$credentialShapedLiterals.Add(
+                    ("{0}:{1} (webhook)" -f $analyzedFile.Name, $literalNode.Extent.StartLineNumber))
+            }
+        }
+    }
+    Test-BRAVOCondition `
+        -Condition ($credentialShapedLiterals.Count -eq 0) `
+        -Name "Secrets/NoCredentialShapedLiterals" `
+        -Failure "рядковий літерал не повинен виглядати як облікові дані навіть у тестовій фікстурі — складіть його з частин у рантаймі; знайдено: $(@($credentialShapedLiterals.ToArray() | Select-Object -Unique) -join ', ')"
+
     Test-BRAVOCondition `
         -Condition ($silentCatchFindings.Count -eq 0) `
         -Name "Diagnostics/NoSilentEmptyCatch" `
@@ -844,21 +899,47 @@ try {
 
     Remove-Module -Name 'BRAVO.Logging' -Force -ErrorAction SilentlyContinue
     Import-Module -Name (Join-Path $root "modules\BRAVO.Logging\BRAVO.Logging.psd1") -Force -ErrorAction Stop
-    $maskedSftpUrl = Protect-BRAVOLogSecret -Text "open sftp://bravouser:S3cr3tPass@sftp.example.org:22"
-    $maskedSlackWebhook = Protect-BRAVOLogSecret -Text "https://hooks.slack.com/services/T000AAAA/B111BBBB/xxxTOKENxxxCCCC"
-    $maskedDiscordWebhook = Protect-BRAVOLogSecret -Text "https://discord.com/api/webhooks/123456789/abcDEF-token_value"
-    $maskedArchivePasswordLong = Protect-BRAVOLogSecret -Text "7za.exe a -password=SuperSecret archive.mdz"
-    $maskedArchivePasswordShort = Protect-BRAVOLogSecret -Text "7za.exe t -pSecretPass123 archive.mdz"
+    # Фікстури складаються з частин, а не пишуться літералами. Рядок виду
+    # URL з обліковими даними або повний webhook URL — це справжній секрет для
+    # будь-якого сканера, незалежно від того, що значення вигадане:
+    # GitGuardian уже кілька разів піднімав через них інциденти, які
+    # доводилось закривати вручну. Тримати в репозиторії щось, що виглядає
+    # як облікові дані, і глушити сканер винятками — гірше, ніж не тримати
+    # цього зовсім. Самі перевірки нижче звіряються зі змінними, тому
+    # маскування тестується так само строго, як і раніше.
+    # Розбиваються не лише токени, а й хости webhook: детектори Slack/Discord
+    # орієнтуються на форму URL, а не лише на значення токена.
+    $secretFixtureSftpPassword = 'S3cr3t' + 'Pass'
+    $secretFixtureSlackToken = 'xxxTOKEN' + 'xxxCCCC'
+    $secretFixtureDiscordToken = 'abcDEF-' + 'token_value'
+    $secretFixtureArchivePasswordLong = 'Super' + 'Secret'
+    $secretFixtureArchivePasswordShort = 'Secret' + 'Pass123'
+    $secretFixtureSlackHost = 'hooks.slack' + '.com/services'
+    $secretFixtureDiscordHost = 'discord' + '.com/api/webhooks'
+
+    $maskedSftpUrl = Protect-BRAVOLogSecret -Text (
+        'open sftp://bravouser:{0}@sftp.example.org:22' -f $secretFixtureSftpPassword)
+    $maskedSlackWebhook = Protect-BRAVOLogSecret -Text (
+        'https://{0}/T000AAAA/B111BBBB/{1}' -f $secretFixtureSlackHost, $secretFixtureSlackToken)
+    $maskedDiscordWebhook = Protect-BRAVOLogSecret -Text (
+        'https://{0}/123456789/{1}' -f $secretFixtureDiscordHost, $secretFixtureDiscordToken)
+    $maskedArchivePasswordLong = Protect-BRAVOLogSecret -Text (
+        '7za.exe a -password={0} archive.mdz' -f $secretFixtureArchivePasswordLong)
+    $maskedArchivePasswordShort = Protect-BRAVOLogSecret -Text (
+        '7za.exe t -p{0} archive.mdz' -f $secretFixtureArchivePasswordShort)
     $unmaskedPathArgument = Protect-BRAVOLogSecret -Text "backup at -path C:\Some\Dir"
     Test-BRAVOCondition `
         -Condition (
             $maskedSftpUrl -eq "open sftp://bravouser:***@sftp.example.org:22" -and
-            -not $maskedSlackWebhook.Contains("xxxTOKENxxxCCCC") -and
-            $maskedSlackWebhook.Contains("hooks.slack.com/services/***") -and
-            -not $maskedDiscordWebhook.Contains("abcDEF-token_value") -and
-            $maskedDiscordWebhook.Contains("discord.com/api/webhooks/***") -and
+            -not $maskedSftpUrl.Contains($secretFixtureSftpPassword) -and
+            -not $maskedSlackWebhook.Contains($secretFixtureSlackToken) -and
+            $maskedSlackWebhook.Contains("$secretFixtureSlackHost/***") -and
+            -not $maskedDiscordWebhook.Contains($secretFixtureDiscordToken) -and
+            $maskedDiscordWebhook.Contains("$secretFixtureDiscordHost/***") -and
             $maskedArchivePasswordLong -eq "7za.exe a -password=*** archive.mdz" -and
+            -not $maskedArchivePasswordLong.Contains($secretFixtureArchivePasswordLong) -and
             $maskedArchivePasswordShort -eq "7za.exe t -p*** archive.mdz" -and
+            -not $maskedArchivePasswordShort.Contains($secretFixtureArchivePasswordShort) -and
             $unmaskedPathArgument -eq "backup at -path C:\Some\Dir"
         ) `
         -Name "Logging/ProtectSecretMasksKnownShapes" `
