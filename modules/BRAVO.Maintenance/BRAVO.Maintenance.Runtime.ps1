@@ -16,6 +16,7 @@ param (
     [ValidateSet("on", "off")]
     [string]$ArchiveAfterMaintenance,
     [string]$ConfigPath,
+    [switch]$NoPause,
     [Parameter(Mandatory = $true)][string]$RuntimeRoot,
     [Parameter(Mandatory = $true)][string]$EntryScriptPath
 )
@@ -40,6 +41,14 @@ if (-not (Test-Path -LiteralPath $notificationHelpersPath -PathType Leaf)) {
     throw "Не знайдено PowerShell-модуль notifications: $notificationHelpersPath"
 }
 Import-Module -Name $notificationHelpersPath -ErrorAction Stop
+
+# Пауза при ручному запуску мала охопити геть усі точки виходу нижче
+# (їх багато, розкидані по всьому файлу), а не лише останню. exit
+# всередині try ГАРАНТОВАНО проходить крізь усі finally на своєму шляху
+# (перевірено емпірично, включно з вкладеними try/catch/finally) — тому
+# один зовнішній try/finally навколо решти файлу безпечніше й надійніше,
+# ніж вставляти виклик паузи перед кожним окремим exit.
+try {
 
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $bravoScriptDirectory "BRAVO.config"
@@ -3822,4 +3831,14 @@ if ($script:criticalErrorOccurred) {
     exit (Resolve-BRAVOExitCode -HasWarnings)
 } else {
     exit 0
+}
+
+} finally {
+    # Закриває try, відкритий одразу після імпорту модулів. exit усередині
+    # try проходить крізь finally перед тим, як процес справді завершиться
+    # (перевірено емпірично) — тому це охоплює геть усі ~28 точок exit
+    # вище, включно з рідко відвідуваними (config не знайдено, lock
+    # зайнятий, tool integrity) — саме там, де оператору найпотрібніше
+    # встигнути прочитати повідомлення до закриття вікна.
+    Wait-BRAVOManualExit -NoPause:$NoPause
 }

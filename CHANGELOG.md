@@ -44,6 +44,45 @@
   `Documentation/ReleasePolicyCoversVersionModel`,
   `ReleasePolicy/CiGateEnforcesBranchVersionChannel`.
 
+- **Ручний запуск не через Планувальник тепер чекає на клавішу — в усіх
+  трьох runtime, а не лише в Archive.** `BRAVO_ARCHIV.ps1` уже мав робочу
+  паузу (`RawUI.ReadKey` з фолбеком на `Read-Host` для ISE);
+  `BRAVO_HEALTH.ps1` приймав `-NoPause`, але ніде його не використовував
+  — Health ніколи не чекав; `BRAVO_MAINTENANCE.ps1` не мав ні параметра,
+  ні паузи взагалі. Обидва тепер працюють так само, як Archive.
+
+  Спільна реалізація — `Wait-BRAVOManualExit` (`BRAVO.Console`) — не
+  спрацьовує без явного дозволу: `-NoPause`, вимкнений `PauseOnExit` у
+  `BRAVO.config`, `[Environment]::UserInteractive = $false` (сесія 0,
+  де й виконуються SYSTEM-завдання) чи перенаправлений stdin — кожна з
+  цих причин самостійно скасовує очікування. Для 6 ранніх `exit`
+  guard-блоку (до `Import-Module`, коли жоден модуль BRAVO ще не
+  довірений) — самодостатній інлайн-варіант без залежності від модулів,
+  за тим самим принципом, що й сам guard.
+
+  `Maintenance.Runtime.ps1` має майже 30 точок `exit`, розкиданих по
+  всьому файлу. Замість редагування кожної — один зовнішній
+  `try/finally`: `exit` усередині `try` гарантовано проходить крізь усі
+  `finally` на своєму шляху, перш ніж процес завершиться (властивість
+  PowerShell, перевірено емпірично, включно з вкладеними
+  `try/catch/finally`), тому один `finally` на весь файл охоплює їх усі.
+
+  Попутно знайдено й закрито реальну прогалину: `BRAVO_TASKS_INSTALL.ps1`
+  додавав `-NoPause` вибірково за типом завдання — `Recovery` і
+  `Maintenance` (нічний, найризикованіший) його не отримували взагалі.
+  Не мало наслідків, доки в цих runtime не було паузи; після цієї зміни
+  було б реальним ризиком зависання нічної автоматизації. Тепер
+  `-NoPause` додається безумовно для кожного типу.
+
+- Закрито тестами `Console/WaitManualExitChecksNoPauseFirst`,
+  `Console/WaitManualExitNoPauseReturnsImmediately`,
+  `Console/EarlyGuardExitsPauseBeforeClosing`,
+  `Console/HealthPausesOnEveryExitPath`,
+  `Console/MaintenancePausesOnEveryExitPath`,
+  `Console/MaintenanceAcceptsNoPauseParameter`,
+  `Console/EntrypointsForwardNoPauseToRuntime`,
+  `Scheduler/EveryTaskTypeGetsNoPauseUnconditionally`.
+
 ## 4.4.2 — 2026-08-05
 
 Виправлення за результатами першого тестового розгортання на реальному

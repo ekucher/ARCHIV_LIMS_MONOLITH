@@ -4024,35 +4024,45 @@ if ($MyInvocation.InvocationName -ne '.') {
         NoSlack = $NoSlack
         SkipIfBackupTaskRunning = $SkipIfBackupTaskRunning
     }
-    $healthResult = Invoke-BRAVOHealth @healthParameters
-    # Deferred — це саме "пропущено через lock/уже виконується інше завдання"
-    # у сенсі загального контракту кодів, тому окремий код 20, а не 0/1.
-    # Skipped ніколи фактично не породжується цим runtime (мертва гілка),
-    # лишена як безпечний fallback на успіх.
-    $exitCode = switch ([string]$healthResult.Status) {
-        'Healthy'            { 0 }
-        'Skipped'            { 0 }
-        'Disabled'           { 0 }
-        'Deferred'           { Resolve-BRAVOExitCode -LockBusy }
-        'ConfigurationError' { Resolve-BRAVOExitCode -InvalidConfiguration }
-        'Critical'           { Resolve-BRAVOExitCode -HealthCritical }
-        'NotificationError'  { Resolve-BRAVOExitCode -HealthCritical }
-        default              { Resolve-BRAVOExitCode -HealthCritical }
-    }
-    if ($exitCode -eq 0 -and $script:BRAVOWarningCount -gt 0) {
-        $exitCode = Resolve-BRAVOExitCode -HasWarnings
+    # -NoPause приймався тут і раніше, але ніде не використовувався — Health
+    # ніколи не чекав на клавішу при ручному запуску. try/finally гарантує
+    # паузу і на нормальному завершенні, і на непередбаченому throw
+    # усередині Invoke-BRAVOHealth (те саме, що вже робить Archive.Runtime.ps1).
+    $script:healthRuntimeExitCode = 90
+    try {
+        $healthResult = Invoke-BRAVOHealth @healthParameters
+        # Deferred — це саме "пропущено через lock/уже виконується інше завдання"
+        # у сенсі загального контракту кодів, тому окремий код 20, а не 0/1.
+        # Skipped ніколи фактично не породжується цим runtime (мертва гілка),
+        # лишена як безпечний fallback на успіх.
+        $exitCode = switch ([string]$healthResult.Status) {
+            'Healthy'            { 0 }
+            'Skipped'            { 0 }
+            'Disabled'           { 0 }
+            'Deferred'           { Resolve-BRAVOExitCode -LockBusy }
+            'ConfigurationError' { Resolve-BRAVOExitCode -InvalidConfiguration }
+            'Critical'           { Resolve-BRAVOExitCode -HealthCritical }
+            'NotificationError'  { Resolve-BRAVOExitCode -HealthCritical }
+            default              { Resolve-BRAVOExitCode -HealthCritical }
+        }
+        if ($exitCode -eq 0 -and $script:BRAVOWarningCount -gt 0) {
+            $exitCode = Resolve-BRAVOExitCode -HasWarnings
+        }
+
+        # Порушення цілісності інструментів перекриває будь-який інший
+        # результат Health. Health навмисно не переривається на старті (на
+        # відміну від Archive/Maintenance) — локальні перевірки служб,
+        # дисків і віку копій Tools не запускають, тому лишаються корисними
+        # саме тоді, коли підозрюється підміна. Але SFTP-гілка при цьому
+        # пропущена (Test-SFTPHealthConfiguration), і зовнішній моніторинг
+        # має бачити подію безпеки, а не звичайний health-статус.
+        if ($null -ne $script:BRAVOToolManifest -and $script:BRAVOToolManifest.ShouldBlock) {
+            $exitCode = Resolve-BRAVOExitCode -ToolIntegrityViolation
+        }
+        $script:healthRuntimeExitCode = $exitCode
+    } finally {
+        Wait-BRAVOManualExit -NoPause:$NoPause
     }
 
-    # Порушення цілісності інструментів перекриває будь-який інший
-    # результат Health. Health навмисно не переривається на старті (на
-    # відміну від Archive/Maintenance) — локальні перевірки служб,
-    # дисків і віку копій Tools не запускають, тому лишаються корисними
-    # саме тоді, коли підозрюється підміна. Але SFTP-гілка при цьому
-    # пропущена (Test-SFTPHealthConfiguration), і зовнішній моніторинг
-    # має бачити подію безпеки, а не звичайний health-статус.
-    if ($null -ne $script:BRAVOToolManifest -and $script:BRAVOToolManifest.ShouldBlock) {
-        $exitCode = Resolve-BRAVOExitCode -ToolIntegrityViolation
-    }
-
-    exit $exitCode
+    exit $script:healthRuntimeExitCode
 }

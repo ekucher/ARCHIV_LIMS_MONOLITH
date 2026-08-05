@@ -2889,8 +2889,13 @@ try {
             $previousErrorAction = $ErrorActionPreference
             $ErrorActionPreference = 'Continue'
             try {
+                # -NoPause: цей тест перевіряє guard fail-closed, а не паузу
+                # при ручному запуску. Без цього прапорця самотест, запущений
+                # у реальній інтерактивній консолі (не в CI), завис би тут —
+                # UserInteractive/IsInputRedirected самі по собі це не
+                # ловлять, бо дочірній процес успадковує ту саму консоль.
                 $null = & powershell.exe -NoProfile -ExecutionPolicy Bypass `
-                    -File (Join-Path $failClosedRoot $guardEntrypoint) 2>&1
+                    -File (Join-Path $failClosedRoot $guardEntrypoint) -NoPause 2>&1
             } finally {
                 $ErrorActionPreference = $previousErrorAction
             }
@@ -3078,6 +3083,179 @@ try {
         -Condition ($runtimesWithConstantTotal.Count -eq 0) `
         -Name "Console/StepTotalCountsOnlyEnabledComponents" `
         -Failure "Кількість етапів має обчислюватися за увімкненими компонентами, а не бути константою; константа у: $($runtimesWithConstantTotal -join ', ')"
+
+    # ===== ПАУЗА ПЕРЕД ЗАКРИТТЯМ ВІКНА ПРИ РУЧНОМУ ЗАПУСКУ =====
+    # Ключова властивість, яку тут охороняємо: -NoPause (Планувальник,
+    # самотест) НІКОЛИ не повинен натрапити на блокуючий виклик. Гілка
+    # виходу з -NoPause має бути буквально ПЕРШИМ виконуваним рядком
+    # тіла функції — перевіряємо це через AST, а не текстом, і окремо
+    # підтверджуємо функціональним викликом, що з -NoPause вона реально
+    # повертається миттєво (Measure-Command із жорсткою межею), а не
+    # покладаємось на "мабуть, так і є".
+    Remove-Module -Name 'BRAVO.Console' -Force -ErrorAction SilentlyContinue
+    Import-Module -Name (Join-Path $root "modules\BRAVO.Console\BRAVO.Console.psd1") -Force -ErrorAction Stop
+    $consoleModuleAst = [System.Management.Automation.Language.Parser]::ParseFile(
+        (Join-Path $root "modules\BRAVO.Console\BRAVO.Console.psm1"), [ref]$null, [ref]$null
+    )
+    $waitManualExitFunction = $consoleModuleAst.Find(
+        {
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Wait-BRAVOManualExit'
+        },
+        $true
+    )
+    $waitManualExitFirstStatementIsNoPauseGuard = $false
+    if ($null -ne $waitManualExitFunction) {
+        $firstStatement = $waitManualExitFunction.Body.EndBlock.Statements[0]
+        $waitManualExitFirstStatementIsNoPauseGuard = (
+            $null -ne $firstStatement -and
+            ([string]$firstStatement.Extent.Text) -match '^\s*if\s*\(\s*\$NoPause\s*\)\s*\{\s*return\s*\}'
+        )
+    }
+    Test-BRAVOCondition `
+        -Condition ($null -ne $waitManualExitFunction -and $waitManualExitFirstStatementIsNoPauseGuard) `
+        -Name "Console/WaitManualExitChecksNoPauseFirst" `
+        -Failure "Wait-BRAVOManualExit має перевіряти -NoPause першим виконуваним рядком — інакше запланований запуск ризикує дійти до блокуючого ReadKey"
+
+    $noPauseElapsed = Measure-Command { Wait-BRAVOManualExit -NoPause }
+    Test-BRAVOCondition `
+        -Condition ($noPauseElapsed.TotalSeconds -lt 2) `
+        -Name "Console/WaitManualExitNoPauseReturnsImmediately" `
+        -Failure "Wait-BRAVOManualExit -NoPause має повертатися миттєво; зайняло $($noPauseElapsed.TotalSeconds) с"
+
+    # Три entrypoint-и мають свою самодостатню (без BRAVO.Console) паузу
+    # для ранніх виходів — до Import-Module жоден BRAVO-модуль ще не
+    # довірений. Перевіряємо, що виклик Wait-BRAVOEarlyManualExit передує
+    # КОЖНОМУ "exit N" аж до першого звернення до $parameters (тобто разом
+    # із секцією Import-Module, у якої власний exit 90) — не лише деяким.
+    # Перша версія цієї перевірки різала межу на "$modulePath =" і тому не
+    # бачила catch-блок Import-Module із власним exit 90 — саме там
+    # регресія й підтвердила прогалину в самому тесті.
+    $entrypointsWithUnguardedEarlyExit = New-Object System.Collections.ArrayList
+    foreach ($guardEntrypointForPause in @('BRAVO_ARCHIV.ps1', 'BRAVO_HEALTH.ps1', 'BRAVO_MAINTENANCE.ps1')) {
+        $entrypointPathForPause = Join-Path $root $guardEntrypointForPause
+        $entrypointTextForPause = [IO.File]::ReadAllText($entrypointPathForPause, [Text.Encoding]::UTF8)
+        $guardSectionEnd = $entrypointTextForPause.IndexOf('$parameters = @{')
+        if ($guardSectionEnd -lt 0) {
+            [void]$entrypointsWithUnguardedEarlyExit.Add("$guardEntrypointForPause (немає секції guard)")
+            continue
+        }
+        $guardSectionText = $entrypointTextForPause.Substring(0, $guardSectionEnd)
+        $hasFunctionDefinition = $guardSectionText.Contains('function Wait-BRAVOEarlyManualExit')
+        # Кожен "exit N" у секції guard має мати виклик паузи серед двох
+        # попередніх непорожніх рядків — так само, як він написаний у коді.
+        $exitLinesUnprotected = @(
+            [regex]::Matches($guardSectionText, '(?m)^\s*(?:.*\{\s*)?exit\s+\d+') |
+                Where-Object {
+                    $precedingText = $guardSectionText.Substring(0, $_.Index)
+                    $precedingLines = ($precedingText -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+                    $lastTwoLines = $precedingLines | Select-Object -Last 2
+                    -not ($lastTwoLines -join "`n").Contains('Wait-BRAVOEarlyManualExit')
+                }
+        )
+        if (-not $hasFunctionDefinition -or $exitLinesUnprotected.Count -gt 0) {
+            [void]$entrypointsWithUnguardedEarlyExit.Add(
+                ("{0} (без паузи: {1})" -f $guardEntrypointForPause, $exitLinesUnprotected.Count))
+        }
+    }
+    Test-BRAVOCondition `
+        -Condition ($entrypointsWithUnguardedEarlyExit.Count -eq 0) `
+        -Name "Console/EarlyGuardExitsPauseBeforeClosing" `
+        -Failure "кожен exit у guard-блоці (до Import-Module) має викликати Wait-BRAVOEarlyManualExit; порушення: $($entrypointsWithUnguardedEarlyExit -join '; ')"
+
+    # Health.Runtime.ps1: одна точка виходу, обгорнута try/finally —
+    # пауза повинна спрацювати і на нормальному завершенні, і на
+    # непередбаченому throw усередині Invoke-BRAVOHealth.
+    $healthRuntimeTextForPause = [IO.File]::ReadAllText(
+        (Join-Path $root "modules\BRAVO.Health\BRAVO.Health.Runtime.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    # Позиційні орієнтири замість одного крихкого regex на весь фрагмент:
+    # достатньо, що "фінальний exit" (останнє входження) стоїть ПІСЛЯ
+    # виклику паузи, а сам виклик — усередині "finally {".
+    $healthFinallyIndex = $healthRuntimeTextForPause.IndexOf('} finally {')
+    $healthPauseCallIndex = $healthRuntimeTextForPause.IndexOf('Wait-BRAVOManualExit -NoPause:$NoPause')
+    $healthFinalExitIndex = $healthRuntimeTextForPause.LastIndexOf('exit $script:healthRuntimeExitCode')
+    Test-BRAVOCondition `
+        -Condition (
+            $healthFinallyIndex -ge 0 -and
+            $healthPauseCallIndex -gt $healthFinallyIndex -and
+            $healthFinalExitIndex -gt $healthPauseCallIndex
+        ) `
+        -Name "Console/HealthPausesOnEveryExitPath" `
+        -Failure "Health.Runtime.ps1 має чекати на клавішу у finally навколо обчислення exitCode — інакше -NoPause параметр приймається, але ніколи не використовується"
+
+    # Maintenance.Runtime.ps1: ~28 точок exit розкидані по всьому файлу
+    # (config не знайдено, lock зайнятий, tool integrity тощо) — єдиний
+    # безпечний спосіб охопити їх усі одразу без 28 окремих правок:
+    # один зовнішній try/finally навколо решти файлу. exit усередині try
+    # проходить крізь finally перед тим, як процес завершується
+    # (властивість PowerShell, не припущення) — перевіряємо, що відкриваючий
+    # try стоїть РАНІШЕ першого "exit", а закриваючий finally — ПІЗНІШЕ
+    # останнього.
+    $maintenanceRuntimeTextForPause = [IO.File]::ReadAllText(
+        (Join-Path $root "modules\BRAVO.Maintenance\BRAVO.Maintenance.Runtime.ps1"),
+        [Text.Encoding]::UTF8
+    )
+    # Орієнтир на унікальний коментар перед "try {", а не на точний
+    # сусідній текст усередині: коментарі між ними можуть змінюватись.
+    $maintenanceOuterTryIndex = $maintenanceRuntimeTextForPause.IndexOf('Пауза при ручному запуску мала охопити')
+    $maintenanceFirstExitIndex = $maintenanceRuntimeTextForPause.IndexOf('Exit $elevatedProcess.ExitCode')
+    $maintenanceFinallyIndex = $maintenanceRuntimeTextForPause.LastIndexOf('Wait-BRAVOManualExit -NoPause:$NoPause')
+    $maintenanceLastExitIndex = $maintenanceRuntimeTextForPause.LastIndexOf('exit 0')
+    Test-BRAVOCondition `
+        -Condition (
+            $maintenanceOuterTryIndex -ge 0 -and
+            $maintenanceFirstExitIndex -gt $maintenanceOuterTryIndex -and
+            $maintenanceFinallyIndex -gt $maintenanceLastExitIndex -and
+            $maintenanceLastExitIndex -gt $maintenanceFirstExitIndex
+        ) `
+        -Name "Console/MaintenancePausesOnEveryExitPath" `
+        -Failure "Maintenance.Runtime.ps1 має один зовнішній try/finally з Wait-BRAVOManualExit, що охоплює геть усі exit-и файлу — від елевації до фінального exit 0"
+
+    # -NoPause має надходити у Maintenance.Runtime.ps1 через параметр,
+    # інакше зовнішній try/finally вище нічим не керує.
+    Test-BRAVOCondition `
+        -Condition (
+            [regex]::IsMatch($maintenanceRuntimeTextForPause, '(?m)^\s*\[switch\]\$NoPause,\s*$')
+        ) `
+        -Name "Console/MaintenanceAcceptsNoPauseParameter" `
+        -Failure "modules\BRAVO.Maintenance\BRAVO.Maintenance.Runtime.ps1 має приймати -NoPause у param()"
+
+    # Кожен entrypoint має прокидати -NoPause у свій runtime, інакше сам
+    # параметр command-line нічого не змінює.
+    $entrypointsNotForwardingNoPause = New-Object System.Collections.ArrayList
+    foreach ($noPauseForwardCheck in @(
+        @{ File = 'BRAVO_ARCHIV.ps1' },
+        @{ File = 'BRAVO_HEALTH.ps1' },
+        @{ File = 'BRAVO_MAINTENANCE.ps1' }
+    )) {
+        $forwardText = [IO.File]::ReadAllText((Join-Path $root $noPauseForwardCheck.File), [Text.Encoding]::UTF8)
+        if (-not [regex]::IsMatch($forwardText, 'NoPause\s*=\s*\$NoPause')) {
+            [void]$entrypointsNotForwardingNoPause.Add($noPauseForwardCheck.File)
+        }
+    }
+    Test-BRAVOCondition `
+        -Condition ($entrypointsNotForwardingNoPause.Count -eq 0) `
+        -Name "Console/EntrypointsForwardNoPauseToRuntime" `
+        -Failure "entrypoint має передавати NoPause = `$NoPause у параметри свого runtime; не передають: $($entrypointsNotForwardingNoPause -join ', ')"
+
+    # BRAVO_TASKS_INSTALL.ps1: -NoPause має додаватись БЕЗУМОВНО для
+    # кожного типу запланованого завдання, а не вибірково за TaskType —
+    # саме вибіркове додавання лишило Recovery й Maintenance без нього.
+    $tasksInstallTextForPause = [IO.File]::ReadAllText(
+        (Join-Path $root "BRAVO_TASKS_INSTALL.ps1"), [Text.Encoding]::UTF8
+    )
+    Test-BRAVOCondition `
+        -Condition (
+            [regex]::IsMatch(
+                $tasksInstallTextForPause,
+                '\$actionArguments \+= " -ConfigPath[^\r\n]*"\r?\n\s*#[^\r\n]*\r?\n(?:\s*#[^\r\n]*\r?\n)*\s*\$actionArguments \+= " -NoPause"'
+            )
+        ) `
+        -Name "Scheduler/EveryTaskTypeGetsNoPauseUnconditionally" `
+        -Failure "BRAVO_TASKS_INSTALL.ps1 має додавати -NoPause одразу після -ConfigPath, поза будь-яким if (`$TaskType -eq ...) — інакше якийсь тип завдання лишиться без нього непомітно"
 
     # Об'єкти проблем Health мають різний набір полів: Kind = "Service" не
     # несе ні DifferenceCount, ні ActionCounts. Пряме $_.DifferenceCount під

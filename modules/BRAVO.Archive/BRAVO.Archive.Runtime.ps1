@@ -788,27 +788,11 @@ function Show-RunningProgress {
 }
 
 function Wait-ForManualExit {
-    if ($NoPause -or -not $consoleSettings.PauseOnExit) {
-        return
-    }
-
-    $prompt = [string]$consoleSettings.PausePrompt
-    if ([string]::IsNullOrWhiteSpace($prompt)) {
-        $prompt = "Натиснiть будь-яку клавiшу для закриття вiкна..."
-    }
-
-    Write-Host ""
-    Write-Host $prompt -ForegroundColor $logColors.Progress
-    try {
-        [void]$Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-    } catch {
-        # У хостах без RawUI очікуємо Enter; для -NonInteractive помилку ігноруємо.
-        try {
-            [void](Read-Host)
-        } catch {
-            Write-BRAVOLog -Component 'GENERAL' -Message "Пауза завершення недоступна у цьому режимi PowerShell" -Level "DEBUG"
-        }
-    }
+    # Спільна реалізація — modules\BRAVO.Console\BRAVO.Console.psm1. Той
+    # самий механізм (RawUI.ReadKey з фолбеком на Read-Host для ISE) тепер
+    # використовують і Health, і Maintenance; тут лишається тонка обгортка
+    # заради стабільності єдиного виклику нижче (рядок ~4230).
+    Wait-BRAVOManualExit -NoPause:$NoPause
 }
 
 function Test-PathWithLog {
