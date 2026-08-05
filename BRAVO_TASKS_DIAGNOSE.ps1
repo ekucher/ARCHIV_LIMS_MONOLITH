@@ -310,7 +310,17 @@ try {
                 $temporaryTask.Stop(0)
             }
             $rootTaskFolder.DeleteTask($temporaryTaskName, 0)
-        } catch {}
+        } catch {
+            # Тимчасове завдання створюється лише для перевірки доступу від
+            # SYSTEM. Якщо його не вдалося прибрати, воно лишається в
+            # Планувальнику й наступний запуск діагностики впаде на
+            # створенні завдання з тим самим іменем — тому попереджаємо
+            # явно, з іменем, яке треба видалити вручну.
+            Write-Warning (
+                "Не вдалося видалити тимчасове завдання '$temporaryTaskName': " +
+                "$($_.Exception.Message). Видаліть його вручну в Планувальнику завдань."
+            )
+        }
         if (Test-Path -LiteralPath $workingDirectory -PathType Container) {
             Remove-Item -LiteralPath $workingDirectory -Recurse -Force -ErrorAction SilentlyContinue
         }

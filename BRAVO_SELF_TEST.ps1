@@ -777,6 +777,49 @@ try {
         }
     }
 
+    # Аудит Low #8: порожній catch {} без жодного пояснення ковтає
+    # діагностику саме там, де вона потрібна — під час інциденту. Вимога не
+    # "заборонити порожні catch" (частина з них законна: прибирання у
+    # finally, де початкова помилка важливіша), а "жоден із них не мовчить
+    # без причини". Тому правило: порожній catch мусить або логувати, або
+    # містити коментар, який пояснює, чому логування тут недоречне.
+    # $powerShellFiles — корінь + modules, тобто саме production-комплект.
+    # ci\* свідомо поза перевіркою: це допоміжні скрипти розробника, які
+    # ніколи не виконуються від SYSTEM.
+    $silentCatchFindings = New-Object System.Collections.ArrayList
+    foreach ($analyzedFile in $powerShellFiles) {
+        if ($analyzedFile.Extension -notin @('.ps1', '.psm1')) { continue }
+
+        $catchTokens = $null
+        $catchErrors = $null
+        $catchAst = [System.Management.Automation.Language.Parser]::ParseFile(
+            $analyzedFile.FullName, [ref]$catchTokens, [ref]$catchErrors)
+        if ($null -eq $catchAst) { continue }
+
+        $emptyCatches = @($catchAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.CatchClauseAst]
+        }, $true) | Where-Object { $_.Body.Statements.Count -eq 0 })
+
+        foreach ($emptyCatch in $emptyCatches) {
+            $bodyStart = $emptyCatch.Body.Extent.StartOffset
+            $bodyEnd = $emptyCatch.Body.Extent.EndOffset
+            $hasExplanation = @($catchTokens | Where-Object {
+                $_.Kind -eq 'Comment' -and
+                $_.Extent.StartOffset -ge $bodyStart -and
+                $_.Extent.EndOffset -le $bodyEnd
+            }).Count -gt 0
+            if (-not $hasExplanation) {
+                [void]$silentCatchFindings.Add(
+                    ("{0}:{1}" -f $analyzedFile.Name, $emptyCatch.Extent.StartLineNumber))
+            }
+        }
+    }
+    Test-BRAVOCondition `
+        -Condition ($silentCatchFindings.Count -eq 0) `
+        -Name "Diagnostics/NoSilentEmptyCatch" `
+        -Failure "порожній catch має або логувати, або пояснювати коментарем, чому логування недоречне; без пояснення: $(@($silentCatchFindings.ToArray()) -join ', ')"
+
     # Реальний BRAVO.config репозиторію мусить проходити власну перевірку.
     $securityRealConfig = Test-BRAVORuntimeSecuritySettings `
         -ConfigPath (Join-Path $root "BRAVO.config") -Mode Enforce -AllowWeakened ''
@@ -1107,7 +1150,12 @@ try {
         if ($null -ne $sevenZipCreateCapture) {
             try {
                 [void](Complete-BRAVOProcessOutputCapture -Capture $sevenZipCreateCapture)
-            } catch {}
+            } catch {
+                # Прибирання після тестового запуску 7-Zip. Результат самого
+                # тесту вже зафіксовано в $sevenZipRuntimeFailure вище;
+                # помилка дренажу потоків не повинна перетворити пройдений
+                # тест на провалений.
+            }
         }
         if ($null -ne $sevenZipCreateProcess) {
             $sevenZipCreateProcess.Dispose()

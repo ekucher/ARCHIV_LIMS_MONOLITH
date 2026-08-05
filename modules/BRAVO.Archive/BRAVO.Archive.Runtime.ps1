@@ -1997,7 +1997,16 @@ function New-BRAVOWinSCPTemporaryScriptPath {
         if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
             try {
                 Remove-BRAVOWinSCPSensitiveTemporaryScript -Path $temporaryPath
-            } catch {}
+            } catch {
+                # WARNING, а не мовчазний пропуск: цей файл містить облікові
+                # дані SFTP. Якщо його не вдалося затерти й видалити, секрет
+                # лишився в %TEMP% — оператор має про це дізнатися саме
+                # зараз, а не під час розслідування витоку.
+                Write-BRAVOLog `
+                    -Component 'SFTP' `
+                    -Message "Не вдалося прибрати тимчасовий WinSCP-скрипт з обліковими даними ($temporaryPath): $($_.Exception.Message). Видаліть файл вручну." `
+                    -Level "WARNING"
+            }
         }
         throw
     }
@@ -2052,7 +2061,16 @@ exit
             try {
                 $process.Kill()
                 [void]$process.WaitForExit(5000)
-            } catch {}
+            } catch {
+                # Процес міг завершитися сам між WaitForExit і Kill().
+                # Причина таймауту важливіша за невдале завершення, тому
+                # тут DEBUG — але слід лишається: без нього незрозуміло,
+                # чи WinSCP досі висить у пам'яті.
+                Write-BRAVOLog `
+                    -Component 'SFTP' `
+                    -Message "Не вдалося завершити процес WinSCP після таймауту: $($_.Exception.Message)" `
+                    -Level "DEBUG"
+            }
             throw "перевищено таймаут перевірки SFTP-з'єднання"
         }
         $capturedOutput = Complete-BRAVOProcessOutputCapture -Capture $outputCapture
@@ -2072,7 +2090,13 @@ exit
     } finally {
         try {
             Remove-BRAVOWinSCPSensitiveTemporaryScript -Path $tempScript
-        } catch {}
+        } catch {
+            # Див. пояснення вище: файл містить облікові дані SFTP.
+            Write-BRAVOLog `
+                -Component 'SFTP' `
+                -Message "Не вдалося прибрати тимчасовий WinSCP-скрипт з обліковими даними ($tempScript): $($_.Exception.Message). Видаліть файл вручну." `
+                -Level "WARNING"
+        }
     }
 }
 
@@ -2626,7 +2650,17 @@ function Send-BAZAIncompatibleNameAlert {
                 ForEach-Object { $_.ToString() } |
                 Sort-Object -Unique
         )
-    } catch {}
+    } catch {
+        # Локальна IP-адреса потрібна лише для тексту сповіщення — без неї
+        # воно надійде без цього рядка. DNS-запит до власного імені падає
+        # на серверах із нестандартною мережевою конфігурацією, тому DEBUG:
+        # це не проблема backup, але діагностика "чому в сповіщенні немає
+        # IP" інакше впирається в порожнечу.
+        Write-BRAVOLog `
+            -Component 'NOTIFY' `
+            -Message "Не вдалося визначити локальну IP-адресу: $($_.Exception.Message)" `
+            -Level "DEBUG"
+    }
     $localIpText = if ($localIpAddresses.Count -gt 0) {
         $localIpAddresses -join " | "
     } else {
@@ -3061,7 +3095,14 @@ exit
         }
         try {
             Remove-BRAVOWinSCPSensitiveTemporaryScript -Path $tempScript
-        } catch {}
+        } catch {
+            # Файл містить облікові дані SFTP — його залишок у %TEMP% це
+            # витік, а не дрібниця прибирання.
+            Write-BRAVOLog `
+                -Component 'SFTP' `
+                -Message "Не вдалося прибрати тимчасовий WinSCP-скрипт з обліковими даними ($tempScript): $($_.Exception.Message). Видаліть файл вручну." `
+                -Level "WARNING"
+        }
     }
 }
 
@@ -3243,7 +3284,16 @@ function Write-BRAVOBackupExecutionState {
             $previous = Get-Content -LiteralPath $path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
             $state.Maintenance = [string]$previous.Maintenance
             $state.Backup = [string]$previous.Backup
-        } catch {}
+        } catch {
+            # Пошкоджений файл стану не зупиняє запуск — він перезапишеться
+            # нижче. Але мовчазне ігнорування означало, що стан попереднього
+            # запуску тихо зникає, і "Maintenance ніколи не виконувався"
+            # виглядало як факт, а не як втрачений запис.
+            Write-BRAVOLog `
+                -Component 'STATE' `
+                -Message "Не вдалося прочитати попередній стан завдань ($path): $($_.Exception.Message). Стан буде перезаписано." `
+                -Level "DEBUG"
+        }
     }
     $state.Backup = ([datetime]::Now).ToString('o')
     [System.IO.File]::WriteAllText($path, ($state | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))

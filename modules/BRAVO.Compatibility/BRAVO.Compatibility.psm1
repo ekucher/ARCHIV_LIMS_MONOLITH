@@ -1409,8 +1409,26 @@ function Complete-BRAVOProcessOutputCapture {
             -not $Capture.Process.WaitForExit([math]::Max(1, $WaitTimeoutMilliseconds))) {
             throw "процес не завершився під час збору виводу"
         }
-        try { $Capture.Process.CancelOutputRead() } catch {}
-        try { $Capture.Process.CancelErrorRead() } catch {}
+        # Скасування асинхронного читання на вже завершеному процесі кидає
+        # InvalidOperationException, якщо читання не було розпочате або вже
+        # скасоване. Обидва стани нешкідливі: рядки вже зібрані в
+        # $Capture.OutputLines/$Capture.ErrorLines нижче.
+        #
+        # ЧОМУ БЕЗ ЛОГУВАННЯ (свідомо, не недогляд): BRAVO.Compatibility —
+        # найнижчий шар, він завантажується ДО BRAVO.Logging і навмисно не
+        # має від нього залежності. Виклик Write-BRAVOLog тут або впав би,
+        # або створив циклічну залежність модулів.
+        try {
+            $Capture.Process.CancelOutputRead()
+        } catch {
+            # Див. пояснення вище: стан нешкідливий, а логувати з цього
+            # шару нічим — модуль навмисно без залежності від BRAVO.Logging.
+        }
+        try {
+            $Capture.Process.CancelErrorRead()
+        } catch {
+            # Те саме, що для CancelOutputRead.
+        }
         return New-Object PSObject -Property @{
             StandardOutput = [string](@($Capture.OutputLines) -join [Environment]::NewLine)
             StandardError = [string](@($Capture.ErrorLines) -join [Environment]::NewLine)
