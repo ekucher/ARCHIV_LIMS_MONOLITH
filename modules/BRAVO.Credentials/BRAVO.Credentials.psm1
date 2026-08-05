@@ -16,7 +16,16 @@ namespace BRAVO.Security
     {
         public string TargetName { get; internal set; }
         public string UserName { get; internal set; }
-        public string Secret { get; internal set; }
+
+        // SecureString, а не string (аудит #5). Раніше секрет матеріалізувався
+        // тут як звичайний managed string: у .NET він незмінний, тому його
+        // НЕМОЖЛИВО занулити — копія пароля лишалась у керованій купі до
+        // збирання сміття й могла потрапити у дамп процесу або в pagefile.
+        // Кожне читання credential створювало ще одну таку копію, а
+        // Archive/Health/Maintenance читають облікові дані кілька разів за
+        // запуск. SecureString зберігається зашифрованим (DPAPI) і
+        // звільняється детерміновано.
+        public SecureString Secret { get; internal set; }
     }
 
     public static class CredentialManager
@@ -71,20 +80,35 @@ namespace BRAVO.Security
             try
             {
                 CREDENTIAL credential = (CREDENTIAL)Marshal.PtrToStructure(pointer, typeof(CREDENTIAL));
-                string secret = String.Empty;
+                SecureString secret = new SecureString();
                 if (credential.CredentialBlob != IntPtr.Zero && credential.CredentialBlobSize > 0)
                 {
                     byte[] secretBytes = new byte[credential.CredentialBlobSize];
                     Marshal.Copy(credential.CredentialBlob, secretBytes, 0, secretBytes.Length);
+                    // Декодуємо в char[], а не в string: масив можна занулити,
+                    // рядок — ні. Символи додаються в SecureString по одному,
+                    // тому повного відкритого пароля не існує в керованій
+                    // пам'яті на жодному кроці.
+                    char[] secretChars = new char[secretBytes.Length / sizeof(char)];
                     try
                     {
-                        secret = Encoding.Unicode.GetString(secretBytes).TrimEnd('\0');
+                        Encoding.Unicode.GetChars(
+                            secretBytes, 0, secretBytes.Length, secretChars, 0);
+                        for (int i = 0; i < secretChars.Length; i++)
+                        {
+                            // Credential Manager доповнює блоб нулями.
+                            if (secretChars[i] == '\0')
+                                break;
+                            secret.AppendChar(secretChars[i]);
+                        }
                     }
                     finally
                     {
+                        Array.Clear(secretChars, 0, secretChars.Length);
                         Array.Clear(secretBytes, 0, secretBytes.Length);
                     }
                 }
+                secret.MakeReadOnly();
 
                 return new StoredCredential
                 {
@@ -168,7 +192,10 @@ function Get-BRAVOCredential {
     return [BRAVO.Security.CredentialManager]::ReadGeneric($Target)
 }
 
-function Get-BRAVOCredentialSecret {
+function Get-BRAVOCredentialSecureSecret {
+    # Секрет, який НІКОЛИ не перетворюється на відкритий рядок. Використовуйте
+    # цю функцію скрізь, де плейнтекст не потрібен — наприклад, там, де далі
+    # будується PSCredential (SMB).
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
@@ -180,7 +207,61 @@ function Get-BRAVOCredentialSecret {
     if ($null -eq $credential) {
         return $null
     }
-    return [string]$credential.Secret
+    return $credential.Secret
+}
+
+function ConvertFrom-BRAVOSecureSecret {
+    # Єдина точка перетворення SecureString -> відкритий рядок.
+    #
+    # ЧЕСНА МЕЖА (аудит #5, не обходьте її мовчки): рядок, повернутий звідси,
+    # це звичайний managed string — незмінний, а отже незанулюваний. Він
+    # лишається в керованій купі до збирання сміття. Ця функція прибирає
+    # проміжну некеровану копію (BSTR зануляється детерміновано) і робить
+    # кожне таке перетворення видимим у коді, але не усуває плейнтекст як
+    # такий: SFTP-URL для WinSCP і пароль 7-Zip технічно потребують саме
+    # рядка. Тому виклик цієї функції має бути якомога ближче до місця
+    # використання, а не на початку runtime.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSAvoidUsingPlainTextForPassword', '',
+        Justification = 'Функція навмисно повертає плейнтекст для API, які приймають лише рядок; межа задокументована.')]
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [Security.SecureString]$Secret
+    )
+
+    if ($null -eq $Secret) {
+        return $null
+    }
+
+    $bstr = [IntPtr]::Zero
+    try {
+        $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Secret)
+        return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+    } finally {
+        if ($bstr -ne [IntPtr]::Zero) {
+            # Некерована копія зануляється детерміновано, не чекаючи GC.
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        }
+    }
+}
+
+function Get-BRAVOCredentialSecret {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSAvoidUsingPlainTextForPassword', '',
+        Justification = 'Сумісність API: 19 місць runtime очікують рядок; плейнтекст створюється через ConvertFrom-BRAVOSecureSecret.')]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Target
+    )
+
+    $secureSecret = Get-BRAVOCredentialSecureSecret -Target $Target
+    if ($null -eq $secureSecret) {
+        return $null
+    }
+    return (ConvertFrom-BRAVOSecureSecret -Secret $secureSecret)
 }
 
 function Set-BRAVOCredential {
@@ -458,4 +539,30 @@ function New-BRAVOPlainTextCredential {
 
     $securePassword = ConvertTo-SecureString -String $Password -AsPlainText -Force
     return New-Object System.Management.Automation.PSCredential($UserName, $securePassword)
+}
+
+function New-BRAVOSecureCredential {
+    # Те саме, що New-BRAVOPlainTextCredential, але БЕЗ проміжного
+    # плейнтексту: секрет іде з Credential Manager у PSCredential, жодного
+    # разу не ставши звичайним рядком. Саме цей шлях треба використовувати
+    # скрізь, де далі потрібен лише PSCredential (SMB) — там плейнтекст не
+    # потрібен узагалі, і платити за нього незанулюваною копією в пам'яті
+    # немає причин.
+    #
+    # New-BRAVOPlainTextCredential лишається для випадків, де рядок уже
+    # існує з інших причин.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSAvoidUsingUsernameAndPasswordParams', '',
+        Justification = 'Функція будує PSCredential з окремо збережених у Credential Manager логіна та SecureString-секрету.')]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$UserName,
+
+        [Parameter(Mandatory = $true)]
+        [Security.SecureString]$SecureSecret
+    )
+
+    return New-Object System.Management.Automation.PSCredential($UserName, $SecureSecret)
 }
