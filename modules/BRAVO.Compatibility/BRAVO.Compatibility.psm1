@@ -959,9 +959,14 @@ function Test-BRAVOToolManifestIntegrity {
         }
     }
 
-    # Сторонній .exe/.dll у Tools/ не блокує запуск (він може взагалі не
-    # використовуватись), але про нього треба знати: підкидання файлу в
-    # каталог, який виконується від SYSTEM, — це вже аномалія.
+    # Сторонній .exe/.dll/.com у Tools/ — це порушення, а не лише
+    # інформація. Причина — DLL side-loading: щоб виконати довільний код,
+    # зловмиснику не обов'язково підміняти WinSCP.exe чи 7za.exe. Windows
+    # шукає залежності насамперед у каталозі самого виконуваного файлу,
+    # тому достатньо ПІДКЛАСТИ DLL з відповідним іменем — жоден хеш у
+    # маніфесті при цьому не зміниться, бо самі інструменти лишились
+    # недоторканими. Легітимна додаткова залежність має бути внесена в
+    # TOOLS_MANIFEST.json свідомо, через код-рев'ю.
     if (Test-Path -LiteralPath $ToolsDirectory -PathType Container) {
         $presentExecutables = @(
             Get-ChildItem -LiteralPath $ToolsDirectory -File -ErrorAction SilentlyContinue |
@@ -979,11 +984,12 @@ function Test-BRAVOToolManifestIntegrity {
     $result.MissingTools = @($missing)
     $result.UnknownTools = @($unknown)
 
-    $hasViolation = ($mismatched.Count -gt 0 -or $missing.Count -gt 0)
+    $hasViolation = (
+        $mismatched.Count -gt 0 -or
+        $missing.Count -gt 0 -or
+        $unknown.Count -gt 0
+    )
     if (-not $hasViolation) {
-        if ($unknown.Count -gt 0) {
-            $result.Message = "Стороннi виконуванi файли в Tools (не входять до еталонного манiфесту): $($unknown -join ', ')"
-        }
         return $result
     }
 
@@ -998,7 +1004,9 @@ function Test-BRAVOToolManifestIntegrity {
         [void]$details.Add("вiдсутнi файли з еталонного манiфесту: $($missing -join ', ')")
     }
     if ($unknown.Count -gt 0) {
-        [void]$details.Add("стороннi виконуванi файли: $($unknown -join ', ')")
+        [void]$details.Add(
+            "стороннi виконуванi файли, яких немає в манiфестi (ризик DLL side-loading): $($unknown -join ', ')"
+        )
     }
 
     $action = if ($Mode -eq 'Enforce') {

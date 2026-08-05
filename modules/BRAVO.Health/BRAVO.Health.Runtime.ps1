@@ -896,6 +896,24 @@ function Test-SFTPHealthConfiguration {
     )
 
     $errors = @()
+
+    # Найважливіша умова: не запускати інструменти, цілісність яких не
+    # підтверджена. Небезпека не в тому, що Health кудись пише (він
+    # read-only), а в САМОМУ запуску WinSCP.com / завантаженні
+    # WinSCPnet.dll: підмінений бінарник виконає довільний код з правами
+    # облікового запису запланованого завдання (SYSTEM), і read-only
+    # перевірка стає повноцінним носієм шкідливого коду.
+    #
+    # Локальні перевірки (служби, диски, вік локальних копій) Tools не
+    # запускають і виконуються далі — саме вони й лишаються корисними,
+    # коли SFTP-гілку заблоковано.
+    if ($null -ne $script:BRAVOToolManifest -and $script:BRAVOToolManifest.ShouldBlock) {
+        $errors += (
+            "SFTP-перевірки пропущено: не підтверджено цілісність інструментів " +
+            "(запуск WinSCP заборонено). $($script:BRAVOToolManifest.Message)"
+        )
+    }
+
     if (-not [string]::IsNullOrWhiteSpace($sftpCredentialError)) {
         $errors += $sftpCredentialError
     }
@@ -3698,5 +3716,17 @@ if ($MyInvocation.InvocationName -ne '.') {
     if ($exitCode -eq 0 -and $script:BRAVOWarningCount -gt 0) {
         $exitCode = Resolve-BRAVOExitCode -HasWarnings
     }
+
+    # Порушення цілісності інструментів перекриває будь-який інший
+    # результат Health. Health навмисно не переривається на старті (на
+    # відміну від Archive/Maintenance) — локальні перевірки служб,
+    # дисків і віку копій Tools не запускають, тому лишаються корисними
+    # саме тоді, коли підозрюється підміна. Але SFTP-гілка при цьому
+    # пропущена (Test-SFTPHealthConfiguration), і зовнішній моніторинг
+    # має бачити подію безпеки, а не звичайний health-статус.
+    if ($null -ne $script:BRAVOToolManifest -and $script:BRAVOToolManifest.ShouldBlock) {
+        $exitCode = Resolve-BRAVOExitCode -ToolIntegrityViolation
+    }
+
     exit $exitCode
 }

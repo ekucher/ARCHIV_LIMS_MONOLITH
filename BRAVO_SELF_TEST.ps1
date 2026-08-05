@@ -387,14 +387,44 @@ try {
             -Name "ToolManifest/AbsentOrCorruptManifestBlocks" `
             -Failure "видалення чи пошкодження еталонного маніфесту НЕ повинно бути способом обійти перевірку"
 
+        # Сторонній executable БЛОКУЄ (виправлено після рев'ю): DLL
+        # side-loading не потребує підміни WinSCP.exe/7za.exe — Windows
+        # шукає залежності в каталозі самого виконуваного файлу, тому
+        # достатньо підкласти DLL з відповідним іменем, і жоден хеш у
+        # маніфесті при цьому не зміниться.
         Test-BRAVOCondition `
             -Condition (
-                $manifestUnknownRun.IsValid -and
+                -not $manifestUnknownRun.IsValid -and
+                $manifestUnknownRun.ShouldBlock -and
                 $manifestUnknownRun.UnknownTools -contains "stranger.exe" -and
                 -not [string]::IsNullOrWhiteSpace([string]$manifestUnknownRun.Message)
             ) `
-            -Name "ToolManifest/UnknownExecutableIsReportedNotBlocking" `
-            -Failure "сторонній виконуваний файл у Tools має бути помічений, але не блокувати запуск"
+            -Name "ToolManifest/UnknownExecutableBlocksInEnforce" `
+            -Failure "сторонній виконуваний файл у Tools має БЛОКУВАТИ запуск у режимі Enforce (DLL side-loading)"
+
+        # Стороння DLL — той самий вектор, окремо закріплено, бо саме її
+        # найпростіше підкласти непомітно.
+        $strangerDll = Join-Path $toolManifestTools "version.dll"
+        [IO.File]::WriteAllText($strangerDll, "SIDELOAD", (New-Object Text.UTF8Encoding($false)))
+        $manifestUnknownDllRun = Test-BRAVOToolManifestIntegrity `
+            -ToolsDirectory $toolManifestTools `
+            -ManifestPath "(інжектовано)" `
+            -ManifestContent $toolManifestContent `
+            -Mode Enforce
+        $manifestUnknownDllWarn = Test-BRAVOToolManifestIntegrity `
+            -ToolsDirectory $toolManifestTools `
+            -ManifestPath "(інжектовано)" `
+            -ManifestContent $toolManifestContent `
+            -Mode Warn
+        [IO.File]::Delete($strangerDll)
+        Test-BRAVOCondition `
+            -Condition (
+                $manifestUnknownDllRun.ShouldBlock -and
+                $manifestUnknownDllRun.UnknownTools -contains "version.dll" -and
+                -not $manifestUnknownDllWarn.ShouldBlock
+            ) `
+            -Name "ToolManifest/UnknownDllBlocksInEnforceWarnsInWarn" `
+            -Failure "підкинута стороння DLL у Tools має блокувати запуск у Enforce і лише попереджати у Warn"
 
         # Маніфест не повинен створюватись автоматично: інакше сторож сам
         # виписує перепустку злодію.
@@ -2233,6 +2263,35 @@ try {
         -Condition ($archiveScriptText.Contains("Send-ToolIntegrityAlert")) `
         -Name "Runtime/ToolManifestSendsCriticalAlert" `
         -Failure "Archive має надсилати критичне сповіщення при заблокованому запуску через цілісність інструментів"
+
+    # Виправлено після рев'ю: Health не має запускати WinSCP, цілісність
+    # якого не підтверджена. Аргумент "Health read-only" був хибний —
+    # небезпечний сам ЗАПУСК підміненого бінарника (виконає довільний код
+    # від SYSTEM), а не те, куди Health пише. Локальні перевірки Tools не
+    # запускають і мають продовжуватись.
+    $healthSftpGateIndex = $healthScriptTextForPatchLevel.IndexOf("function Test-SFTPHealthConfiguration")
+    $healthSftpGateBody = if ($healthSftpGateIndex -ge 0) {
+        $healthScriptTextForPatchLevel.Substring(
+            $healthSftpGateIndex,
+            [math]::Min(3000, $healthScriptTextForPatchLevel.Length - $healthSftpGateIndex)
+        )
+    } else {
+        ""
+    }
+    Test-BRAVOCondition `
+        -Condition (
+            $healthSftpGateBody.Contains("BRAVOToolManifest") -and
+            $healthSftpGateBody.Contains("ShouldBlock")
+        ) `
+        -Name "Runtime/HealthSkipsWinSCPWhenToolManifestBroken" `
+        -Failure "Test-SFTPHealthConfiguration має пропускати SFTP-перевірки (єдиний шлях запуску WinSCP у Health), якщо цілісність інструментів не підтверджена"
+
+    Test-BRAVOCondition `
+        -Condition (
+            $healthScriptTextForPatchLevel.Contains("Resolve-BRAVOExitCode -ToolIntegrityViolation")
+        ) `
+        -Name "Runtime/HealthExitsWithToolIntegrityCode" `
+        -Failure "Health має завершуватись кодом 32 при порушенні цілісності інструментів, щоб подія безпеки була видима моніторингу"
     $archiveRuntimeText = [IO.File]::ReadAllText(
         (Join-Path $root "modules\BRAVO.ArchiveRuntime\BRAVO.ArchiveRuntime.psm1"),
         [Text.Encoding]::UTF8
