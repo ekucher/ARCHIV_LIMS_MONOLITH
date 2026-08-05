@@ -20,7 +20,7 @@ jobs:
     name: Parser / BOM / JSON
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: PowerShell parser (усі .ps1/.psm1/.psd1)
         shell: powershell
@@ -119,13 +119,13 @@ jobs:
     name: PSScriptAnalyzer
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install PSScriptAnalyzer
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser -SkipPublisherCheck -Repository PSGallery
+          Install-Module -Name PSScriptAnalyzer -RequiredVersion 1.25.0 -Force -Scope CurrentUser -SkipPublisherCheck -Repository PSGallery
 
       # Pass 1 (BLOCKING): exactly the security rule set declared in
       # PSScriptAnalyzerSettings.psd1. None of them is excluded globally
@@ -152,7 +152,7 @@ jobs:
     name: BRAVO_SELF_TEST.ps1
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Запуск повного self-test
         shell: powershell
@@ -166,7 +166,7 @@ jobs:
 
       - name: Лог self-test (артефакт при падінні)
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: self-test-log
           path: LOGS/HELPERS/BRAVO_SELF_TEST_*.log
@@ -184,11 +184,11 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
       - name: gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

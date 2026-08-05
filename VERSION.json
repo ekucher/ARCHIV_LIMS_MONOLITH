@@ -6,5 +6,6 @@
   "updaterVersion": "1.0.0",
   "releaseDate": "2026-08-04",
   "releaseChannel": "stable",
-  "buildId": "b3f9a12"
+  "buildId": "1be1b50",
+  "sourceCommit": "1be1b504fb0578be3afdb33fe344679dd813d8c4"
 }

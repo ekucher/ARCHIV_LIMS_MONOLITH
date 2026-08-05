@@ -1065,7 +1065,18 @@ try {
             $maintenanceScriptTextForBuildId.Contains('$global:ScriptBuildId')
         ) `
         -Name "Version/BuildIdSurfacedInRuntimes" `
-        -Failure "Archive/Health/Maintenance мають показувати build ID (VERSION.json.buildId) у журналі/сповіщеннях, щоб дві збірки з однаковим packageVersion можна було відрізнити"
+        -Failure "buildId має потрапляти в runtime-метадані"
+
+    # Аудит P4: короткий buildId не дає однозначної відповіді, який саме
+    # код розгорнуто (короткі hash збігаються й погано шукаються).
+    $versionMetadataForCommit = Get-BravoVersionMetadata -ConfigRoot $root
+    Test-BRAVOCondition `
+        -Condition (
+            $null -ne $versionMetadataForCommit.PSObject.Properties['SourceCommit'] -and
+            $versionMetadataForCommit.SourceCommit -match '^[0-9a-f]{40}$'
+        ) `
+        -Name "Version/SourceCommitIsFullGitHash" `
+        -Failure "VERSION.json має містити sourceCommit — повний 40-символьний git-hash (ci\Update-BRAVOVersionStamp.ps1 -Apply); короткий buildId не дає однозначної відповіді, який код розгорнуто"
     $archiveHelpersModulePath = Join-Path `
         $root `
         'modules\BRAVO.ArchiveHelpers\BRAVO.ArchiveHelpers.psd1'
@@ -1835,6 +1846,64 @@ try {
             -Condition ($ciRunBlockLines.Count -eq 0) `
             -Name "StaticAnalysis/CiRunBlocksAreAsciiOnly" `
             -Failure "ci.yml: виконуваний рядок з кирилицею поза коментарем/name (GitHub Actions пише run: без BOM, PowerShell 5.1 ламається): $($ciRunBlockLines -join ' | ')"
+    }
+
+    # Аудит P3: сторонні actions зафіксовані на повний commit SHA, а не
+    # на рухомий тег. Тег можна переписати — pin на SHA цього не
+    # дозволяє. Версія PSScriptAnalyzer теж зафіксована, інакше нове
+    # правило або зміна поведінки ламає CI без жодної зміни коду.
+    if (Test-Path -LiteralPath $ciWorkflowPath -PathType Leaf) {
+        $unpinnedActions = @(
+            [regex]::Matches($ciWorkflowText, 'uses:\s*(?<Ref>[^\r\n]+)') |
+                ForEach-Object { $_.Groups['Ref'].Value.Trim() } |
+                Where-Object { $_ -notmatch '@[0-9a-f]{40}\b' }
+        )
+        Test-BRAVOCondition `
+            -Condition ($unpinnedActions.Count -eq 0) `
+            -Name "StaticAnalysis/ActionsPinnedToCommitSha" `
+            -Failure "усі GitHub Actions мають бути зафіксовані на повний commit SHA; не закріплені: $($unpinnedActions -join ', ')"
+
+        Test-BRAVOCondition `
+            -Condition ($ciWorkflowText -match 'PSScriptAnalyzer\s+-RequiredVersion\s+\d+\.\d+') `
+            -Name "StaticAnalysis/AnalyzerVersionPinned" `
+            -Failure "версія PSScriptAnalyzer має бути зафіксована через -RequiredVersion"
+    }
+
+    # Аудит P5: threat model як окремий документ із чесним розділом
+    # залишкового ризику для кожного сценарію.
+    $threatModelPath = Join-Path $root "THREAT_MODEL.md"
+    Test-BRAVOCondition `
+        -Condition (Test-Path -LiteralPath $threatModelPath -PathType Leaf) `
+        -Name "Documentation/ThreatModelExists" `
+        -Failure "THREAT_MODEL.md має існувати в корені репозиторію"
+    if (Test-Path -LiteralPath $threatModelPath -PathType Leaf) {
+        $threatModelText = [IO.File]::ReadAllText($threatModelPath, [Text.Encoding]::UTF8)
+        $requiredScenarios = @(
+            "Компрометація локального адміністратора",
+            "Підміна інструментів",
+            "Підміна runtime",
+            "Витік облікових даних",
+            "Ransomware",
+            "VSS",
+            "Підміна SFTP/SMB призначення",
+            "Rollback",
+            "Паралельні запуски"
+        )
+        $missingScenarios = @(
+            $requiredScenarios | Where-Object { -not $threatModelText.Contains($_) }
+        )
+        Test-BRAVOCondition `
+            -Condition ($missingScenarios.Count -eq 0) `
+            -Name "Documentation/ThreatModelCoversRequiredScenarios" `
+            -Failure "THREAT_MODEL.md має покривати всі сценарії; відсутні: $($missingScenarios -join ', ')"
+
+        # Модель без залишкового ризику — це реклама, а не аналіз.
+        Test-BRAVOCondition `
+            -Condition (
+                ([regex]::Matches($threatModelText, 'Залишковий ризик').Count -ge 8)
+            ) `
+            -Name "Documentation/ThreatModelStatesResidualRisk" `
+            -Failure "кожен сценарій THREAT_MODEL.md має мати явний розділ залишкового ризику"
     }
 
     # P2.6 аудиту: RELEASE_CHECKLIST.md.
