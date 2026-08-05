@@ -251,17 +251,19 @@ if ($smbCredentialRequired -and $credentialHelperLoaded) {
             $smbPasswordTarget = "BRAVO_SMB_PASSWORD"
         }
         $storedSmbLogin = Get-BRAVOCredentialSecret -Target $smbLoginTarget
-        $storedSmbPassword = Get-BRAVOCredentialSecret -Target $smbPasswordTarget
+        # SecureString, не рядок: далі потрібен лише PSCredential, тому
+        # плейнтекст пароля SMB не створюється взагалі (аудит #5).
+        $storedSmbPassword = Get-BRAVOCredentialSecureSecret -Target $smbPasswordTarget
         if ([string]::IsNullOrWhiteSpace($storedSmbLogin)) {
             throw "запис Credential Manager '$smbLoginTarget' не знайдено або він порожній для $([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
         }
-        if ([string]::IsNullOrWhiteSpace($storedSmbPassword)) {
+        if ($null -eq $storedSmbPassword -or $storedSmbPassword.Length -eq 0) {
             throw "запис Credential Manager '$smbPasswordTarget' не знайдено або він порожній для $([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
         }
 
-        $script:smbCredential = New-BRAVOPlainTextCredential `
+        $script:smbCredential = New-BRAVOSecureCredential `
             -UserName ([string]$storedSmbLogin) `
-            -Password ([string]$storedSmbPassword)
+            -SecureSecret $storedSmbPassword
         $storedSmbLogin = $null
         $storedSmbPassword = $null
     } catch {

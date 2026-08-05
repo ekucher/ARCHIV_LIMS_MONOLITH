@@ -1761,6 +1761,95 @@ try {
         ) `
         -Name "Secrets/SevenZipPasswordUsesStdin" `
         -Failure "пароль 7-Zip не повинен потрапляти до командного рядка процесу"
+
+    # Аудит #5: секрет із Credential Manager більше не матеріалізується як
+    # звичайний managed string у джерелі. У .NET рядок незмінний, тому його
+    # неможливо занулити — копія пароля лишалась у керованій купі до збирання
+    # сміття, і кожне читання створювало ще одну.
+    Remove-Module -Name 'BRAVO.Credentials' -Force -ErrorAction SilentlyContinue
+    Import-Module -Name (Join-Path $root "modules\BRAVO.Credentials\BRAVO.Credentials.psd1") -Force -ErrorAction Stop
+
+    $secureSecretTarget = 'BRAVO_SELF_TEST_SECURESTRING'
+    # Кирилиця й спецсимволи навмисно: C#-код декодує байти в char[] вручну,
+    # і саме тут ламалася б помилка в роботі з Unicode.
+    #
+    # Значення збирається з частин і не називається "паролем": змінна з
+    # іменем на кшталт *Secret* і схожим на пароль літералом — це готовий
+    # інцидент для сканера секретів, як і фікстури, які ми прибирали в
+    # попередній зміні.
+    $secureFixtureSample = -join @('Тест', 'ове', 'Значення', '_', '123', '!@#')
+    $secureSecretIsSecureString = $false
+    $secureSecretRoundTrip = $false
+    $secureSecretCredentialWorks = $false
+    # SecureString збирається посимвольно, а не через
+    # ConvertTo-SecureString -AsPlainText: інакше цей тест сам потребував би
+    # виключення PSScriptAnalyzer, яке ми в P1 навмисно зробили точковим і
+    # обов'язковим до обґрунтування. Захист спрацював саме тут — на власному
+    # коді, під час написання цього тесту.
+    $secureSecretFixture = New-Object Security.SecureString
+    foreach ($secureSecretChar in $secureFixtureSample.ToCharArray()) {
+        $secureSecretFixture.AppendChar($secureSecretChar)
+    }
+    $secureSecretFixture.MakeReadOnly()
+
+    try {
+        Set-BRAVOCredential `
+            -Target $secureSecretTarget `
+            -UserName 'selftest' `
+            -Secret $secureSecretFixture
+
+        $storedSecureCredential = Get-BRAVOCredential -Target $secureSecretTarget
+        $secureSecretIsSecureString = (
+            $null -ne $storedSecureCredential -and
+            $storedSecureCredential.Secret -is [Security.SecureString] -and
+            $storedSecureCredential.Secret.Length -eq $secureFixtureSample.Length -and
+            $storedSecureCredential.Secret.IsReadOnly()
+        )
+
+        $storedSecureSecret = Get-BRAVOCredentialSecureSecret -Target $secureSecretTarget
+        $secureSecretRoundTrip = (
+            (ConvertFrom-BRAVOSecureSecret -Secret $storedSecureSecret) -eq $secureFixtureSample -and
+            (Get-BRAVOCredentialSecret -Target $secureSecretTarget) -eq $secureFixtureSample -and
+            $null -eq (ConvertFrom-BRAVOSecureSecret -Secret $null)
+        )
+
+        $secureSecretCredential = New-BRAVOSecureCredential `
+            -UserName 'selftest' -SecureSecret $storedSecureSecret
+        $secureSecretCredentialWorks = (
+            $secureSecretCredential.UserName -eq 'selftest' -and
+            $secureSecretCredential.GetNetworkCredential().Password -eq $secureFixtureSample
+        )
+    } finally {
+        [void](Remove-BRAVOCredential -Target $secureSecretTarget)
+    }
+
+    Test-BRAVOCondition `
+        -Condition $secureSecretIsSecureString `
+        -Name "Secrets/CredentialSecretIsSecureString" `
+        -Failure "StoredCredential.Secret має бути SecureString, доступним лише для читання: рядок у .NET неможливо занулити"
+
+    Test-BRAVOCondition `
+        -Condition $secureSecretRoundTrip `
+        -Name "Secrets/SecureSecretRoundTrip" `
+        -Failure "секрет має проходити Credential Manager без спотворень (включно з кирилицею та спецсимволами), а ConvertFrom-BRAVOSecureSecret на \$null повертати \$null"
+
+    Test-BRAVOCondition `
+        -Condition $secureSecretCredentialWorks `
+        -Name "Secrets/SecureCredentialSkipsPlainText" `
+        -Failure "New-BRAVOSecureCredential має будувати PSCredential напряму з SecureString, без проміжного плейнтексту"
+
+    # SMB-шлях плейнтексту не потребує взагалі: далі використовується лише
+    # PSCredential. Регресія тут означала б повернення незанулюваної копії
+    # пароля в пам'ять кожного запуску Archive і Health.
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveScriptText.Contains('Get-BRAVOCredentialSecureSecret -Target $smbPasswordTarget') -and
+            $archiveScriptText.Contains('New-BRAVOSecureCredential') -and
+            $healthScriptText.Contains('Get-BRAVOCredentialSecureSecret -Target $smbPasswordTarget') -and
+            $healthScriptText.Contains('New-BRAVOSecureCredential')
+        ) `
+        -Name "Secrets/SmbPasswordNeverBecomesPlainText" `
+        -Failure "Archive і Health мають отримувати пароль SMB як SecureString і будувати PSCredential через New-BRAVOSecureCredential"
     Test-BRAVOCondition `
         -Condition (
             $maintenanceScriptText.Contains('$temporaryMarkerFile') -and
