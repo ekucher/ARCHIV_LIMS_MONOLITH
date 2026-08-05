@@ -433,6 +433,178 @@ function Test-BRAVORuntimeSecuritySettings {
     return $result
 }
 
+##########
+# Захист від відкату на старішу версію комплекту (downgrade).
+#
+# Усі перевірки вище порівнюють комплект із його ВЛАСНИМ маніфестом.
+# Старий, коректно підписаний і внутрішньо узгоджений комплект пройде їх
+# бездоганно — разом із усіма вразливостями, які відтоді закрили, і без
+# перевірок, яких у ньому ще не існувало. Найпростіший спосіб вимкнути
+# режим Enforce — не ламати його, а розгорнути версію, де його не було.
+#
+# Тому сервер запам'ятовує найвищу версію, яку на ньому колись
+# запускали, і відмовляється виконувати старішу.
+#
+# ЧЕСНА МЕЖА: файл стану лежить поруч із логами, і той, хто має права
+# підмінити комплект, зазвичай має права й видалити цей файл. Перевірка
+# не робить відкат неможливим — вона робить його помітним і таким, що
+# потребує ще однієї свідомої дії. Проти випадкового відкату (розгорнули
+# не той архів) вона працює повністю.
+##########
+
+function Test-BRAVOVersionDowngrade {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$RuntimeRoot,
+        [Parameter(Mandatory = $true)][string]$StatePath,
+
+        # Ін'єкція для self-test.
+        [string]$VersionContent,
+        [string]$StateContent,
+
+        [ValidateSet('Enforce', 'Warn')][string]$Mode = 'Enforce',
+        [string]$AllowDowngrade,
+
+        # Self-test перевіряє логіку, не змінюючи стан машини.
+        [switch]$NoWrite
+    )
+
+    $result = New-Object PSObject -Property @{
+        IsValid = $true
+        Mode = $Mode
+        StatePath = $StatePath
+        DeployedVersion = $null
+        RecordedVersion = $null
+        Message = $null
+        ShouldBlock = $false
+        OverrideApplied = $false
+        StateUpdated = $false
+    }
+
+    if (-not $PSBoundParameters.ContainsKey('AllowDowngrade')) {
+        $AllowDowngrade = [System.Environment]::GetEnvironmentVariable('BRAVO_ALLOW_DOWNGRADE')
+    }
+
+    $versionRaw = $null
+    if ($PSBoundParameters.ContainsKey('VersionContent')) {
+        $versionRaw = $VersionContent
+    } else {
+        $versionPath = Join-Path $RuntimeRoot 'VERSION.json'
+        if ([System.IO.File]::Exists($versionPath)) {
+            try {
+                $versionRaw = [System.IO.File]::ReadAllText($versionPath, [System.Text.Encoding]::UTF8)
+            } catch {
+                $versionRaw = $null
+            }
+        }
+    }
+
+    # VERSION.json входить до RUNTIME_MANIFEST.json, тому його
+    # відсутність уже спіймана перевіркою цілісності вище. Тут вона
+    # означає лише, що порівнювати нема з чим.
+    if ([string]::IsNullOrWhiteSpace($versionRaw)) { return $result }
+
+    try {
+        $versionParsed = $versionRaw | ConvertFrom-Json
+        $deployedText = [string]$versionParsed.packageVersion
+        $deployed = [version]$deployedText
+    } catch {
+        return $result
+    }
+    $result.DeployedVersion = $deployed.ToString()
+
+    $stateRaw = $null
+    if ($PSBoundParameters.ContainsKey('StateContent')) {
+        $stateRaw = $StateContent
+    } elseif ([System.IO.File]::Exists($StatePath)) {
+        try {
+            $stateRaw = [System.IO.File]::ReadAllText($StatePath, [System.Text.Encoding]::UTF8)
+        } catch {
+            $stateRaw = $null
+        }
+    }
+
+    $recorded = $null
+    if (-not [string]::IsNullOrWhiteSpace($stateRaw)) {
+        try {
+            $stateParsed = $stateRaw | ConvertFrom-Json
+            if ($null -ne $stateParsed -and
+                $null -ne $stateParsed.PSObject.Properties['highestVersion']) {
+                $recorded = [version]([string]$stateParsed.highestVersion)
+            }
+        } catch {
+            # Пошкоджений файл стану НЕ блокує: на відміну від маніфеста,
+            # він не є еталоном довіри, і його втрата не мусить зупиняти
+            # backup. Наступний успішний запуск запише його наново.
+            $recorded = $null
+        }
+    }
+
+    if ($null -ne $recorded) { $result.RecordedVersion = $recorded.ToString() }
+
+    # Перший запуск або новіша версія — запам'ятовуємо й пропускаємо.
+    if ($null -eq $recorded -or $deployed -ge $recorded) {
+        if (-not $NoWrite -and ($null -eq $recorded -or $deployed -gt $recorded)) {
+            $sourceCommit = ''
+            try {
+                if ($null -ne $versionParsed.PSObject.Properties['sourceCommit']) {
+                    $sourceCommit = [string]$versionParsed.sourceCommit
+                }
+            } catch {
+                $sourceCommit = ''
+            }
+            $stateJson = (
+                '{{{0}  "highestVersion": "{1}",{0}  "sourceCommit": "{2}",{0}  "recordedAt": "{3}"{0}}}{0}'
+            ) -f [Environment]::NewLine,
+                 $deployed.ToString(),
+                 $sourceCommit,
+                 ([DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))
+            try {
+                $stateDirectory = [System.IO.Path]::GetDirectoryName($StatePath)
+                if (-not [System.IO.Directory]::Exists($stateDirectory)) {
+                    [void][System.IO.Directory]::CreateDirectory($stateDirectory)
+                }
+                [System.IO.File]::WriteAllText(
+                    $StatePath, $stateJson, (New-Object System.Text.UTF8Encoding($false)))
+                $result.StateUpdated = $true
+            } catch {
+                # Недоступний для запису каталог логів не мусить зупиняти
+                # backup — це діагностується окремо.
+                $result.StateUpdated = $false
+            }
+        }
+        return $result
+    }
+
+    $result.IsValid = $false
+
+    if ($AllowDowngrade -eq '1') {
+        $result.OverrideApplied = $true
+        $result.Message = (
+            "УВАГА: розгорнуто старішу версію комплекту ({0} замість {1}, яку вже запускали на цьому сервері). " +
+            "Продовжено через BRAVO_ALLOW_DOWNGRADE=1."
+        ) -f $result.DeployedVersion, $result.RecordedVersion
+        return $result
+    }
+
+    $result.ShouldBlock = ($Mode -eq 'Enforce')
+
+    $action = if ($Mode -eq 'Enforce') {
+        "Запуск заблоковано."
+    } else {
+        "Запуск продовжується (RuntimeIntegrityMode = Warn), але це слід перевірити."
+    }
+
+    $result.Message = (
+        "ВІДКАТ ВЕРСІЇ: розгорнуто {0}, тоді як на цьому сервері вже запускали {1}. {2} " +
+        "Старіший комплект проходить усі перевірки цілісності — разом із вразливостями, які " +
+        "відтоді закрили, і без перевірок, яких у ньому ще не існувало. Якщо відкат свідомий " +
+        "(наприклад, аварійне повернення на попередній реліз), встановіть BRAVO_ALLOW_DOWNGRADE=1."
+    ) -f $result.DeployedVersion, $result.RecordedVersion, $action
+
+    return $result
+}
+
 # Пряме виконання (не dot-source): виконати перевірку й повернути код.
 # Dot-source з entrypoint лише оголошує функції, нічого не виконуючи, —
 # так само, як це роблять runtime-файли модулів.
@@ -472,6 +644,21 @@ if ($MyInvocation.InvocationName -ne '.') {
         $color = if ($securityResult.ShouldBlock) { 'Red' } else { 'Yellow' }
         Write-Host $securityResult.Message -ForegroundColor $color
         if ($securityResult.ShouldBlock) { exit 34 }
+    }
+
+    # -NoWrite: ручний діагностичний запуск guard-а не повинен фіксувати
+    # версію як "запускали на цьому сервері". Інакше сама діагностика
+    # змінювала б стан, який вона перевіряє.
+    $versionResult = Test-BRAVOVersionDowngrade `
+        -RuntimeRoot $RuntimeRoot `
+        -StatePath (Join-Path $RuntimeRoot 'LOGS\BRAVO_VERSION_STATE.json') `
+        -Mode $Mode `
+        -NoWrite
+
+    if (-not $versionResult.IsValid) {
+        $versionColor = if ($versionResult.ShouldBlock) { 'Red' } else { 'Yellow' }
+        Write-Host $versionResult.Message -ForegroundColor $versionColor
+        if ($versionResult.ShouldBlock) { exit 35 }
     }
 
     exit 0

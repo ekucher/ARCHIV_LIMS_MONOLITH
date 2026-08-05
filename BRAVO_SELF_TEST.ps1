@@ -605,6 +605,14 @@ try {
             ) `
             -Name "ConfigSecurity/CheckedInEntryPoint/$entryPointName" `
             -Failure "$entryPointName має перевіряти перемикачі безпеки BRAVO.config і завершуватись кодом 34"
+
+        Test-BRAVOCondition `
+            -Condition (
+                $entryPointText.Contains('Test-BRAVOVersionDowngrade') -and
+                $entryPointText.Contains('exit 35')
+            ) `
+            -Name "VersionState/CheckedInEntryPoint/$entryPointName" `
+            -Failure "$entryPointName має перевіряти відкат версії й завершуватись кодом 35"
     }
 
     # Перевірка перемикачів безпеки в BRAVO.config. Конфігурація навмисно
@@ -683,6 +691,91 @@ try {
         -Condition ($securitySilent.IsValid -and -not $securitySilent.ShouldBlock) `
         -Name "ConfigSecurity/AbsentSettingsAreNotWeakening" `
         -Failure "конфігурація без цих налаштувань не повинна вважатися послабленою"
+
+    # Захист від відкату на старішу версію. Усі перевірки вище звіряють
+    # комплект із його ВЛАСНИМ маніфестом — старий комплект пройде їх
+    # бездоганно, разом із вразливостями, які відтоді закрили. Найпростіший
+    # спосіб вимкнути Enforce — розгорнути версію, де його не було.
+    function Test-BRAVODowngradeScenario {
+        param([string]$Deployed, [string]$Recorded, [string]$Allow = '', [string]$Mode = 'Enforce')
+        $parameters = @{
+            RuntimeRoot = $root
+            StatePath = 'synthetic'
+            VersionContent = ('{{"packageVersion": "{0}"}}' -f $Deployed)
+            Mode = $Mode
+            AllowDowngrade = $Allow
+            NoWrite = $true
+        }
+        if (-not [string]::IsNullOrEmpty($Recorded)) {
+            $parameters['StateContent'] = ('{{"highestVersion": "{0}"}}' -f $Recorded)
+        }
+        return (Test-BRAVOVersionDowngrade @parameters)
+    }
+
+    Test-BRAVOCondition `
+        -Condition (
+            (Test-BRAVODowngradeScenario -Deployed '4.3.0' -Recorded '').IsValid -and
+            (Test-BRAVODowngradeScenario -Deployed '4.3.0' -Recorded '4.3.0').IsValid -and
+            (Test-BRAVODowngradeScenario -Deployed '4.4.0' -Recorded '4.3.0').IsValid
+        ) `
+        -Name "VersionState/SameOrNewerVersionPasses" `
+        -Failure "перший запуск, та сама версія й новіша версія мають проходити без блокування"
+
+    $downgradeMajor = Test-BRAVODowngradeScenario -Deployed '4.2.0' -Recorded '4.3.0'
+    $downgradePatch = Test-BRAVODowngradeScenario -Deployed '4.3.0' -Recorded '4.3.1'
+    Test-BRAVOCondition `
+        -Condition (
+            -not $downgradeMajor.IsValid -and $downgradeMajor.ShouldBlock -and
+            -not $downgradePatch.IsValid -and $downgradePatch.ShouldBlock
+        ) `
+        -Name "VersionState/DowngradeBlocks" `
+        -Failure "розгортання старішої версії має блокувати запуск, включно з відкатом на один patch"
+
+    $downgradeOverride = Test-BRAVODowngradeScenario -Deployed '4.2.0' -Recorded '4.3.0' -Allow '1'
+    Test-BRAVOCondition `
+        -Condition (-not $downgradeOverride.ShouldBlock -and $downgradeOverride.OverrideApplied) `
+        -Name "VersionState/ExplicitOverrideAllowsDowngrade" `
+        -Failure "BRAVO_ALLOW_DOWNGRADE=1 має дозволяти аварійне повернення на попередній реліз"
+
+    # Файл стану — не еталон довіри, на відміну від маніфеста. Його втрата
+    # чи пошкодження не мусить зупиняти backup: наступний успішний запуск
+    # запише його наново.
+    $downgradeCorrupt = Test-BRAVOVersionDowngrade `
+        -RuntimeRoot $root -StatePath 'synthetic' `
+        -VersionContent '{"packageVersion": "4.3.0"}' `
+        -StateContent 'це не JSON' -Mode Enforce -AllowDowngrade '' -NoWrite
+    Test-BRAVOCondition `
+        -Condition ($downgradeCorrupt.IsValid -and -not $downgradeCorrupt.ShouldBlock) `
+        -Name "VersionState/CorruptStateDoesNotBlock" `
+        -Failure "пошкоджений файл стану версії не повинен зупиняти backup — він не є еталоном довіри"
+
+    # Повний цикл запису в ізольованому каталозі: перший запуск фіксує
+    # версію, після чого старіша вже блокується.
+    $versionStateRoot = Join-Path ([IO.Path]::GetTempPath()) ("BRAVO_VERSION_STATE_{0}" -f [guid]::NewGuid().ToString("N"))
+    try {
+        $versionStatePath = Join-Path $versionStateRoot 'LOGS\BRAVO_VERSION_STATE.json'
+        $firstRun = Test-BRAVOVersionDowngrade `
+            -RuntimeRoot $root -StatePath $versionStatePath `
+            -VersionContent '{"packageVersion": "4.3.0", "sourceCommit": "abc"}' `
+            -Mode Enforce -AllowDowngrade ''
+        $afterWrite = Test-BRAVOVersionDowngrade `
+            -RuntimeRoot $root -StatePath $versionStatePath `
+            -VersionContent '{"packageVersion": "4.2.0"}' `
+            -Mode Enforce -AllowDowngrade '' -NoWrite
+        Test-BRAVOCondition `
+            -Condition (
+                $firstRun.StateUpdated -and
+                (Test-Path -LiteralPath $versionStatePath -PathType Leaf) -and
+                $afterWrite.ShouldBlock -and
+                $afterWrite.RecordedVersion -eq '4.3.0'
+            ) `
+            -Name "VersionState/RecordsHighestVersionOnDisk" `
+            -Failure "перший запуск має записати найвищу версію, після чого старіша блокується"
+    } finally {
+        if (Test-Path -LiteralPath $versionStateRoot) {
+            Remove-Item -LiteralPath $versionStateRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 
     # Реальний BRAVO.config репозиторію мусить проходити власну перевірку.
     $securityRealConfig = Test-BRAVORuntimeSecuritySettings `
@@ -853,6 +946,16 @@ try {
         ) `
         -Name "ExitCodes/SecuritySettingsWeakenedPriority" `
         -Failure "послаблена конфігурація має давати код 34, бути нижчою за 33 і вищою за 32/20"
+
+    Test-BRAVOCondition `
+        -Condition (
+            (Resolve-BRAVOExitCode -VersionDowngradeBlocked) -eq 35 -and
+            (Get-BRAVOExitCodeName -Code 35) -eq "VersionDowngradeBlocked" -and
+            (Resolve-BRAVOExitCode -VersionDowngradeBlocked -ToolIntegrityViolation) -eq 35 -and
+            (Resolve-BRAVOExitCode -VersionDowngradeBlocked -SecuritySettingsWeakened) -eq 34
+        ) `
+        -Name "ExitCodes/VersionDowngradePriority" `
+        -Failure "відкат версії має давати код 35 і бути нижчим за 34 (там захист уже вимкнено)"
     Test-BRAVOCondition `
         -Condition (
             (Get-BRAVOExitCodeName -Code 0) -eq "Success" -and
@@ -2107,7 +2210,7 @@ try {
         # Кожен код контракту BRAVO.ExitCodes, який реально може побачити
         # оператор, повинен мати розділ у runbook. 0 і 10 — успішні, їх не
         # діагностують; решта означає, що щось потребує рішення людини.
-        $runbookCodes = @('20', '30', '31', '32', '33', '34', '40', '41', '50', '51', '60', '70', '90')
+        $runbookCodes = @('20', '30', '31', '32', '33', '34', '35', '40', '41', '50', '51', '60', '70', '90')
         $missingCodes = @(
             $runbookCodes | Where-Object { -not $operationsText.Contains("## ``$_`` —") }
         )

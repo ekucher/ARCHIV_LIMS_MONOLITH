@@ -42,6 +42,19 @@ if (Test-Path -LiteralPath $runtimeGuardPath -PathType Leaf) {
         Write-Host $securitySettings.Message -ForegroundColor $securityColor
         if ($securitySettings.ShouldBlock) { exit 34 }
     }
+
+    # Старіший комплект проходить усі перевірки вище — разом із
+    # вразливостями, які відтоді закрили. Найпростіший спосіб вимкнути
+    # Enforce — не зламати його, а розгорнути версію, де його не було.
+    $versionState = Test-BRAVOVersionDowngrade `
+        -RuntimeRoot $PSScriptRoot `
+        -StatePath (Join-Path $PSScriptRoot 'LOGS\BRAVO_VERSION_STATE.json') `
+        -Mode $runtimeIntegrityMode
+    if (-not $versionState.IsValid) {
+        $versionColor = if ($versionState.ShouldBlock) { 'Red' } else { 'Yellow' }
+        Write-Host $versionState.Message -ForegroundColor $versionColor
+        if ($versionState.ShouldBlock) { exit 35 }
+    }
 } else {
     Write-Host "КРИТИЧНА ПОМИЛКА: відсутній BRAVO_RUNTIME_GUARD.ps1 — цілісність комплекту не підтверджена" -ForegroundColor Red
     exit 33

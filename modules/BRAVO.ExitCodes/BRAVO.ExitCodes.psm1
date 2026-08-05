@@ -28,6 +28,7 @@ $script:BRAVOExitCodeNames = @{
     32 = "ToolIntegrityViolation"
     33 = "RuntimeIntegrityViolation"
     34 = "SecuritySettingsWeakened"
+    35 = "VersionDowngradeBlocked"
     40 = "LocalArchiveFailed"
     41 = "IntegrityTestFailed"
     50 = "SftpFailed"
@@ -46,6 +47,7 @@ function Resolve-BRAVOExitCode {
         [switch]$ToolIntegrityViolation,
         [switch]$RuntimeIntegrityViolation,
         [switch]$SecuritySettingsWeakened,
+        [switch]$VersionDowngradeBlocked,
         [switch]$LocalArchiveFailed,
         [switch]$IntegrityTestFailed,
         [switch]$SftpFailed,
@@ -74,6 +76,9 @@ function Resolve-BRAVOExitCode {
     # за все інше: доки перемикачі безпеки вимкнені, будь-який успішний
     # результат нижче означає менше, ніж здається.
     if ($SecuritySettingsWeakened) { return 34 }
+    # Відкат версії — нижче за послаблену конфігурацію: там захист уже
+    # вимкнено, тут лише розгорнуто старіший комплект.
+    if ($VersionDowngradeBlocked) { return 35 }
     if ($ToolIntegrityViolation) { return 32 }
     if ($LockBusy) { return 20 }
     if ($InvalidConfiguration) { return 30 }
