@@ -19,7 +19,31 @@ param(
 # завдання, той уже має права підмінити й сам маніфест.
 $runtimeGuardPath = Join-Path $PSScriptRoot 'BRAVO_RUNTIME_GUARD.ps1'
 if (Test-Path -LiteralPath $runtimeGuardPath -PathType Leaf) {
-    . $runtimeGuardPath
+    # Наявності файлу недостатньо: dot-source може не виконатися взагалі —
+    # ExecutionPolicy AllSigned без підпису, синтаксична помилка, блокування
+    # файлу. Раніше в цьому випадку скрипт мовчки йшов далі, а всі три
+    # перевірки нижче падали з CommandNotFound і НЕ зупиняли запуск —
+    # тобто найдешевшим способом вимкнути захист було не підібрати хеші, а
+    # зробити guard незавантажуваним. Fail-closed: не завантажився — не
+    # запускаємось.
+    try {
+        . $runtimeGuardPath
+    } catch {
+        Write-Host "КРИТИЧНА ПОМИЛКА: не вдалося завантажити BRAVO_RUNTIME_GUARD.ps1: $($_.Exception.Message)" -ForegroundColor Red
+        exit 33
+    }
+    # Окрема перевірка, бо помилка dot-source не завжди переривальна:
+    # guard міг «завантажитись» і не оголосити жодної функції.
+    foreach ($guardFunction in @(
+        'Test-BRAVORuntimeManifestIntegrity',
+        'Test-BRAVORuntimeSecuritySettings',
+        'Test-BRAVOVersionDowngrade'
+    )) {
+        if (-not (Get-Command -Name $guardFunction -CommandType Function -ErrorAction SilentlyContinue)) {
+            Write-Host "КРИТИЧНА ПОМИЛКА: BRAVO_RUNTIME_GUARD.ps1 не оголосив $guardFunction — цілісність комплекту не підтверджена" -ForegroundColor Red
+            exit 33
+        }
+    }
     $runtimeIntegrityMode = if ($env:BRAVO_RUNTIME_INTEGRITY_MODE -eq 'Warn') { 'Warn' } else { 'Enforce' }
     $runtimeIntegrity = Test-BRAVORuntimeManifestIntegrity `
         -RuntimeRoot $PSScriptRoot `
