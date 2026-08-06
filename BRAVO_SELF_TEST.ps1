@@ -3357,10 +3357,10 @@ try {
                 $autoDiscovery.BAZA_APP -eq (Join-Path $discoveryTestRoot "BAZA") -and
                 $autoDiscovery.BAZA_WWW -eq (Join-Path $discoveryTestRoot "webroot\www\BAZA") -and
                 $autoDiscovery.MODEL_PROJECT_FILE -eq (Join-Path $discoveryTestRoot "Model\lims") -and
-                $autoDiscovery.ARCHIV_ROOT -eq (Join-Path $discoveryTestRoot "ARCHIV")
+                $autoDiscovery.BACKUP_ROOT -eq (Join-Path $discoveryTestRoot "ARCHIV")
             ) `
             -Name "Discovery/ResolvesFromServiceAndIniWithoutOverride" `
-            -Failure "Resolve-BRAVOInstallationDiscovery має обчислювати BRAVO_ROOT/WEB_ROOT/MODEL_SOURCE/BLOG_SOURCE/BRAVOEXCH_SOURCE/BAZA_APP/BAZA_WWW/ARCHIV_ROOT із синтетичної служби й bravo.ini без жодного override"
+            -Failure "Resolve-BRAVOInstallationDiscovery має обчислювати BRAVO_ROOT/WEB_ROOT/MODEL_SOURCE/BLOG_SOURCE/BRAVOEXCH_SOURCE/BAZA_APP/BAZA_WWW/BACKUP_ROOT із синтетичної служби й bravo.ini без жодного override"
 
         $overriddenDiscovery = Resolve-BRAVOInstallationDiscovery `
             -LimsRoot $discoveryTestRoot `
@@ -3487,26 +3487,26 @@ try {
             -Name "Discovery/FallsBackNextToExecutableWhenSystemIniMissing" `
             -Failure "якщо bravo.ini немає в системному каталозі, Resolve-BRAVOInstallationDiscovery має fallback-ити на файл поруч з bravo.exe (зворотна сумісність)"
 
-        # ARCHIV_ROOT: підкаталог "ARCHIV" усередині BRAVO_ROOT, і той самий
+        # BACKUP_ROOT: підкаталог "ARCHIV" усередині BRAVO_ROOT, і той самий
         # override-механізм, що й решта Sources-полів.
         Test-BRAVOCondition `
-            -Condition ($autoDiscovery.ARCHIV_ROOT -eq (Join-Path $discoveryTestRoot "ARCHIV")) `
+            -Condition ($autoDiscovery.BACKUP_ROOT -eq (Join-Path $discoveryTestRoot "ARCHIV")) `
             -Name "Discovery/ArchivRootDerivedFromBravoRoot" `
-            -Failure "ARCHIV_ROOT має обчислюватись як підкаталог 'ARCHIV' усередині BRAVO_ROOT — каталогу встановлення служби BRAVO"
+            -Failure "BACKUP_ROOT має обчислюватись як підкаталог 'ARCHIV' усередині BRAVO_ROOT — каталогу встановлення служби BRAVO"
         $archivRootOverrideDiscovery = Resolve-BRAVOInstallationDiscovery `
             -LimsRoot $discoveryTestRoot `
             -BravoServiceName "BRAVO" `
             -BravoDisplayName "BRAVO Service" `
             -Services $syntheticServices `
             -SystemRoot $noSuchSystemRoot `
-            -DiscoverySettings @{ Sources = @{ ARCHIV_ROOT = "D:\Explicit\Backups" } }
+            -DiscoverySettings @{ Sources = @{ BACKUP_ROOT = "D:\Explicit\Backups" } }
         Test-BRAVOCondition `
             -Condition (
-                $archivRootOverrideDiscovery.ARCHIV_ROOT -eq "D:\Explicit\Backups" -and
-                [bool]$archivRootOverrideDiscovery.Overrides["ARCHIV_ROOT"]
+                $archivRootOverrideDiscovery.BACKUP_ROOT -eq "D:\Explicit\Backups" -and
+                [bool]$archivRootOverrideDiscovery.Overrides["BACKUP_ROOT"]
             ) `
             -Name "Discovery/ArchivRootOverrideWins" `
-            -Failure "явний discoverySettings.Sources.ARCHIV_ROOT override має перемагати над автоматично обчисленим підкаталогом BRAVO_ROOT"
+            -Failure "явний discoverySettings.Sources.BACKUP_ROOT override має перемагати над автоматично обчисленим підкаталогом BRAVO_ROOT"
 
         $missingSourceResult = [pscustomobject]@{
             MODEL_SOURCE = Join-Path $discoveryTestRoot "__DOES_NOT_EXIST__"
@@ -3582,7 +3582,7 @@ try {
             BRAVOEXCH_SOURCE = $autoDiscovery.BRAVOEXCH_SOURCE
             BAZA_APP = $autoDiscovery.BAZA_APP
             BAZA_WWW = $autoDiscovery.BAZA_WWW
-            ARCHIV_ROOT = $autoDiscovery.ARCHIV_ROOT
+            BACKUP_ROOT = $autoDiscovery.BACKUP_ROOT
         }
         $driftResult = @(Compare-BRAVODiscoveryBaseline -DiscoveryResult $driftedDiscovery -BaselinePath $baselineTestPath)
         $noBaselineYetResult = @(Compare-BRAVODiscoveryBaseline -DiscoveryResult $autoDiscovery -BaselinePath (Join-Path $discoveryTestRoot "__NO_SUCH_BASELINE__.json"))
@@ -3638,11 +3638,11 @@ try {
         -Condition (
             $bravoConfigTextForDiscovery.Contains('BravoDisplayName = "BRAVO Service"') -and
             [regex]::IsMatch($bravoConfigTextForDiscovery, '-BravoDisplayName\s+\(\[string\]\$maintenanceSettings\.Services\.BravoDisplayName\)') -and
-            $bravoConfigTextForDiscovery.Contains('$bravoDiscoveryResult.ARCHIV_ROOT') -and
+            $bravoConfigTextForDiscovery.Contains('$bravoDiscoveryResult.BACKUP_ROOT') -and
             [regex]::IsMatch($bravoConfigTextForDiscovery, '\$pathSettings\.BackupRoot\s+-eq\s+\$defaultArchiveRoot')
         ) `
         -Name "Discovery/ConfigUsesStrictBravoIdentityAndArchivRoot" `
-        -Failure "BRAVO.config має передавати -BravoDisplayName='BRAVO Service' у Resolve-BRAVOInstallationDiscovery і використовувати ARCHIV_ROOT як дефолт pathSettings.BackupRoot, лише якщо адміністратор не змінив його вручну"
+        -Failure "BRAVO.config має передавати -BravoDisplayName='BRAVO Service' у Resolve-BRAVOInstallationDiscovery і використовувати BACKUP_ROOT як дефолт pathSettings.BackupRoot, лише якщо адміністратор не змінив його вручну"
 
     # AUD-004 (аудит P0.4): restore drill. Читабельний і навіть SHA512/7za-
     # перевірений архів не доводить відновлюваність — Invoke-BRAVOSevenZipExtraction

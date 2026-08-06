@@ -1,7 +1,16 @@
 ﻿# Автоматичний Discovery джерел BRAVO: визначення BRAVO_ROOT/WEB_ROOT і
-# джерел MODEL/BLOG/BRAVOEXCH/BAZA_APP/BAZA_WWW за встановленими Windows-
-# службами та активним bravo.ini, з повним ручним перевизначенням через
-# BRAVO.config.
+# джерел MODEL/BLOG/BRAVOEXCH/BAZA_APP/BAZA_WWW/BACKUP_ROOT за встановленими
+# Windows-службами та активним bravo.ini, з повним ручним перевизначенням
+# через BRAVO.config.
+#
+# BRAVO_ROOT — каталог встановлення служби BRAVO (де лежить bravo.exe).
+# Не плутати з pathSettings.ArchiveRoot (BRAVO.config) — каталогом самого
+# скрипта резервного копіювання (де лежать Tools\/LOGS\/TOOLS_MANIFEST.json,
+# завжди поруч зі скриптом, ніколи не через Discovery). BACKUP_ROOT —
+# підкаталог "ARCHIV" усередині BRAVO_ROOT, дефолт для
+# pathSettings.BackupRoot (куди зберігаються самі архіви) — третє окреме
+# поняття, яке легко сплутати з двома першими через спільне слово
+# "ARCHIV"/"архів".
 #
 # Мінімальна підтримувана версія: Windows PowerShell 3.0.
 
@@ -441,14 +450,14 @@ function Resolve-BRAVOInstallationDiscovery {
         -DeriveFromIniValue $null `
         -LegacyFallbackPath (Join-Path $bravoRoot "BAZA")
 
-    # --- ARCHIV_ROOT: каталог збереження бекапів ---
+    # --- BACKUP_ROOT: каталог збереження бекапів ---
     # Джерело істини: каталог "ARCHIV" усередині шляху встановлення служби
     # BRAVO (той самий каталог, де лежить bravo.exe), а не LIMSRoot-
     # відносний шлях, яким користувались до Discovery. BRAVO.config
     # використовує це значення як дефолт pathSettings.BackupRoot, лише
     # якщо адміністратор не змінив BackupRoot вручну.
-    $archivRootResolved = Resolve-BRAVOSourceField `
-        -FieldName "ARCHIV_ROOT" -IniSection "__none__" -IniKey "__none__" `
+    $backupRootResolved = Resolve-BRAVOSourceField `
+        -FieldName "BACKUP_ROOT" -IniSection "__none__" -IniKey "__none__" `
         -DeriveFromIniValue $null `
         -LegacyFallbackPath $(
             if (-not [string]::IsNullOrWhiteSpace($bravoRoot)) {
@@ -537,7 +546,7 @@ function Resolve-BRAVOInstallationDiscovery {
         BRAVOEXCH_SOURCE = $bravoexchResolved.Value
         BAZA_APP = $bazaAppResolved.Value
         BAZA_WWW = $bazaWwwResolved.Value
-        ARCHIV_ROOT = $archivRootResolved.Value
+        BACKUP_ROOT = $backupRootResolved.Value
         Services = $allServices
         Overrides = $overrides
         Ambiguous = @{
@@ -553,7 +562,7 @@ function Resolve-BRAVOInstallationDiscovery {
             BRAVOEXCH = $bravoexchResolved.Reason
             BAZA_APP = $bazaAppResolved.Reason
             BAZA_WWW = $bazaWwwResolved.Reason
-            ARCHIV_ROOT = $archivRootResolved.Reason
+            BACKUP_ROOT = $backupRootResolved.Reason
         }
     }
 }
@@ -656,7 +665,7 @@ function Test-BRAVODiscoveryResult {
 
 $script:BRAVODiscoveryBaselineFields = @(
     'BRAVO_ROOT', 'WEB_ROOT', 'MODEL_SOURCE', 'BLOG_SOURCE',
-    'BRAVOEXCH_SOURCE', 'BAZA_APP', 'BAZA_WWW', 'ARCHIV_ROOT'
+    'BRAVOEXCH_SOURCE', 'BAZA_APP', 'BAZA_WWW', 'BACKUP_ROOT'
 )
 
 function Save-BRAVODiscoveryBaseline {
