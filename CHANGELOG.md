@@ -347,6 +347,40 @@
   скріншот користувача). `Write-BRAVOHeader -SuppressText` тепер
   пропускає ввесь вивід одразу — і текст, і резервування рядків.
 
+- **`BAZA_WWW` (бекап `{DocumentRoot}\BAZA` встановленого Apache) тепер
+  визначається автоматично, а не задається вручну.** `Resolve-BRAVOInstallationDiscovery`
+  шукає службу Apache2.4/Br-a-vo.web (той самий канал кандидатів, що й
+  раніше), знаходить її `httpd.exe`, читає `<ServerRoot>\conf\httpd.conf`
+  новим парсером `Get-BRAVOApacheDocumentRoot` і бере `DocumentRoot`
+  звідти — а не вгадує його з розташування `apache\`. Синхронізація
+  вмикається лише тоді, коли служба справді встановлена і `DocumentRoot`
+  вдалось прочитати; каталог на SFTP лишається `baza_www`, без змін.
+  `BRAVO.config` більше не містить окремої логіки пошуку (видалено
+  ~130-рядковий `Find-BRAVOWebBAZASource` з обходом предків і евристикою
+  "перша непорожня папка") — тепер це тонкий адаптер над результатом
+  Discovery.
+
+  Попутно знайдено й виправлено реальний баг, який виявився лише на
+  живій машині з дійсно встановленою службою Apache: `BRAVO.Discovery`
+  викликає `Get-BRAVOWmiInstance` (з `BRAVO.Compatibility`), не
+  імпортувавши цей модуль сам — і те, що виклик модуля-споживача
+  (наприклад, `BRAVO.Health.Runtime.ps1`) імпортує `BRAVO.Compatibility`
+  РАНІШЕ, не робить її функції видимими всередині чужого модуля: кожен
+  PowerShell-модуль має власний session state. Через це `WEB_ROOT` і
+  `BAZA_WWW` мовчки лишались порожніми на машині з реально запущеною
+  службою `Br-a-vo.web`, хоча той самий пошук служби прекрасно
+  спрацьовував поза модулем. Виправлено додаванням явного
+  `Import-Module BRAVO.Compatibility` на початку `BRAVO.Discovery.psm1`
+  — той самий патерн, що вже застосовано в `BRAVO.Notifications`,
+  `BRAVO.ArchiveRuntime`, `BRAVO.ArchiveHelpers`.
+
+  Закрито тестами `Discovery/ApacheDocumentRootParserReadsQuotedForwardSlashPath`,
+  `Discovery/ApacheDocumentRootParserIgnoresCommentedDirective`,
+  `Discovery/BazaWwwUsesHttpdConfDocumentRoot`. Підтверджено живим
+  прогоном `BRAVO_HEALTH.ps1` на машині з реальною службою
+  `Br-a-vo.web`: `WEB_ROOT`, `HttpdConfPath`, `BAZA_WWW` заповнюються
+  коректно зі справжнього `httpd.conf`.
+
 ## 4.4.2 — 2026-08-05
 
 Виправлення за результатами першого тестового розгортання на реальному

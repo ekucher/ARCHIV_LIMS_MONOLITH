@@ -3750,6 +3750,62 @@ try {
             -Name "Discovery/BazaAppFollowsIniInstallationRootNotBravoRootFallback" `
             -Failure "коли bravo.ini знайдено, а служби BRAVO немає, BAZA_APP має братись поруч із MODEL/BLOG з bravo.ini, а не поруч із LimsRoot-фолбеком BRAVO_ROOT"
 
+        # Мінімальний парсер httpd.conf: реальний зразок, наданий
+        # користувачем — DocumentRoot у лапках, слеші "/" (Apache на
+        # Windows традиційно пише шлях так, навіть коли сам процес — Win32).
+        $sampleHttpdConfContent = @(
+            '# приклад, наданий користувачем',
+            '',
+            'ServerRoot "c:/br-a-vo.web/apache"',
+            'Listen 80',
+            'DocumentRoot "c:/br-a-vo.web/www"',
+            '<Directory "c:/br-a-vo.web/www">',
+            '    Require all granted',
+            '</Directory>'
+        )
+        Test-BRAVOCondition `
+            -Condition (
+                (Get-BRAVOApacheDocumentRoot -Content $sampleHttpdConfContent) -eq 'c:\br-a-vo.web\www'
+            ) `
+            -Name "Discovery/ApacheDocumentRootParserReadsQuotedForwardSlashPath" `
+            -Failure "Get-BRAVOApacheDocumentRoot має правильно розбирати DocumentRoot у лапках зі слешами '/' (реальний формат httpd.conf) і конвертувати їх у '\'"
+        Test-BRAVOCondition `
+            -Condition (
+                $null -eq (Get-BRAVOApacheDocumentRoot -Content @('# DocumentRoot "c:/ignored"', 'Listen 80'))
+            ) `
+            -Name "Discovery/ApacheDocumentRootParserIgnoresCommentedDirective" `
+            -Failure "Get-BRAVOApacheDocumentRoot не повинен сприймати закоментовану директиву DocumentRoot"
+
+        # BAZA_WWW має братись САМЕ з DocumentRoot реального httpd.conf, а
+        # не з фолбек-здогадки "<WEB_ROOT>\www" — попередній тест вище
+        # (без httpd.conf на диску) уже перевірив саму здогадку; тут
+        # httpd.conf з'являється на диску вперше й має її перебити.
+        $fakeApacheConfDir = Join-Path $discoveryTestRoot "webroot\apache\conf"
+        [void][IO.Directory]::CreateDirectory($fakeApacheConfDir)
+        $fakeHttpdConfPath = Join-Path $fakeApacheConfDir "httpd.conf"
+        $fakeDocumentRoot = Join-Path $discoveryTestRoot "custom-web-root"
+        [IO.File]::WriteAllLines($fakeHttpdConfPath, @(
+            'ServerRoot "c:/br-a-vo.web/apache"',
+            ("DocumentRoot ""{0}""" -f $fakeDocumentRoot.Replace('\', '/'))
+        ))
+        $discoveryWithHttpdConf = Resolve-BRAVOInstallationDiscovery `
+            -LimsRoot $discoveryTestRoot `
+            -BravoServiceName "BRAVO" `
+            -WebServiceCandidates @("Apache2.4") `
+            -Services $syntheticServices `
+            -SystemRoot $noSuchSystemRoot
+        Test-BRAVOCondition `
+            -Condition (
+                $discoveryWithHttpdConf.HttpdConfPath -eq $fakeHttpdConfPath -and
+                $discoveryWithHttpdConf.BAZA_WWW -eq (Join-Path $fakeDocumentRoot "BAZA") -and
+                $discoveryWithHttpdConf.WebServiceName -eq "Apache2.4" -and
+                $discoveryWithHttpdConf.WebServiceExecutable -eq $fakeHttpdPath -and
+                $discoveryWithHttpdConf.Reasons.BAZA_WWW.Contains("httpd.conf") -and
+                $discoveryWithHttpdConf.Reasons.BAZA_WWW.Contains("DocumentRoot=$fakeDocumentRoot")
+            ) `
+            -Name "Discovery/BazaWwwUsesHttpdConfDocumentRoot" `
+            -Failure "BAZA_WWW має братись з DocumentRoot реального httpd.conf встановленої Apache-служби, а не з фолбек-здогадки <WEB_ROOT>\www"
+
         # Джерело істини — Service name ТА Display name одночасно.
         # Сторонній сервіс із Name="BRAVO", але іншим Display name (типова
         # підстава для помилкового спрацювання) не повинен визнаватись
