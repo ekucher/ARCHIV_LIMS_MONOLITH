@@ -2646,17 +2646,14 @@ if ($BravoWebMaintenanceEnabled -and (Test-Path $BRAVO_WEB_DIR)) {
     }
 }
 
-# Каталог розташування скрипта перевіряється окремо, а робочі шляхи
-# беруться зі спільної секції pathSettings у BRAVO.config.
-$scriptPath = $bravoScriptDirectory
-
-if ((Split-Path -Leaf $scriptPath) -ne "ARCHIV") {
-    $errorMessage = "ПОМИЛКА: Скрипт має запускатись лише з папки ARCHIV!"
-    "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $errorMessage" | Out-File "$env:TEMP\lims_error.log" -Append
-    Write-Host $errorMessage -ForegroundColor Red
-    exit 90
-}
-
+# Робочі шляхи беруться зі спільної секції pathSettings у BRAVO.config,
+# а не з імені каталогу скрипта. Раніше тут була жорстка вимога "каталог
+# скрипта має називатись буквально ARCHIV" — той самий крихкий здогад,
+# що вже прибрано з ArchiveRoot (pathSettings): він працював лише
+# випадково, коли комплект справді розгорнутий у теці з таким іменем, і
+# блокував Maintenance у будь-якому іншому розташуванні (наприклад,
+# git-чекаут з іменем репозиторію) без жодної реальної причини —
+# ArchiveRoot/LIMSRoot і так явно задані нижче.
 $ROOT_LIMS = [Environment]::ExpandEnvironmentVariables([string]$pathSettings.LIMSRoot)
 $ARCHIVE_ROOT = [Environment]::ExpandEnvironmentVariables([string]$pathSettings.ArchiveRoot)
 if ([string]::IsNullOrWhiteSpace($ROOT_LIMS) -or
