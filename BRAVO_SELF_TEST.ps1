@@ -1948,6 +1948,69 @@ try {
         -Name "Console/ArchiveLogsBazaLocalSource" `
         -Failure "лог-файл має показувати обране джерело локальної синхронізації BAZA (bazaPaths.Source) і причину вибору, коли вона увімкнена"
 
+    # Реальний випадок: WinSCP явно повідомляв "Error listing directory
+    # '/baza_app'. No such file or directory" — самі каталоги на SFTP
+    # ніколи не створювались. option batch continue навмисно: mkdir на
+    # вже наявному каталозі повертає помилку, а після першого успішного
+    # запуску каталоги вже існують щоразу — тому виклик не має впливати
+    # на підсумковий код завершення реальної передачі.
+    $sftpMkdirFunctionText = if ($archiveScriptText -match
+        '(?s)function Initialize-BRAVOSFTPRemoteDirectories \{.*?\n\}') {
+        $Matches[0]
+    } else {
+        ''
+    }
+    $sftpMkdirCallCount = @(
+        [regex]::Matches($archiveScriptText, 'Initialize-BRAVOSFTPRemoteDirectories\s+`')
+    ).Count
+    Test-BRAVOCondition `
+        -Condition (
+            -not [string]::IsNullOrWhiteSpace($sftpMkdirFunctionText) -and
+            $sftpMkdirFunctionText.Contains('option batch continue') -and
+            $sftpMkdirFunctionText.Contains('mkdir') -and
+            $sftpMkdirCallCount -eq 2
+        ) `
+        -Name "Console/ArchiveEnsuresSFTPDirectoriesBeforeTransfer" `
+        -Failure "Initialize-BRAVOSFTPRemoteDirectories (mkdir з option batch continue) має існувати й викликатись і в автоматичному потоці завантаження/синхронізації, і в ручній -SyncBAZA — інакше відсутні каталоги на SFTP і далі валять кожну передачу"
+
+    # $difference.Local з WinSCP CompareDirectories — це RemoteFileInfo
+    # навіть для локальної сторони порівняння, а не System.IO.FileInfo:
+    # .FullName на ньому немає, лише .FileName (той самий API, що вже
+    # коректно працює через $side.FileName у Health.Runtime.ps1). Реальний
+    # випадок: щойно створений на SFTP каталог /baza_app вперше зробив цю
+    # гілку досяжною — раніше порівняння падало на "каталог не знайдено"
+    # раніше, ніж доходило сюди.
+    # $localItem — не унікальна назва змінної в цьому файлі (та сама
+    # назва коректно використовує .FullName в Get-BAZARemoteNameCompatibilityIssues
+    # для звичайних Get-ChildItem-результатів) — тому перевірка обмежена
+    # саме тілом Get-BAZASFTPComparison, а не всім файлом.
+    $bazaComparisonFunctionText = if ($archiveScriptText -match
+        '(?s)function Get-BAZASFTPComparison \{.*?\n\}') {
+        $Matches[0]
+    } else {
+        ''
+    }
+    Test-BRAVOCondition `
+        -Condition (
+            -not [string]::IsNullOrWhiteSpace($bazaComparisonFunctionText) -and
+            -not [regex]::IsMatch($bazaComparisonFunctionText, '\$localItem\.FullName\b') -and
+            $bazaComparisonFunctionText.Contains("PSObject.Properties['FileName']")
+        ) `
+        -Name "Console/BazaComparisonReadsFileNameSafely" `
+        -Failure "Get-BAZASFTPComparison має читати ім'я локального елемента через .FileName (PSObject.Properties, безпечно під Set-StrictMode), а не через неіснуючий .FullName на WinSCP.RemoteFileInfo"
+
+    # -FileOnly існує лише на локальному шимі Write-Log (транслює його в
+    # Write-BRAVOLog -NoConsole) — сам Write-BRAVOLog такого параметра не
+    # має. Реальний випадок: аудит BAZA з 374 елементами вперше зробив
+    # цей цикл досяжним і одразу провалив весь runtime помилкою "A
+    # parameter cannot be found that matches parameter name 'FileOnly'" —
+    # два попередніх краші того самого аудиту (відсутній каталог, потім
+    # .FullName) не давали дійти сюди раніше.
+    Test-BRAVOCondition `
+        -Condition (-not [regex]::IsMatch($archiveScriptText, "Write-BRAVOLog[^\r\n]*-FileOnly\b")) `
+        -Name "Console/BazaAuditUsesNoConsoleNotFileOnly" `
+        -Failure "прямі виклики Write-BRAVOLog у Write-BAZASFTPComparisonAudit/Write-BAZARemoteNameCompatibilityAudit мають використовувати -NoConsole — -FileOnly існує лише на локальному шимі Write-Log і на Write-BRAVOLog падає з InputValidationError"
+
     # SMB-шлях плейнтексту не потребує взагалі: далі використовується лише
     # PSCredential. Регресія тут означала б повернення незанулюваної копії
     # пароля в пам'ять кожного запуску Archive і Health.

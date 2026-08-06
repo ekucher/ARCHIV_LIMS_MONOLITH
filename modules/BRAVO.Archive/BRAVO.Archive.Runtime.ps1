@@ -2249,14 +2249,26 @@ function Get-BAZASFTPComparison {
                 continue
             }
 
+            # $difference.Local — це WinSCP.RemoteFileInfo (навіть для
+            # локальної сторони порівняння), а не System.IO.FileInfo:
+            # .FullName на ньому немає взагалі, лише .FileName (те саме
+            # WinSCP CompareDirectories API, що вже коректно працює через
+            # $side.FileName у Health.Runtime.ps1). Під Set-StrictMode
+            # звернення до .FullName тут падало ще ДО порівняння з
+            # порожнім рядком — реальний випадок: щойно створений на SFTP
+            # каталог /baza_app зробив цю гілку вперше досяжною (раніше
+            # порівняння саме падало на "каталог не знайдено" раніше, ніж
+            # доходило сюди).
             $localItem = $difference.Local
             $localItemPath = if ($null -ne $localItem) {
-                [string]$localItem.FullName
+                $fileNameProperty = $localItem.PSObject.Properties['FileName']
+                if ($null -ne $fileNameProperty -and $null -ne $fileNameProperty.Value) {
+                    [string]$fileNameProperty.Value
+                } else {
+                    ""
+                }
             } else {
                 ""
-            }
-            if ([string]::IsNullOrWhiteSpace($localItemPath) -and $null -ne $localItem) {
-                $localItemPath = [string]$localItem.FileName
             }
             if (-not [string]::IsNullOrWhiteSpace($localItemPath) -and
                 -not [IO.Path]::IsPathRooted($localItemPath)) {
@@ -2349,10 +2361,16 @@ function Write-BAZASFTPComparisonAudit {
         } else {
             ""
         }
-        Write-BRAVOLog -Component 'SFTP' -Message "AUDIT $ComponentName $stageText [$itemType] [$($pendingFile.Reason)] $($pendingFile.Path)$sizeText" -Level $summaryLevel -FileOnly
+        # -FileOnly не існує на Write-BRAVOLog — це параметр локального шиму
+        # Write-Log (транслює його в -NoConsole). Реальний випадок: 374
+        # елементи в аудиті BAZA вперше зробили цей цикл досяжним і
+        # негайно провалили весь runtime помилкою "A parameter cannot be
+        # found that matches parameter name 'FileOnly'" — раніше сюди
+        # взагалі не доходило через попередні два краші того самого аудиту.
+        Write-BRAVOLog -Component 'SFTP' -Message "AUDIT $ComponentName $stageText [$itemType] [$($pendingFile.Reason)] $($pendingFile.Path)$sizeText" -Level $summaryLevel -NoConsole
     }
     foreach ($pendingFile in $incompatiblePendingFiles) {
-        Write-BRAVOLog -Component 'SFTP' -Message "AUDIT $ComponentName $stageText [ПРОПУЩЕНО: НЕСУМІСНЕ ІМ'Я] $($pendingFile.Path)" -Level "WARNING" -FileOnly
+        Write-BRAVOLog -Component 'SFTP' -Message "AUDIT $ComponentName $stageText [ПРОПУЩЕНО: НЕСУМІСНЕ ІМ'Я] $($pendingFile.Path)" -Level "WARNING" -NoConsole
     }
 }
 
@@ -2560,7 +2578,7 @@ function Write-BAZARemoteNameCompatibilityAudit {
     Write-BRAVOLog -Component 'SFTP' -Message "Перевiрка iмен ${ComponentName}: знайдено несумiсних iмен: $($issues.Count). Цi об'єкти буде пропущено; потрiбне скорочення локальних iмен" -Level "ERROR"
     foreach ($issue in $issues) {
         $itemType = if ($issue.IsDirectory) { "КАТАЛОГ" } else { "ФАЙЛ" }
-        Write-BRAVOLog -Component 'SFTP' -Message "AUDIT $ComponentName НЕСУМIСНЕ IМ'Я [$itemType] [довжина: $($issue.CharacterCount) символів; $($issue.Utf8ByteCount)/$($issue.MaximumUtf8Bytes) UTF-8 байт] $($issue.Path)" -Level "ERROR" -FileOnly
+        Write-BRAVOLog -Component 'SFTP' -Message "AUDIT $ComponentName НЕСУМIСНЕ IМ'Я [$itemType] [довжина: $($issue.CharacterCount) символів; $($issue.Utf8ByteCount)/$($issue.MaximumUtf8Bytes) UTF-8 байт] $($issue.Path)" -Level "ERROR" -NoConsole
     }
 
     # Notification failures must never stop the actual SFTP synchronization.
@@ -2776,6 +2794,101 @@ $examplesText
         Write-BRAVOLog -Component 'SFTP' -Message "Сповіщення про $($Issues.Count) несумісних імен $ComponentName відправлено у $($script:notificationProviderDisplayName)$chunkText" -Level "SUCCESS"
     } catch {
         Write-BRAVOLog -Component 'SFTP' -Message "Не вдалося відправити сповіщення про несумісні імена $ComponentName у $($script:notificationProviderDisplayName): $($_.Exception.Message)" -Level "ERROR"
+    }
+}
+
+function Initialize-BRAVOSFTPRemoteDirectories {
+    # Створює відсутні кореневі каталоги на SFTP (model/blog/bravoexch/
+    # baza_app/...) одним пакетним викликом WinSCP, перед тим як
+    # Send-FileViaWinSCP/Sync-FolderToSFTP спробують передати щось
+    # усередину них. Реальний випадок: WinSCP явно повідомляв "Error
+    # listing directory '/baza_app'. No such file or directory" — сам
+    # каталог просто ніколи не створювався на сервері.
+    #
+    # option batch continue навмисно: mkdir на вже наявному каталозі
+    # повертає помилку (а після першого успішного запуску каталоги вже
+    # існують щоразу), і Sync-FolderToSFTP окремо документує, що це
+    # звело б підсумковий $process.ExitCode до 1 навіть у режимі continue.
+    # Тому цей виклик — best-effort і НІКОЛИ не є джерелом істини про
+    # успіх/невдачу: реальний результат передачі перевіряють окремі
+    # виклики Send-FileViaWinSCP/Sync-FolderToSFTP після нього, які на
+    # це не зважають.
+    param(
+        [string]$WinSCPPath,
+        [string]$RepositorySFTPUrl,
+        [string]$HostKey,
+        [string[]]$RemoteDirectories
+    )
+
+    $normalizedDirectories = @(
+        $RemoteDirectories |
+            ForEach-Object { [string]$_ } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            ForEach-Object { "/" + $_.Replace("\", "/").Trim("/") } |
+            Where-Object { $_ -ne "/" } |
+            Select-Object -Unique
+    )
+    if ($normalizedDirectories.Count -eq 0) {
+        return
+    }
+    if (-not (Test-Path -Path $WinSCPPath -PathType Leaf)) {
+        Write-BRAVOLog -Component 'SFTP' -Message "WinSCP не знайдено: $WinSCPPath" -Level "WARNING"
+        return
+    }
+
+    Write-BRAVOLog -Component 'SFTP' -Message "Перевiрка/створення потрiбних каталогiв на SFTP: $($normalizedDirectories -join ', ')"
+
+    $mkdirCommands = ($normalizedDirectories | ForEach-Object { "mkdir `"$_`"" }) -join [Environment]::NewLine
+    $winscpCommand = @"
+option batch continue
+option confirm off
+open $RepositorySFTPUrl -hostkey=$HostKey -timeout=$sftpConnectionTimeoutSeconds
+$mkdirCommands
+exit
+"@
+
+    $tempScript = New-BRAVOWinSCPTemporaryScriptPath
+    try {
+        $winscpCommand | Out-File -FilePath $tempScript -Encoding $winSCPScriptEncoding -Force
+
+        $processInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $processInfo.FileName = $WinSCPPath
+        $processInfo.Arguments = "/ini=$winSCPIniPath /script=`"$tempScript`""
+        $processInfo.RedirectStandardOutput = $true
+        $processInfo.RedirectStandardError = $true
+        $processInfo.UseShellExecute = $false
+        $processInfo.CreateNoWindow = $true
+
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $processInfo
+        $winSCPAvailability = Test-BRAVOWinSCPAvailable -WinSCPPath $WinSCPPath
+        if (-not $winSCPAvailability.Available) {
+            Write-BRAVOLog -Component 'SFTP' -Message (Get-BRAVOWinSCPBusyMessage -Availability $winSCPAvailability -Operation "створення каталогiв на SFTP") -Level "WARNING"
+            return
+        }
+        $outputCapture = Start-BRAVOProcessOutputCapture -Process $process
+        $operationTimeoutSeconds = [math]::Max(1, [int]$backupMonitoring.SFTP.OperationTimeoutSeconds)
+        if (-not $process.WaitForExit($operationTimeoutSeconds * 1000)) {
+            try {
+                $process.Kill()
+                [void]$process.WaitForExit(5000)
+            } catch {
+                Write-BRAVOLog -Component 'SFTP' -Message "Не вдалося завершити WinSCP пiсля таймауту створення каталогiв: $($_.Exception.Message)" -Level "WARNING"
+            }
+        }
+        $capturedOutput = Complete-BRAVOProcessOutputCapture -Capture $outputCapture
+        $safeOutput = Get-SanitizedWinSCPDiagnostic -Text $capturedOutput.StandardOutput
+        if (-not [string]::IsNullOrWhiteSpace($safeOutput)) {
+            Write-BRAVOLog -Component 'SFTP' -Message "WinSCP вивiд (створення каталогiв): $safeOutput" -Level "DEBUG"
+        }
+    } catch {
+        Write-BRAVOLog -Component 'SFTP' -Message "Помилка пiд час створення каталогiв на SFTP: $($_.Exception.Message)" -Level "WARNING"
+    } finally {
+        try {
+            Remove-BRAVOWinSCPSensitiveTemporaryScript -Path $tempScript
+        } catch {
+            Write-BRAVOLog -Component 'SFTP' -Message "Не вдалося видалити тимчасовий скрипт: $($_.Exception.Message)" -Level "WARNING"
+        }
     }
 }
 
@@ -3230,6 +3343,12 @@ function Invoke-ManualBAZASFTPSynchronization {
         Write-BRAVOLog -Component 'SFTP' -Message "Ручну синхронiзацiю BAZA_APP / BAZA_WWW зупинено: не вдалося пiдключитися до SFTP" -Level "ERROR"
         return $false
     }
+
+    Initialize-BRAVOSFTPRemoteDirectories `
+        -WinSCPPath $winSCPPath `
+        -RepositorySFTPUrl $sftpUrl `
+        -HostKey $sftpHostKey `
+        -RemoteDirectories @($syncTargets | ForEach-Object { [string]$_.Destination })
 
     $syncFailed = $sourceConfigurationFailed
     $syncIndex = 0
@@ -3961,6 +4080,24 @@ function Main {
             Write-Log "Помилка пiдключення до SFTP - пропускаємо передачу" -Level "ERROR"
             $operationFailed = $true
         } else {
+            $requiredSFTPDirectories = @()
+            if ($sftpArchiveUploadEnabled) {
+                $requiredSFTPDirectories += @(
+                    $enabledArchives | ForEach-Object { [string]$sftpDirectories[$_.Type] }
+                )
+            }
+            if ($bazaSFTPSyncEnabled) {
+                $requiredSFTPDirectories += [string]$sftpDirectories.BAZA
+            }
+            if ($bazaWWWSFTPSyncEnabled) {
+                $requiredSFTPDirectories += [string]$sftpDirectories.BAZAWWW
+            }
+            Initialize-BRAVOSFTPRemoteDirectories `
+                -WinSCPPath $winSCPPath `
+                -RepositorySFTPUrl $sftpUrl `
+                -HostKey $sftpHostKey `
+                -RemoteDirectories $requiredSFTPDirectories
+
             if ($sftpArchiveUploadEnabled) {
                 $uploadSuccess = 0
                 $uploadQueue = @()

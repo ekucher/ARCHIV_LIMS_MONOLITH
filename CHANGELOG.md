@@ -235,6 +235,48 @@
   Закрито тестом
   `Discovery/BazaAppFollowsIniInstallationRootNotBravoRootFallback`.
 
+- **SFTP: скрипт тепер сам створює відсутні кореневі каталоги**
+  (`model`/`blog`/`bravoexch`/`baza_app`/...) замість того, щоб просто
+  падати. Реальний випадок: WinSCP явно повідомляв `Error listing
+  directory '/baza_app'. No such file or directory` — жоден із
+  каталогів на сервері ще не існував, і кожна передача (як окремих
+  файлів, так і синхронізація BAZA) провалювалася кодом 1.
+
+  Новий `Initialize-BRAVOSFTPRemoteDirectories` викликається одним
+  пакетним WinSCP-скриптом одразу після підтвердженого з'єднання, перед
+  Send-FileViaWinSCP/Sync-FolderToSFTP — і в автоматичному потоці, і в
+  ручній `-SyncBAZA`. `option batch continue` навмисно: `mkdir` на вже
+  наявному каталозі повертає помилку (а після першого успішного запуску
+  каталоги вже існують щоразу), тому виклик — best-effort і ніколи не є
+  джерелом істини про успіх; реальний результат перевіряють окремі
+  виклики передачі, які на це не зважають.
+
+  Це оголило два раніше недосяжні StrictMode-баги в самій `Sync-FolderToSFTP`
+  (аудит BAZA до цього завжди падав на "каталог не знайдено" ще до того,
+  як доходило до цього коду):
+  - `Get-BAZASFTPComparison` читав ім'я локального елемента порівняння
+    через `.FullName` — а `$difference.Local` з WinSCP `CompareDirectories`
+    це `WinSCP.RemoteFileInfo` (навіть для локальної сторони), а не
+    `System.IO.FileInfo`: такої властивості там немає взагалі, лише
+    `.FileName` (той самий API, що вже коректно працює через
+    `$side.FileName` у `BRAVO.Health.Runtime.ps1`).
+  - `Write-BAZASFTPComparisonAudit`/`Write-BAZARemoteNameCompatibilityAudit`
+    викликали `Write-BRAVOLog -FileOnly` — цей перемикач існує лише на
+    локальному шимі `Write-Log` (транслює його в `-NoConsole`), а сам
+    `Write-BRAVOLog` такого параметра не має і падає з
+    `InputValidationError`.
+
+  Перевірено живим прогоном на реальному SFTP (Hetzner Storage Box):
+  до фіксів — 0 з 6 файлів; після mkdir-фіксу — 6 з 6 файлів, але аудит
+  BAZA падав на `.FullName`; після `.FileName`-фіксу — падав на
+  `-FileOnly` при спробі залогувати 374 елементи аудиту; після всіх
+  трьох фіксів разом — `374 з 374` файлів BAZA синхронізовано,
+  `Каталог BAZA повнiстю синхронiзовано з /baza_app`.
+
+  Закрито тестами `Console/ArchiveEnsuresSFTPDirectoriesBeforeTransfer`,
+  `Console/BazaComparisonReadsFileNameSafely`,
+  `Console/BazaAuditUsesNoConsoleNotFileOnly`.
+
 ## 4.4.2 — 2026-08-05
 
 Виправлення за результатами першого тестового розгортання на реальному
