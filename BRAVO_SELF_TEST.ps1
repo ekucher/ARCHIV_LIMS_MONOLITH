@@ -1921,6 +1921,33 @@ try {
         -Name "Console/ArchiveCredentialSetupRunsAsIsolatedProcess" `
         -Failure "BRAVO_CREDENTIALS_SETUP.ps1 має запускатись окремим процесом (powershell.exe -File), а не &/dot-source: інакше він перезапише глобальний стан BRAVO.config поточного запуску Archive"
 
+    # Лог-файл мав показувати лише "УВIМКНЕНО"/"ВИМКНЕНО" для MODEL/BLOG/
+    # BAZA — без самого шляху оператор не міг перевірити, який каталог
+    # discovery (bravo.ini) реально обрав джерелом, не заглядаючи в код.
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveScriptText.Contains('if ([bool]$componentSettings.Archive.MODEL) {') -and
+            $archiveScriptText.Contains('Джерело MODEL: $($bravoDiscoveryResult.MODEL_SOURCE) ($($bravoDiscoveryResult.Reasons.MODEL))') -and
+            $archiveScriptText.Contains('Джерело MODEL не визначено: $($bravoDiscoveryResult.Reasons.MODEL)')
+        ) `
+        -Name "Console/ArchiveLogsModelSource" `
+        -Failure "лог-файл має показувати обране джерело MODEL (bravoDiscoveryResult.MODEL_SOURCE) і причину вибору, коли компонент увімкнено"
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveScriptText.Contains('if ([bool]$componentSettings.Archive.BLOG) {') -and
+            $archiveScriptText.Contains('Джерело BLOG: $($bravoDiscoveryResult.BLOG_SOURCE) ($($bravoDiscoveryResult.Reasons.BLOG))') -and
+            $archiveScriptText.Contains('Джерело BLOG не визначено: $($bravoDiscoveryResult.Reasons.BLOG)')
+        ) `
+        -Name "Console/ArchiveLogsBlogSource" `
+        -Failure "лог-файл має показувати обране джерело BLOG (bravoDiscoveryResult.BLOG_SOURCE) і причину вибору, коли компонент увімкнено"
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveScriptText.Contains('Джерело BAZA: $($bazaPaths.Source) ($($bravoDiscoveryResult.Reasons.BAZA_APP))') -and
+            $archiveScriptText.Contains('Джерело BAZA не визначено: $($bravoDiscoveryResult.Reasons.BAZA_APP)')
+        ) `
+        -Name "Console/ArchiveLogsBazaLocalSource" `
+        -Failure "лог-файл має показувати обране джерело локальної синхронізації BAZA (bazaPaths.Source) і причину вибору, коли вона увімкнена"
+
     # SMB-шлях плейнтексту не потребує взагалі: далі використовується лише
     # PSCredential. Регресія тут означала б повернення незанулюваної копії
     # пароля в пам'ять кожного запуску Archive і Health.

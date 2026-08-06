@@ -176,6 +176,20 @@
   `Console/ArchiveCredentialSetupUsesEnsureAndCurrentUserOnly`,
   `Console/ArchiveCredentialSetupRunsAsIsolatedProcess`.
 
+- **Лог-файл тепер показує обране джерело для MODEL/BLOG/BAZA**, а не
+  лише "УВIМКНЕНО"/"ВИМКНЕНО" як раніше. Секція `=== ОПЦIЇ СКРИПТА ===`
+  для кожного увімкненого компонента додатково виводить рядок
+  `Джерело <TYPE>: <шлях> (<причина>)`, де причина береться з
+  `bravoDiscoveryResult.Reasons` (наприклад, `bravo.ini [model]
+  MODEL=D:\LIMS-NEW\Model\lims` або `legacy fallback: ...`) — той самий
+  формат, що вже показує `BRAVO_SETUP.ps1 -ValidateOnly`. Якщо джерело
+  не вдалось визначити — `ERROR`-рядок з тією ж причиною замість
+  мовчазного `null`. BRAVOEXCH і BAZA WWW це вже мали (окремі блоки),
+  тепер симетрично й для MODEL/BLOG/BAZA.
+
+  Закрито тестами `Console/ArchiveLogsModelSource`,
+  `Console/ArchiveLogsBlogSource`, `Console/ArchiveLogsBazaLocalSource`.
+
 ## 4.4.2 — 2026-08-05
 
 Виправлення за результатами першого тестового розгортання на реальному

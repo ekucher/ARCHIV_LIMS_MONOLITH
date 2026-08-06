@@ -3512,6 +3512,23 @@ function Main {
     foreach ($archive in $archiveDefinitions) {
         Write-Log "Архiвацiя $($archive.Type): $(if ($archive.Enabled) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
     }
+    # Джерело показуємо для кожного увiмкненого компонента — інакше з
+    # самого лише "УВIМКНЕНО" не видно, який саме каталог реально обрано
+    # автоматичним discovery (bravo.ini) чи легасі-евристикою (BRAVOEXCH).
+    if ([bool]$componentSettings.Archive.MODEL) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$bravoDiscoveryResult.MODEL_SOURCE)) {
+            Write-Log "Джерело MODEL: $($bravoDiscoveryResult.MODEL_SOURCE) ($($bravoDiscoveryResult.Reasons.MODEL))" -NoTimestamp
+        } else {
+            Write-Log "Джерело MODEL не визначено: $($bravoDiscoveryResult.Reasons.MODEL)" -Level "ERROR" -NoTimestamp
+        }
+    }
+    if ([bool]$componentSettings.Archive.BLOG) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$bravoDiscoveryResult.BLOG_SOURCE)) {
+            Write-Log "Джерело BLOG: $($bravoDiscoveryResult.BLOG_SOURCE) ($($bravoDiscoveryResult.Reasons.BLOG))" -NoTimestamp
+        } else {
+            Write-Log "Джерело BLOG не визначено: $($bravoDiscoveryResult.Reasons.BLOG)" -Level "ERROR" -NoTimestamp
+        }
+    }
     if ([bool]$componentSettings.Archive.BRAVOEXCH) {
         if (-not [string]::IsNullOrWhiteSpace([string]$bravoExchSourceDirectory)) {
             Write-Log "Джерело BRAVOEXCH: $bravoExchSourceDirectory (вибрано автоматично)" -NoTimestamp
@@ -3520,6 +3537,13 @@ function Main {
         }
     }
     Write-Log "Локальна синхронiзацiя BAZA: $(if ($bazaLocalSyncEnabled) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
+    if ($bazaLocalSyncEnabled) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$bazaPaths.Source)) {
+            Write-Log "Джерело BAZA: $($bazaPaths.Source) ($($bravoDiscoveryResult.Reasons.BAZA_APP))" -NoTimestamp
+        } else {
+            Write-Log "Джерело BAZA не визначено: $($bravoDiscoveryResult.Reasons.BAZA_APP)" -Level "ERROR" -NoTimestamp
+        }
+    }
     Write-Log "Завантаження архiвiв на SFTP: $(if ($sftpArchiveUploadEnabled) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
     Write-Log "Синхронiзацiя BAZA на SFTP: $(if ($bazaSFTPSyncEnabled) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
     Write-Log "Синхронiзацiя BAZA WWW на SFTP: $(if ($bazaWWWSFTPSyncEnabled) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
