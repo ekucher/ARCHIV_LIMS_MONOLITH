@@ -560,7 +560,7 @@ try {
     if ($null -ne $componentSettings -and
         $null -ne $componentSettings.Synchronization) {
         $bazaSftpEnabled = [System.Convert]::ToBoolean(
-            $componentSettings.Synchronization.BAZASFTP
+            $componentSettings.Synchronization.BAZA_APP_SFTP
         )
     }
 
@@ -575,8 +575,8 @@ try {
             ExecutionTimeLimitHours = 2
         }
     } else {
-        # BAZA Sync не повинен запускатися, якщо SFTP-синхронізацію BAZA
-        # вимкнено у componentSettings.Synchronization.BAZASFTP.
+        # BAZA Sync не повинен запускатися, якщо SFTP-синхронізацію BAZA_APP
+        # вимкнено у componentSettings.Synchronization.BAZA_APP_SFTP.
         $schedulerSettings.BAZASync.Enabled = (
             [System.Convert]::ToBoolean($schedulerSettings.BAZASync.Enabled) -and
             $bazaSftpEnabled

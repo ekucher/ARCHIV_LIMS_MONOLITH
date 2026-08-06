@@ -381,6 +381,32 @@
   `Br-a-vo.web`: `WEB_ROOT`, `HttpdConfPath`, `BAZA_WWW` заповнюються
   коректно зі справжнього `httpd.conf`.
 
+- **Визначення BAZA обмежено рівно чотирма незалежними значеннями:
+  `BAZA_APP_SFTP`, `BAZA_WWW_SFTP`, `BAZA_APP_LOCAL`, `BAZA_WWW_LOCAL`.**
+  Раніше `componentSettings.Synchronization` називав ці прапорці
+  `BAZALocal`/`BAZASFTP`/`BAZAWWWSFTP` — бареве `BAZA` без суфікса
+  означало "APP", що легко сплутати з `BAZA WWW` при читанні коду чи
+  конфігурації. Перейменовано наскрізно (`BRAVO.config`, `BRAVO.Archive`,
+  `BRAVO.Health`, `BRAVO_DRY_RUN.ps1`, `BRAVO_SETUP.ps1`,
+  `BRAVO_CREDENTIALS_SETUP.ps1`, `BRAVO_TASKS_INSTALL.ps1`) разом із
+  похідними змінними (`bazaAppLocalSyncEnabled` тощо) і текстом логів
+  ("Синхронiзацiя BAZA APP на SFTP" замість голого "BAZA"). Discovery-поля
+  (`BAZA_APP`/`BAZA_WWW` — шляхи-джерела, не прапорці) і каталоги на SFTP
+  (`baza_app`/`baza_www`) не чіпались — вони й так уже однозначні.
+
+  **`BAZA_WWW_LOCAL` — нова функція**, а не просто перейменування: локальна
+  копія `BAZA_WWW` (`{DocumentRoot}\BAZA` встановленого Apache/Br-a-vo.web)
+  у каталог `BackupRoot\BAZA_WWW`, точно за тим самим принципом, що вже
+  давно робить `BAZA_APP_LOCAL` (`Sync-Folders` через robocopy). За
+  замовчуванням вимкнено (`$false`), як і `BAZA_APP_LOCAL`. Health отримав
+  той самий read-only `robocopy /L` контроль актуальності, що вже був для
+  `BAZA_APP_LOCAL` (спільна `Get-BAZALocalSyncHealthIssues`, раніше
+  `Get-BAZALocalHealthIssues`, з новим параметром `-Label`).
+
+  Закрито тестами `Discovery/ConfigDefinesExactlyFourBazaSyncFlags`,
+  `Discovery/ArchiveReadsExactlyFourBazaSyncFlags`,
+  `Console/ArchiveSyncsBazaWwwLocally`, `Health/BazaWwwLocalHealthCheckWired`.
+
 ## 4.4.2 — 2026-08-05
 
 Виправлення за результатами першого тестового розгортання на реальному

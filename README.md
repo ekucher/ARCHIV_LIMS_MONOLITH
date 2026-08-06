@@ -142,7 +142,8 @@ C:\LIMS\
     ├── MODEL\             локальні архіви
     ├── BLOG\
     ├── BRAVOEXCH\
-    └── BAZA\              локальна копія BAZA_APP, якщо ввімкнено
+    ├── BAZA\              локальна копія BAZA_APP, якщо ввімкнено (BAZA_APP_LOCAL)
+    └── BAZA_WWW\          локальна копія BAZA_WWW, якщо ввімкнено (BAZA_WWW_LOCAL)
 ```
 
 За замовчуванням `BRAVO.config` визначає `C:\LIMS` як батьківський каталог
@@ -172,16 +173,27 @@ C:\LIMS\
 
 - архівацію `MODEL`, `BLOG`, `BRAVOEXCH`;
 - завантаження архівів на SFTP;
-- синхронізацію основної `BAZA` на SFTP;
+- синхронізацію `BAZA_APP` на SFTP (`BAZA_APP_SFTP`);
+- синхронізацію `BAZA_WWW` на SFTP (`BAZA_WWW_SFTP`);
 - щоденний backup о `23:00`;
 - щоденне maintenance о `23:55`;
 - health-check кожні 240 хвилин, починаючи з `00:15`.
 
 Початково вимкнено:
 
-- локальну копію `BAZA`;
-- синхронізацію `BAZA WWW`;
+- локальну копію `BAZA_APP` (`BAZA_APP_LOCAL`);
+- локальну копію `BAZA_WWW` (`BAZA_WWW_LOCAL`);
 - копіювання архівів на SMB/NAS.
+
+Визначення BAZA обмежене рівно чотирма незалежними прапорцями в
+`componentSettings.Synchronization` — інших значень немає:
+
+| Прапорець | Джерело | Призначення |
+|---|---|---|
+| `BAZA_APP_SFTP` | `<BRAVO_ROOT>\BAZA` | SFTP-каталог `baza_app` |
+| `BAZA_APP_LOCAL` | `<BRAVO_ROOT>\BAZA` | локальна копія під `BackupRoot\BAZA` |
+| `BAZA_WWW_SFTP` | `{DocumentRoot}\BAZA` встановленого Apache/Br-a-vo.web | SFTP-каталог `baza_www` |
+| `BAZA_WWW_LOCAL` | `{DocumentRoot}\BAZA` встановленого Apache/Br-a-vo.web | локальна копія під `BackupRoot\BAZA_WWW` |
 
 Не вмикайте компонент, доки не задані його шлях, доступ і Credential Manager.
 Віддалені SFTP-каталоги `model`, `blog`, `bravoexch`, `baza_app` і `baza_www`

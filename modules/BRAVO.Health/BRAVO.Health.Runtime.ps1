@@ -271,12 +271,14 @@ function Test-BRAVOSettingEnabled {
     return ([string]$Value).Trim() -match '^(?i:true|1|yes|on)$'
 }
 
-$bazaLocalHealthEnabled = Test-BRAVOSettingEnabled `
-    -Value $componentSettings.Synchronization.BAZALocal
-$bazaSFTPHealthEnabled = Test-BRAVOSettingEnabled `
-    -Value $componentSettings.Synchronization.BAZASFTP
+$bazaAppLocalHealthEnabled = Test-BRAVOSettingEnabled `
+    -Value $componentSettings.Synchronization.BAZA_APP_LOCAL
+$bazaAppSFTPHealthEnabled = Test-BRAVOSettingEnabled `
+    -Value $componentSettings.Synchronization.BAZA_APP_SFTP
 $bazaWWWSFTPHealthEnabled = Test-BRAVOSettingEnabled `
-    -Value $componentSettings.Synchronization.BAZAWWWSFTP
+    -Value $componentSettings.Synchronization.BAZA_WWW_SFTP
+$bazaWWWLocalHealthEnabled = Test-BRAVOSettingEnabled `
+    -Value $componentSettings.Synchronization.BAZA_WWW_LOCAL
 
 $healthLogTimestamp = $healthCheckStarted.ToString($logFileDateFormat)
 $healthLogName = $backupMonitoring.LogFileNameTemplate -f $healthLogTimestamp
@@ -351,7 +353,7 @@ $script:sftpUrl = $null
 $sftpCredentialRequired = [bool]$backupMonitoring.SFTP.Enabled -and
     (([bool]$backupMonitoring.SFTP.CheckArchiveUploads -and [bool]$componentSettings.SFTP.ArchiveUpload) -or
     ([bool]$backupMonitoring.SFTP.CheckBAZASynchronization -and
-    ($bazaSFTPHealthEnabled -or $bazaWWWSFTPHealthEnabled)))
+    ($bazaAppSFTPHealthEnabled -or $bazaWWWSFTPHealthEnabled)))
 if ($sftpCredentialRequired -and $credentialHelperLoaded) {
     try {
         $sftpLoginTarget = [string]$credentialSettings.Targets.SFTPLogin
@@ -503,7 +505,7 @@ $script:BRAVOHealthNotificationStepEnabled = ($NotificationMode -ne 'none') -and
 # Середовище, керовані служби й локальні копії виконуються завжди.
 Initialize-BRAVOHealthSteps -Total (
     3 +
-    $(if ($bazaLocalHealthEnabled) { 1 } else { 0 }) +
+    $(if ($bazaAppLocalHealthEnabled -or $bazaWWWLocalHealthEnabled) { 1 } else { 0 }) +
     $(if ($script:BRAVOHealthSftpStepEnabled) { 1 } else { 0 }) +
     $(if ($script:BRAVOHealthSmbStepEnabled) { 1 } else { 0 }) +
     $(if ($script:BRAVOHealthNotificationStepEnabled) { 1 } else { 0 })
@@ -837,17 +839,28 @@ function Get-BackupHealthIssues {
     return @($issues)
 }
 
-function Get-BAZALocalHealthIssues {
-    if (-not $bazaLocalHealthEnabled) {
+function Get-BAZALocalSyncHealthIssues {
+    # Спільна read-only robocopy /L перевірка для обох незалежних локальних
+    # копій — BAZA_APP_LOCAL і BAZA_WWW_LOCAL. -Label потрапляє лише в текст
+    # повідомлень (наприклад "BAZA APP"/"BAZA WWW"), самої різної поведінки
+    # для компонентів немає.
+    param(
+        [bool]$Enabled,
+        [string]$SourcePath,
+        [string]$DestinationPath,
+        [string]$Label
+    )
+
+    if (-not $Enabled) {
         return @()
     }
 
-    $sourcePath = [string]$bazaPaths.Source
-    $destinationPath = [string]$bazaPaths.Destination
+    $sourcePath = [string]$SourcePath
+    $destinationPath = [string]$DestinationPath
     $issueBase = @{
         Kind = "LocalSynchronization"
-        Component = "Локальна BAZA"
-        FileName = "каталог BAZA"
+        Component = "Локальна $Label"
+        FileName = "каталог $Label"
         LastWriteTime = $null
         SizeBytes = $null
         DifferenceCount = $null
@@ -856,9 +869,19 @@ function Get-BAZALocalHealthIssues {
         Location = $destinationPath
     }
 
+    # BAZA_WWW джерело автовизначається через httpd.conf і може лишитись
+    # порожнім (службу не знайдено, DocumentRoot не прочитано) навіть коли
+    # локальну синхронізацію ввімкнено — Test-Path з порожнім -LiteralPath
+    # кидає виняток, тому перевіряємо це окремо, до першого звернення до диска.
+    if ([string]::IsNullOrWhiteSpace($sourcePath)) {
+        return @([pscustomobject]($issueBase + @{
+            Reason = "джерело $Label не визначено"
+        }))
+    }
+
     if (-not (Test-Path -LiteralPath $sourcePath -PathType Container)) {
         return @([pscustomobject]($issueBase + @{
-            Reason = "джерельний каталог BAZA не знайдено"
+            Reason = "джерельний каталог $Label не знайдено"
         }))
     }
 
@@ -871,21 +894,21 @@ function Get-BAZALocalHealthIssues {
             Select-Object -First 1
         if ($null -eq $firstSourceFile) {
             return @([pscustomobject]($issueBase + @{
-                Reason = "джерельний каталог BAZA порожній"
+                Reason = "джерельний каталог $Label порожній"
             }))
         }
     }
 
     if (-not (Test-Path -LiteralPath $destinationPath -PathType Container)) {
         return @([pscustomobject]($issueBase + @{
-            Reason = "локальну копію BAZA не знайдено"
+            Reason = "локальну копію $Label не знайдено"
         }))
     }
 
     $robocopyCommand = Get-Command -Name $robocopyPath -CommandType Application -ErrorAction SilentlyContinue
     if ($null -eq $robocopyCommand) {
         return @([pscustomobject]($issueBase + @{
-            Reason = "robocopy не знайдено; локальну BAZA не перевірено"
+            Reason = "robocopy не знайдено; локальну $Label не перевірено"
         }))
     }
 
@@ -923,7 +946,7 @@ function Get-BAZALocalHealthIssues {
                 Write-HealthLog "Не вдалося завершити robocopy після таймауту: $($_.Exception.Message)" -Level "DEBUG"
             }
             return @([pscustomobject]($issueBase + @{
-                Reason = "перевищено таймаут локальної перевірки BAZA ($timeoutSeconds сек.)"
+                Reason = "перевищено таймаут локальної перевірки $Label ($timeoutSeconds сек.)"
             }))
         }
 
@@ -940,16 +963,16 @@ function Get-BAZALocalHealthIssues {
         # синхронізація використовує /E, а не /MIR.
         if (($exitCode -band 5) -ne 0) {
             return @([pscustomobject]($issueBase + @{
-                Reason = "локальна копія BAZA неактуальна"
+                Reason = "локальна копія $Label неактуальна"
                 ExitCode = $exitCode
             }))
         }
 
-        Write-HealthLog "Локальна BAZA справна: $sourcePath відповідає $destinationPath" -Level "SUCCESS"
+        Write-HealthLog "Локальна $Label справна: $sourcePath відповідає $destinationPath" -Level "SUCCESS"
         return @()
     } catch {
         return @([pscustomobject]($issueBase + @{
-            Reason = "не вдалося порівняти локальну BAZA: $($_.Exception.Message)"
+            Reason = "не вдалося порівняти локальну $Label`: $($_.Exception.Message)"
         }))
     } finally {
         if ($process) {
@@ -2444,7 +2467,7 @@ function Get-SFTPHealthIssues {
     $checkArchives = [bool]$backupMonitoring.SFTP.CheckArchiveUploads -and
         [bool]$componentSettings.SFTP.ArchiveUpload
     $checkBAZA = [bool]$backupMonitoring.SFTP.CheckBAZASynchronization -and
-        $bazaSFTPHealthEnabled
+        $bazaAppSFTPHealthEnabled
     $checkBAZAWWW = [bool]$backupMonitoring.SFTP.CheckBAZASynchronization -and
         $bazaWWWSFTPHealthEnabled
 
@@ -2591,9 +2614,9 @@ function Get-SFTPHealthIssues {
     $folderSynchronizationChecks = @()
     if ($checkBAZA) {
         $folderSynchronizationChecks += [pscustomobject]@{
-            Name = "BAZA"
-            Component = "SFTP BAZA"
-            LocalPath = [string]$bazaPaths.Source
+            Name = "BAZA APP"
+            Component = "SFTP BAZA APP"
+            LocalPath = [string]$bazaAppPaths.Source
             RemotePath = Normalize-SFTPPath $sftpDirectories.BAZA
             DetectionError = $null
         }
@@ -2887,10 +2910,10 @@ function Get-SMBHealthIssues {
 
 function Get-EnabledBackupComponentNames {
     $componentNames = @()
-    if ($bazaLocalHealthEnabled -or $bazaSFTPHealthEnabled) {
+    if ($bazaAppLocalHealthEnabled -or $bazaAppSFTPHealthEnabled) {
         $componentNames += "BAZA_APP"
     }
-    if ($bazaWWWSFTPHealthEnabled) {
+    if ($bazaWWWSFTPHealthEnabled -or $bazaWWWLocalHealthEnabled) {
         $componentNames += "BAZA_WWW"
     }
     $componentNames += @(
@@ -3269,26 +3292,30 @@ function New-SlackAlertMessage {
         }
     }
 
-    $bazaLocalHealthy = $bazaLocalHealthEnabled -and
+    $bazaAppLocalHealthy = $bazaAppLocalHealthEnabled -and
         @($Issues | Where-Object {
-            $_.Component -eq "Локальна BAZA"
+            $_.Component -eq "Локальна BAZA APP"
         }).Count -eq 0
-    $bazaSFTPHealthy = [bool]$backupMonitoring.SFTP.Enabled -and
+    $bazaAppSFTPHealthy = [bool]$backupMonitoring.SFTP.Enabled -and
         [bool]$backupMonitoring.SFTP.CheckBAZASynchronization -and
-        $bazaSFTPHealthEnabled -and
+        $bazaAppSFTPHealthEnabled -and
         @($Issues | Where-Object {
-            $_.Component -eq "SFTP BAZA" -or $_.Kind -eq "SFTPConnection"
+            $_.Component -eq "SFTP BAZA APP" -or $_.Kind -eq "SFTPConnection"
         }).Count -eq 0
-    if ($bazaLocalHealthy -or $bazaSFTPHealthy) {
+    if ($bazaAppLocalHealthy -or $bazaAppSFTPHealthy) {
         $lines += ""
-        if ($bazaLocalHealthy -and $bazaSFTPHealthy) {
+        if ($bazaAppLocalHealthy -and $bazaAppSFTPHealthy) {
             $lines += ":white_check_mark: *BAZA_APP* — локальна копія та SFTP актуальні"
-        } elseif ($bazaLocalHealthy) {
+        } elseif ($bazaAppLocalHealthy) {
             $lines += ":white_check_mark: *BAZA_APP* — локальна копія актуальна"
         } else {
             $lines += ":white_check_mark: *BAZA_APP* — SFTP актуальна"
         }
     }
+    $bazaWWWLocalHealthy = $bazaWWWLocalHealthEnabled -and
+        @($Issues | Where-Object {
+            $_.Component -eq "Локальна BAZA WWW"
+        }).Count -eq 0
     $bazaWWWSFTPHealthy = [bool]$backupMonitoring.SFTP.Enabled -and
         [bool]$backupMonitoring.SFTP.CheckBAZASynchronization -and
         $bazaWWWSFTPHealthEnabled -and
@@ -3296,9 +3323,15 @@ function New-SlackAlertMessage {
             $_.Component -eq "SFTP BAZA WWW" -or
             $_.Kind -eq "SFTPConnection"
         }).Count -eq 0
-    if ($bazaWWWSFTPHealthy) {
+    if ($bazaWWWLocalHealthy -or $bazaWWWSFTPHealthy) {
         $lines += ""
-        $lines += ":white_check_mark: *BAZA_WWW* — SFTP актуальна"
+        if ($bazaWWWLocalHealthy -and $bazaWWWSFTPHealthy) {
+            $lines += ":white_check_mark: *BAZA_WWW* — локальна копія та SFTP актуальні"
+        } elseif ($bazaWWWLocalHealthy) {
+            $lines += ":white_check_mark: *BAZA_WWW* — локальна копія актуальна"
+        } else {
+            $lines += ":white_check_mark: *BAZA_WWW* — SFTP актуальна"
+        }
     }
 
     $lines += ""
@@ -3311,7 +3344,7 @@ function Get-BRAVOHealthDestinationSummary {
     # Status/IssueCount — зовнішній моніторинг не міг побачити "локальні
     # копії в порядку, а SFTP деградував" окремо від "усе зламано разом".
     # Кожен вхідний масив уже й так є результатом незалежного виклику
-    # (Get-BackupHealthIssues/Get-BAZALocalHealthIssues/Get-SFTPHealthIssues/
+    # (Get-BackupHealthIssues/Get-BAZALocalSyncHealthIssues/Get-SFTPHealthIssues/
     # Get-SMBHealthIssues) — жоден з них не перериває виконання інших при
     # відмові, тому тут лишається тільки звести їх у три прапорці, а не
     # виправляти саму послідовність перевірок.
@@ -3389,7 +3422,7 @@ function New-SlackSuccessMessage {
     }
     if ($backupMonitoring.SFTP.Enabled -and
         $backupMonitoring.SFTP.CheckBAZASynchronization -and
-        $bazaSFTPHealthEnabled) {
+        $bazaAppSFTPHealthEnabled) {
         $lines += ":arrows_counterclockwise: Синхронізація BAZA_APP з хмарою актуальна"
     }
     if ($backupMonitoring.SFTP.Enabled -and
@@ -3397,8 +3430,11 @@ function New-SlackSuccessMessage {
         $bazaWWWSFTPHealthEnabled) {
         $lines += ":arrows_counterclockwise: Синхронізація BAZA_WWW з хмарою актуальна"
     }
-    if ($bazaLocalHealthEnabled) {
+    if ($bazaAppLocalHealthEnabled) {
         $lines += ":arrows_counterclockwise: Локальна копія BAZA_APP актуальна"
+    }
+    if ($bazaWWWLocalHealthEnabled) {
+        $lines += ":arrows_counterclockwise: Локальна копія BAZA_WWW актуальна"
     }
     if ($backupMonitoring.SMB.Enabled -and
         $backupMonitoring.SMB.CheckArchiveCopies -and
@@ -3818,11 +3854,15 @@ if (-not $script:BRAVOToolManifest.IsValid) {
 } elseif (-not [string]::IsNullOrWhiteSpace([string]$script:BRAVOToolManifest.Message)) {
     Write-HealthLog $script:BRAVOToolManifest.Message -Level "WARNING"
 }
-$bazaLocalMode = if ($bazaLocalHealthEnabled) { "увімкнено" } else { "вимкнено" }
-$bazaSFTPMode = if ($bazaSFTPHealthEnabled) { "увімкнено" } else { "вимкнено" }
+$bazaAppLocalMode = if ($bazaAppLocalHealthEnabled) { "увімкнено" } else { "вимкнено" }
+$bazaAppSFTPMode = if ($bazaAppSFTPHealthEnabled) { "увімкнено" } else { "вимкнено" }
 $bazaWWWSFTPMode = if ($bazaWWWSFTPHealthEnabled) { "увімкнено" } else { "вимкнено" }
-Write-HealthLog "Перевірка BAZA: локальна копія = $bazaLocalMode; SFTP = $bazaSFTPMode; BAZA WWW SFTP = $bazaWWWSFTPMode"
-if ($bazaWWWSFTPHealthEnabled) {
+$bazaWWWLocalMode = if ($bazaWWWLocalHealthEnabled) { "увімкнено" } else { "вимкнено" }
+Write-HealthLog (
+    "Перевірка BAZA: BAZA_APP_LOCAL = $bazaAppLocalMode; BAZA_APP_SFTP = $bazaAppSFTPMode; " +
+    "BAZA_WWW_SFTP = $bazaWWWSFTPMode; BAZA_WWW_LOCAL = $bazaWWWLocalMode"
+)
+if ($bazaWWWSFTPHealthEnabled -or $bazaWWWLocalHealthEnabled) {
     if ($bazaWWWDetection.Success) {
         Write-HealthLog (
             "BAZA WWW визначено через службу $($bazaWWWDetection.ServiceName): " +
@@ -3865,17 +3905,25 @@ Write-BRAVOHealthStep `
     -Details (Get-BRAVOHealthStepDetails -IssueCount $localHealthIssues.Count)
 
 Write-BRAVOProgressPhase -Phase 'BAZA (локальна копія)' -PercentComplete 45
-$bazaLocalHealthIssues = if ($bazaLocalHealthEnabled) {
-    $bazaLocalResult = @(Get-BAZALocalHealthIssues)
+$bazaAppLocalHealthIssues = @(Get-BAZALocalSyncHealthIssues `
+    -Enabled $bazaAppLocalHealthEnabled `
+    -SourcePath $bazaAppPaths.Source `
+    -DestinationPath $bazaAppPaths.Destination `
+    -Label "BAZA APP")
+$bazaWWWLocalHealthIssues = @(Get-BAZALocalSyncHealthIssues `
+    -Enabled $bazaWWWLocalHealthEnabled `
+    -SourcePath $bazaWWWPaths.Source `
+    -DestinationPath $bazaWWWPaths.Destination `
+    -Label "BAZA WWW")
+$bazaLocalHealthIssues = @($bazaAppLocalHealthIssues) + @($bazaWWWLocalHealthIssues)
+if ($bazaAppLocalHealthEnabled -or $bazaWWWLocalHealthEnabled) {
     Write-BRAVOHealthStep `
         -Name 'BAZA (локальна копія)' `
-        -Status (Get-BRAVOHealthStepStatus -IssueCount $bazaLocalResult.Count) `
-        -Details (Get-BRAVOHealthStepDetails -IssueCount $bazaLocalResult.Count)
-    $bazaLocalResult
+        -Status (Get-BRAVOHealthStepStatus -IssueCount $bazaLocalHealthIssues.Count) `
+        -Details (Get-BRAVOHealthStepDetails -IssueCount $bazaLocalHealthIssues.Count)
 } else {
     # Лише у журнал: вимкнений компонент не займає рядка в консолі.
-    Write-HealthLog "Локальну перевірку BAZA пропущено: componentSettings.Synchronization.BAZALocal = `$false"
-    @()
+    Write-HealthLog "Локальну перевірку BAZA пропущено: BAZA_APP_LOCAL = `$false; BAZA_WWW_LOCAL = `$false"
 }
 
 Write-BRAVOProgressPhase -Phase 'SFTP' -PercentComplete 60

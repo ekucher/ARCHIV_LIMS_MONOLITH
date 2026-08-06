@@ -12,7 +12,7 @@ LOGS/
 # з Tools\TOOLS_MANIFEST.json (version-controlled, той трекається).
 Tools/TOOLS_INTEGRITY.json
 
-# Каталоги призначення бекапів (BRAVO.config: archiveDirs/bazaPaths) —
+# Каталоги призначення бекапів (BRAVO.config: archiveDirs/bazaAppPaths/bazaWWWPaths) —
 # створюються автоматично там, де реально лежить скрипт
 # (pathSettings.ArchiveRoot/BackupRoot типово = каталог самого скрипта).
 # При ручному запуску з робочої копії репозиторію це сам корінь
@@ -21,6 +21,7 @@ Tools/TOOLS_INTEGRITY.json
 /BLOG/
 /BRAVOEXCH/
 /BAZA/
+/BAZA_WWW/
 
 # Локальні налаштування IDE — особисті, не частина комплекту
 .vscode/

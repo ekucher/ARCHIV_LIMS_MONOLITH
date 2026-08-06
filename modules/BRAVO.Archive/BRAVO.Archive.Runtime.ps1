@@ -171,8 +171,8 @@ $script:notificationRequestTimeoutSeconds = if ($null -ne $bravoSettings.Notific
 }
 $sftpCredentialRequired = $SyncBAZA -or
     [bool]$componentSettings.SFTP.ArchiveUpload -or
-    [bool]$componentSettings.Synchronization.BAZASFTP -or
-    [bool]$componentSettings.Synchronization.BAZAWWWSFTP
+    [bool]$componentSettings.Synchronization.BAZA_APP_SFTP -or
+    [bool]$componentSettings.Synchronization.BAZA_WWW_SFTP
 $smbCredentialRequired = -not $SyncBAZA -and
     [bool]$componentSettings.SMB.ArchiveCopy
 $archiveCredentialRequired = -not $SyncBAZA -and (
@@ -1693,20 +1693,20 @@ function Test-SFTPConfig {
         }
     }
 
-    if ($BAZAOnly -or $componentSettings.Synchronization.BAZASFTP) {
+    if ($BAZAOnly -or $componentSettings.Synchronization.BAZA_APP_SFTP) {
         if (-not $sftpDirectories.ContainsKey("BAZA") -or [string]::IsNullOrWhiteSpace($sftpDirectories.BAZA)) {
             $configurationErrors += "не встановлено SFTP каталог для BAZA"
         }
     }
-    if ($componentSettings.Synchronization.BAZAWWWSFTP) {
+    if ($componentSettings.Synchronization.BAZA_WWW_SFTP) {
         if (-not $sftpDirectories.ContainsKey("BAZAWWW") -or
             [string]::IsNullOrWhiteSpace($sftpDirectories.BAZAWWW)) {
             $configurationErrors += "не встановлено SFTP каталог для BAZA WWW"
         }
     }
     if ($BAZAOnly -or
-        $componentSettings.Synchronization.BAZASFTP -or
-        $componentSettings.Synchronization.BAZAWWWSFTP) {
+        $componentSettings.Synchronization.BAZA_APP_SFTP -or
+        $componentSettings.Synchronization.BAZA_WWW_SFTP) {
         if ([string]$sftpSynchronizationOptions -match '(?i)(^|\s)-delete(\s|$)') {
             $configurationErrors += "опція -delete заборонена для BAZA: віддалені файли мають зберігатися для відновлення"
         }
@@ -3293,11 +3293,11 @@ function Invoke-ManualBAZASFTPSynchronization {
 
     $syncTargets = @()
     $sourceConfigurationFailed = $false
-    if ([bool]$componentSettings.Synchronization.BAZASFTP) {
-        if (Test-PathWithLog -Path $bazaPaths.Source -Description "Каталог BAZA_APP" -CreateIfMissing $false) {
+    if ([bool]$componentSettings.Synchronization.BAZA_APP_SFTP) {
+        if (Test-PathWithLog -Path $bazaAppPaths.Source -Description "Каталог BAZA_APP" -CreateIfMissing $false) {
             $syncTargets += [pscustomobject]@{
                 Name = "BAZA_APP"
-                Source = [string]$bazaPaths.Source
+                Source = [string]$bazaAppPaths.Source
                 Destination = [string]$sftpDirectories.BAZA
             }
         } else {
@@ -3305,7 +3305,7 @@ function Invoke-ManualBAZASFTPSynchronization {
             Write-BRAVOLog -Component 'SFTP' -Message "Ручну синхронізацію BAZA_APP пропущено: локальний каталог недоступний" -Level "ERROR"
         }
     }
-    if ([bool]$componentSettings.Synchronization.BAZAWWWSFTP) {
+    if ([bool]$componentSettings.Synchronization.BAZA_WWW_SFTP) {
         if ($bazaWWWDetection.Success -and
             -not [string]::IsNullOrWhiteSpace([string]$bazaWWWPaths.Source) -and
             (Test-PathWithLog -Path $bazaWWWPaths.Source -Description "Каталог BAZA_WWW" -CreateIfMissing $false)) {
@@ -3321,7 +3321,7 @@ function Invoke-ManualBAZASFTPSynchronization {
         }
     }
     if ($syncTargets.Count -eq 0) {
-        Write-BRAVOLog -Component 'SFTP' -Message "Ручну синхронізацію скасовано: BAZASFTP і BAZAWWWSFTP вимкнені або їхні джерела недоступні" -Level "ERROR"
+        Write-BRAVOLog -Component 'SFTP' -Message "Ручну синхронізацію скасовано: BAZA_APP_SFTP і BAZA_WWW_SFTP вимкнені або їхні джерела недоступні" -Level "ERROR"
         return $false
     }
 
@@ -3543,14 +3543,15 @@ function Main {
     $enabledArchives = @($archiveDefinitions | Where-Object { $_.Enabled })
     $readyArchives = @()
     $results = @{}
-    $bazaLocalSyncEnabled = [bool]$componentSettings.Synchronization.BAZALocal
-    $bazaSFTPSyncEnabled = [bool]$componentSettings.Synchronization.BAZASFTP
-    $bazaWWWSFTPSyncEnabled = [bool]$componentSettings.Synchronization.BAZAWWWSFTP
+    $bazaAppLocalSyncEnabled = [bool]$componentSettings.Synchronization.BAZA_APP_LOCAL
+    $bazaAppSFTPSyncEnabled = [bool]$componentSettings.Synchronization.BAZA_APP_SFTP
+    $bazaWWWSFTPSyncEnabled = [bool]$componentSettings.Synchronization.BAZA_WWW_SFTP
+    $bazaWWWLocalSyncEnabled = [bool]$componentSettings.Synchronization.BAZA_WWW_LOCAL
     $sftpArchiveUploadEnabled = [bool]$componentSettings.SFTP.ArchiveUpload
     $smbArchiveCopyEnabled = [bool]$componentSettings.SMB.ArchiveCopy
     $sftpTransferEnabled = (
         $sftpArchiveUploadEnabled -or
-        $bazaSFTPSyncEnabled -or
+        $bazaAppSFTPSyncEnabled -or
         $bazaWWWSFTPSyncEnabled
     )
     $operationFailed = $false
@@ -3655,18 +3656,19 @@ function Main {
             Write-Log "Джерело BRAVOEXCH не знайдено: жоден із каталогів не існує або не містить файлів: $($bravoExchSourceCandidates -join '; ')" -Level "ERROR" -NoTimestamp
         }
     }
-    Write-Log "Локальна синхронiзацiя BAZA: $(if ($bazaLocalSyncEnabled) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
-    if ($bazaLocalSyncEnabled) {
-        if (-not [string]::IsNullOrWhiteSpace([string]$bazaPaths.Source)) {
-            Write-Log "Джерело BAZA: $($bazaPaths.Source) ($($bravoDiscoveryResult.Reasons.BAZA_APP))" -NoTimestamp
+    Write-Log "Локальна синхронiзацiя BAZA APP: $(if ($bazaAppLocalSyncEnabled) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
+    if ($bazaAppLocalSyncEnabled) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$bazaAppPaths.Source)) {
+            Write-Log "Джерело BAZA APP: $($bazaAppPaths.Source) ($($bravoDiscoveryResult.Reasons.BAZA_APP))" -NoTimestamp
         } else {
-            Write-Log "Джерело BAZA не визначено: $($bravoDiscoveryResult.Reasons.BAZA_APP)" -Level "ERROR" -NoTimestamp
+            Write-Log "Джерело BAZA APP не визначено: $($bravoDiscoveryResult.Reasons.BAZA_APP)" -Level "ERROR" -NoTimestamp
         }
     }
     Write-Log "Завантаження архiвiв на SFTP: $(if ($sftpArchiveUploadEnabled) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
-    Write-Log "Синхронiзацiя BAZA на SFTP: $(if ($bazaSFTPSyncEnabled) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
+    Write-Log "Синхронiзацiя BAZA APP на SFTP: $(if ($bazaAppSFTPSyncEnabled) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
     Write-Log "Синхронiзацiя BAZA WWW на SFTP: $(if ($bazaWWWSFTPSyncEnabled) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
-    if ($bazaWWWSFTPSyncEnabled) {
+    Write-Log "Локальна синхронiзацiя BAZA WWW: $(if ($bazaWWWLocalSyncEnabled) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
+    if ($bazaWWWSFTPSyncEnabled -or $bazaWWWLocalSyncEnabled) {
         if ($bazaWWWDetection.Success) {
             Write-Log (
                 "Джерело BAZA WWW: $($bazaWWWPaths.Source); " +
@@ -3824,22 +3826,23 @@ function Main {
         }
     }
 
-    $bazaSourceAvailable = $true
-    $bazaDestinationAvailable = $true
-    if ($bazaLocalSyncEnabled -or $bazaSFTPSyncEnabled) {
-        $bazaSourceAvailable = Test-PathWithLog `
-            -Path $bazaPaths.Source `
-            -Description "Каталог BAZA" `
+    $bazaAppSourceAvailable = $true
+    $bazaAppDestinationAvailable = $true
+    if ($bazaAppLocalSyncEnabled -or $bazaAppSFTPSyncEnabled) {
+        $bazaAppSourceAvailable = Test-PathWithLog `
+            -Path $bazaAppPaths.Source `
+            -Description "Каталог BAZA APP" `
             -CreateIfMissing $false
     }
-    if ($bazaLocalSyncEnabled) {
-        $bazaDestinationAvailable = Test-PathWithLog `
-            -Path $bazaPaths.Destination `
-            -Description "Каталог архiву BAZA" `
+    if ($bazaAppLocalSyncEnabled) {
+        $bazaAppDestinationAvailable = Test-PathWithLog `
+            -Path $bazaAppPaths.Destination `
+            -Description "Каталог архiву BAZA APP" `
             -CreateIfMissing $true
     }
     $bazaWWWSourceAvailable = $true
-    if ($bazaWWWSFTPSyncEnabled) {
+    $bazaWWWDestinationAvailable = $true
+    if ($bazaWWWSFTPSyncEnabled -or $bazaWWWLocalSyncEnabled) {
         if ($bazaWWWDetection.Success -and
             -not [string]::IsNullOrWhiteSpace([string]$bazaWWWPaths.Source)) {
             $bazaWWWSourceAvailable = Test-PathWithLog `
@@ -3851,13 +3854,20 @@ function Main {
             $bazaWWWSourceAvailable = $false
         }
     }
+    if ($bazaWWWLocalSyncEnabled) {
+        $bazaWWWDestinationAvailable = Test-PathWithLog `
+            -Path $bazaWWWPaths.Destination `
+            -Description "Каталог архiву BAZA WWW" `
+            -CreateIfMissing $true
+    }
 
     $allPathsExist = (
         $basePathsAvailable -and
         $readyArchives.Count -eq $enabledArchives.Count -and
-        $bazaSourceAvailable -and
-        $bazaDestinationAvailable -and
-        $bazaWWWSourceAvailable
+        $bazaAppSourceAvailable -and
+        $bazaAppDestinationAvailable -and
+        $bazaWWWSourceAvailable -and
+        $bazaWWWDestinationAvailable
     )
     Show-PathCheckSummary -CheckedPaths $requiredPaths -AllPathsExist $allPathsExist
     Write-BRAVOArchiveStep `
@@ -3865,24 +3875,44 @@ function Main {
         -Status $(if ($allPathsExist) { 'OK' } else { 'ERROR' }) `
         -Details $(if ($allPathsExist) { '' } else { 'Частина шляхів недоступна; деталі у журналі.' })
 
-    # Синхронізація BAZA
-    if ($bazaLocalSyncEnabled -and $bazaSourceAvailable -and $bazaDestinationAvailable) {
-        Show-ScriptProgress -Status "Локальна синхронiзацiя BAZA" -PercentComplete 20
+    # Синхронізація BAZA APP
+    if ($bazaAppLocalSyncEnabled -and $bazaAppSourceAvailable -and $bazaAppDestinationAvailable) {
+        Show-ScriptProgress -Status "Локальна синхронiзацiя BAZA APP" -PercentComplete 20
         Write-Log "==="
-        Write-Log "=== СИНХРОНIЗАЦIЯ BAZA ==="
-        $syncSuccess = Sync-Folders -SourcePath $bazaPaths.Source -DestinationPath $bazaPaths.Destination
+        Write-Log "=== СИНХРОНIЗАЦIЯ BAZA APP ==="
+        $syncSuccess = Sync-Folders -SourcePath $bazaAppPaths.Source -DestinationPath $bazaAppPaths.Destination
 
         if ($syncSuccess) {
-            Write-Log "Синхронiзацiя BAZA успiшна" -Level "SUCCESS"
+            Write-Log "Синхронiзацiя BAZA APP успiшна" -Level "SUCCESS"
         } else {
-            Write-Log "Помилка синхронiзацiї BAZA - архiвацiя може бути неповною" -Level "WARNING"
+            Write-Log "Помилка синхронiзацiї BAZA APP - архiвацiя може бути неповною" -Level "WARNING"
             $operationFailed = $true
         }
-    } elseif ($bazaLocalSyncEnabled) {
-        Write-Log "Локальну синхронiзацiю BAZA пропущено через помилку шляху" -Level "ERROR"
+    } elseif ($bazaAppLocalSyncEnabled) {
+        Write-Log "Локальну синхронiзацiю BAZA APP пропущено через помилку шляху" -Level "ERROR"
         $operationFailed = $true
     } else {
-        Write-Log "Локальну синхронiзацiю BAZA вимкнено в конфiгурацiї" -Level "INFO"
+        Write-Log "Локальну синхронiзацiю BAZA APP вимкнено в конфiгурацiї" -Level "INFO"
+    }
+
+    # Синхронізація BAZA WWW (локальна копія)
+    if ($bazaWWWLocalSyncEnabled -and $bazaWWWSourceAvailable -and $bazaWWWDestinationAvailable) {
+        Show-ScriptProgress -Status "Локальна синхронiзацiя BAZA WWW" -PercentComplete 20
+        Write-Log "==="
+        Write-Log "=== СИНХРОНIЗАЦIЯ BAZA WWW ==="
+        $syncSuccess = Sync-Folders -SourcePath $bazaWWWPaths.Source -DestinationPath $bazaWWWPaths.Destination
+
+        if ($syncSuccess) {
+            Write-Log "Синхронiзацiя BAZA WWW успiшна" -Level "SUCCESS"
+        } else {
+            Write-Log "Помилка синхронiзацiї BAZA WWW - архiвацiя може бути неповною" -Level "WARNING"
+            $operationFailed = $true
+        }
+    } elseif ($bazaWWWLocalSyncEnabled) {
+        Write-Log "Локальну синхронiзацiю BAZA WWW пропущено через помилку шляху" -Level "ERROR"
+        $operationFailed = $true
+    } else {
+        Write-Log "Локальну синхронiзацiю BAZA WWW вимкнено в конфiгурацiї" -Level "INFO"
     }
     
     # Створення архівів
@@ -4086,7 +4116,7 @@ function Main {
                     $enabledArchives | ForEach-Object { [string]$sftpDirectories[$_.Type] }
                 )
             }
-            if ($bazaSFTPSyncEnabled) {
+            if ($bazaAppSFTPSyncEnabled) {
                 $requiredSFTPDirectories += [string]$sftpDirectories.BAZA
             }
             if ($bazaWWWSFTPSyncEnabled) {
@@ -4164,20 +4194,20 @@ function Main {
                 Write-Log "Завантаження архiвiв на SFTP вимкнено в конфiгурацiї" -Level "INFO"
             }
 
-            if ($bazaSFTPSyncEnabled -and $bazaSourceAvailable) {
-                Show-ScriptProgress -Status "Синхронiзацiя BAZA на SFTP" -PercentComplete 90
+            if ($bazaAppSFTPSyncEnabled -and $bazaAppSourceAvailable) {
+                Show-ScriptProgress -Status "Синхронiзацiя BAZA APP на SFTP" -PercentComplete 90
                 Write-Log "==="
-                Write-Log "=== СИНХРОНIЗАЦIЯ BAZA НА SFTP ==="
-                $bazaSFTPSync = Sync-FolderToSFTP -WinSCPPath $winSCPPath -RepositorySFTPUrl $sftpUrl -HostKey $sftpHostKey -LocalDirectory $bazaPaths.Source -RemoteDirectory $sftpDirectories.BAZA
-                if (-not $bazaSFTPSync) {
-                    Write-Log "Каталог BAZA не вдалося синхронiзувати з SFTP" -Level "WARNING"
+                Write-Log "=== СИНХРОНIЗАЦIЯ BAZA APP НА SFTP ==="
+                $bazaAppSFTPSync = Sync-FolderToSFTP -WinSCPPath $winSCPPath -RepositorySFTPUrl $sftpUrl -HostKey $sftpHostKey -LocalDirectory $bazaAppPaths.Source -RemoteDirectory $sftpDirectories.BAZA
+                if (-not $bazaAppSFTPSync) {
+                    Write-Log "Каталог BAZA APP не вдалося синхронiзувати з SFTP" -Level "WARNING"
                     $operationFailed = $true
                 }
-            } elseif ($bazaSFTPSyncEnabled) {
-                Write-Log "Синхронiзацiю BAZA на SFTP пропущено через помилку локального шляху" -Level "ERROR"
+            } elseif ($bazaAppSFTPSyncEnabled) {
+                Write-Log "Синхронiзацiю BAZA APP на SFTP пропущено через помилку локального шляху" -Level "ERROR"
                 $operationFailed = $true
             } else {
-                Write-Log "Синхронiзацiю BAZA на SFTP вимкнено в конфiгурацiї" -Level "INFO"
+                Write-Log "Синхронiзацiю BAZA APP на SFTP вимкнено в конфiгурацiї" -Level "INFO"
             }
 
             if ($bazaWWWSFTPSyncEnabled -and $bazaWWWSourceAvailable) {

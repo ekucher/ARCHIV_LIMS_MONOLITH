@@ -114,8 +114,8 @@ function Get-RequiredCredentialDescriptors {
     }
 
     $sftpEnabled = (Test-SettingEnabled $componentSettings.SFTP.ArchiveUpload) -or
-        (Test-SettingEnabled $componentSettings.Synchronization.BAZASFTP) -or
-        (Test-SettingEnabled $componentSettings.Synchronization.BAZAWWWSFTP) -or
+        (Test-SettingEnabled $componentSettings.Synchronization.BAZA_APP_SFTP) -or
+        (Test-SettingEnabled $componentSettings.Synchronization.BAZA_WWW_SFTP) -or
         (Test-SettingEnabled $backupMonitoring.SFTP.Enabled)
     if ($sftpEnabled) {
         [void]$descriptors.Add([pscustomobject]@{
@@ -614,8 +614,8 @@ try {
     }
 
     $sftpConfigured = (Test-SettingEnabled $componentSettings.SFTP.ArchiveUpload) -or
-        (Test-SettingEnabled $componentSettings.Synchronization.BAZASFTP) -or
-        (Test-SettingEnabled $componentSettings.Synchronization.BAZAWWWSFTP) -or
+        (Test-SettingEnabled $componentSettings.Synchronization.BAZA_APP_SFTP) -or
+        (Test-SettingEnabled $componentSettings.Synchronization.BAZA_WWW_SFTP) -or
         (Test-SettingEnabled $backupMonitoring.SFTP.Enabled)
     if ($sftpConfigured) {
         $configuredWinSCPPath = if (-not [string]::IsNullOrWhiteSpace([string]$winSCPPath)) {
@@ -635,7 +635,8 @@ try {
         }
     }
 
-    if (Test-SettingEnabled $componentSettings.Synchronization.BAZALocal) {
+    if ((Test-SettingEnabled $componentSettings.Synchronization.BAZA_APP_LOCAL) -or
+        (Test-SettingEnabled $componentSettings.Synchronization.BAZA_WWW_LOCAL)) {
         $robocopyExecutable = if (
             [string]::IsNullOrWhiteSpace([string]$robocopyPath)
         ) {
@@ -681,28 +682,36 @@ try {
         }
     }
 
-    if (Test-SettingEnabled $componentSettings.Synchronization.BAZALocal) {
-        $bazaSource = Get-SourceDirectory ([string]$bazaPaths.Source)
-        $bazaDestination = if (-not [string]::IsNullOrWhiteSpace([string]$bazaPaths.Destination)) {
-            [string]$bazaPaths.Destination
+    if (Test-SettingEnabled $componentSettings.Synchronization.BAZA_APP_LOCAL) {
+        $bazaAppSource = Get-SourceDirectory ([string]$bazaAppPaths.Source)
+        $bazaAppDestination = [string]$bazaAppPaths.Destination
+        if (Test-Path -LiteralPath $bazaAppSource -PathType Container) {
+            Add-DryRunResult PASS "Джерело" "BAZA APP" $bazaAppSource
         } else {
-            [string]$bazaPaths.Destination_Local
+            Add-DryRunResult FAIL "Джерело" "BAZA APP" "каталог відсутній: $bazaAppSource"
         }
-        if (Test-Path -LiteralPath $bazaSource -PathType Container) {
-            Add-DryRunResult PASS "Джерело" "BAZA" $bazaSource
-        } else {
-            Add-DryRunResult FAIL "Джерело" "BAZA" "каталог відсутній: $bazaSource"
-        }
-        Add-DryRunResult PLAN "Синхронізація" "BAZA local" (
-            "'$bazaSource' -> '$bazaDestination'"
+        Add-DryRunResult PLAN "Синхронізація" "BAZA APP local" (
+            "'$bazaAppSource' -> '$bazaAppDestination'"
         )
     }
-    if (Test-SettingEnabled $componentSettings.Synchronization.BAZASFTP) {
-        Add-DryRunResult PLAN "Синхронізація" "BAZA SFTP" (
-            "'$($bazaPaths.Source)' -> '/$($sftpDirectories.BAZA)' без -delete"
+    if (Test-SettingEnabled $componentSettings.Synchronization.BAZA_APP_SFTP) {
+        Add-DryRunResult PLAN "Синхронізація" "BAZA APP SFTP" (
+            "'$($bazaAppPaths.Source)' -> '/$($sftpDirectories.BAZA)' без -delete"
         )
     }
-    if (Test-SettingEnabled $componentSettings.Synchronization.BAZAWWWSFTP) {
+    if (Test-SettingEnabled $componentSettings.Synchronization.BAZA_WWW_LOCAL) {
+        $bazaWWWSource = Get-SourceDirectory ([string]$bazaWWWPaths.Source)
+        $bazaWWWDestination = [string]$bazaWWWPaths.Destination
+        if (Test-Path -LiteralPath $bazaWWWSource -PathType Container) {
+            Add-DryRunResult PASS "Джерело" "BAZA WWW" $bazaWWWSource
+        } else {
+            Add-DryRunResult FAIL "Джерело" "BAZA WWW" "каталог відсутній: $bazaWWWSource"
+        }
+        Add-DryRunResult PLAN "Синхронізація" "BAZA WWW local" (
+            "'$bazaWWWSource' -> '$bazaWWWDestination'"
+        )
+    }
+    if (Test-SettingEnabled $componentSettings.Synchronization.BAZA_WWW_SFTP) {
         Add-DryRunResult PLAN "Синхронізація" "BAZA WWW SFTP" (
             "'$($bazaWWWPaths.Source)' -> '/$($sftpDirectories.BAZAWWW)' без -delete"
         )

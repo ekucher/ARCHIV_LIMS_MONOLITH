@@ -282,14 +282,15 @@ try {
                     MODEL = [bool]$componentSettings.Archive.MODEL
                     BLOG = [bool]$componentSettings.Archive.BLOG
                     BRAVOEXCH = [bool]$componentSettings.Archive.BRAVOEXCH
-                    BAZA_APP = ([bool]$componentSettings.Synchronization.BAZALocal -or [bool]$componentSettings.Synchronization.BAZASFTP)
-                    BAZA_WWW = [bool]$componentSettings.Synchronization.BAZAWWWSFTP
+                    BAZA_APP = ([bool]$componentSettings.Synchronization.BAZA_APP_LOCAL -or [bool]$componentSettings.Synchronization.BAZA_APP_SFTP)
+                    BAZA_WWW = ([bool]$componentSettings.Synchronization.BAZA_WWW_SFTP -or [bool]$componentSettings.Synchronization.BAZA_WWW_LOCAL)
                 } `
                 -DestinationPaths @{
                     MODEL = $archiveDirs.Model
                     BLOG = $archiveDirs.Blog
                     BRAVOEXCH = $archiveDirs.BravoExch
-                    BAZA_APP = $bazaPaths.Destination
+                    BAZA_APP = $bazaAppPaths.Destination
+                    BAZA_WWW = $bazaWWWPaths.Destination
                 })
             if ($discoveryValidationErrors.Count -gt 0) {
                 Write-Host "Результат перевірки discovery: ПОМИЛКИ" -ForegroundColor Red

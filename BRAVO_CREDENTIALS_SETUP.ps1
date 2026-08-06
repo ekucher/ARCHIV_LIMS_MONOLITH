@@ -139,7 +139,7 @@ function Resolve-RequestedComponents {
                 }
 
                 $sftpRequired = [bool]$componentSettings.SFTP.ArchiveUpload -or
-                    [bool]$componentSettings.Synchronization.BAZASFTP -or
+                    [bool]$componentSettings.Synchronization.BAZA_APP_SFTP -or
                     [bool]$backupMonitoring.SFTP.Enabled
                 if ($sftpRequired -and -not $resolved.Contains("SFTP")) {
                     [void]$resolved.Add("SFTP")

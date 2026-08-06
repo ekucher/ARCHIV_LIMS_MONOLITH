@@ -1492,6 +1492,10 @@ try {
         (Join-Path $root "modules\BRAVO.Notifications\BRAVO.Notifications.psm1"),
         [Text.Encoding]::UTF8
     )
+    $bravoConfigText = [IO.File]::ReadAllText(
+        (Join-Path $root "BRAVO.config"),
+        [Text.Encoding]::UTF8
+    )
     $archiveLoaderCalls = @(
         [regex]::Matches(
             $archiveScriptText,
@@ -1956,11 +1960,54 @@ try {
         -Failure "лог-файл має показувати обране джерело BLOG (bravoDiscoveryResult.BLOG_SOURCE) і причину вибору, коли компонент увімкнено"
     Test-BRAVOCondition `
         -Condition (
-            $archiveScriptText.Contains('Джерело BAZA: $($bazaPaths.Source) ($($bravoDiscoveryResult.Reasons.BAZA_APP))') -and
-            $archiveScriptText.Contains('Джерело BAZA не визначено: $($bravoDiscoveryResult.Reasons.BAZA_APP)')
+            $archiveScriptText.Contains('Джерело BAZA APP: $($bazaAppPaths.Source) ($($bravoDiscoveryResult.Reasons.BAZA_APP))') -and
+            $archiveScriptText.Contains('Джерело BAZA APP не визначено: $($bravoDiscoveryResult.Reasons.BAZA_APP)')
         ) `
         -Name "Console/ArchiveLogsBazaLocalSource" `
-        -Failure "лог-файл має показувати обране джерело локальної синхронізації BAZA (bazaPaths.Source) і причину вибору, коли вона увімкнена"
+        -Failure "лог-файл має показувати обране джерело локальної синхронізації BAZA APP (bazaAppPaths.Source) і причину вибору, коли вона увімкнена"
+
+    # "Визначення BAZA може бути лише декількома значеннями": рівно
+    # чотири незалежні прапорці, без старих скорочених назв, що змішували
+    # APP/WWW в одному бареному "BAZA".
+    Test-BRAVOCondition `
+        -Condition (
+            $bravoConfigText.Contains("BAZA_APP_LOCAL =") -and
+            $bravoConfigText.Contains("BAZA_APP_SFTP =") -and
+            $bravoConfigText.Contains("BAZA_WWW_SFTP =") -and
+            $bravoConfigText.Contains("BAZA_WWW_LOCAL =") -and
+            -not $bravoConfigText.Contains("BAZALocal") -and
+            -not $bravoConfigText.Contains("BAZASFTP") -and
+            -not $bravoConfigText.Contains("BAZAWWWSFTP")
+        ) `
+        -Name "Discovery/ConfigDefinesExactlyFourBazaSyncFlags" `
+        -Failure "componentSettings.Synchronization має рівно 4 прапорці BAZA: BAZA_APP_LOCAL/BAZA_APP_SFTP/BAZA_WWW_SFTP/BAZA_WWW_LOCAL, без старих скорочених імен"
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveScriptText.Contains('$bazaAppLocalSyncEnabled = [bool]$componentSettings.Synchronization.BAZA_APP_LOCAL') -and
+            $archiveScriptText.Contains('$bazaAppSFTPSyncEnabled = [bool]$componentSettings.Synchronization.BAZA_APP_SFTP') -and
+            $archiveScriptText.Contains('$bazaWWWSFTPSyncEnabled = [bool]$componentSettings.Synchronization.BAZA_WWW_SFTP') -and
+            $archiveScriptText.Contains('$bazaWWWLocalSyncEnabled = [bool]$componentSettings.Synchronization.BAZA_WWW_LOCAL')
+        ) `
+        -Name "Discovery/ArchiveReadsExactlyFourBazaSyncFlags" `
+        -Failure "BRAVO.Archive.Runtime.ps1 має читати всі 4 прапорці BAZA окремими змінними"
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveScriptText.Contains('=== СИНХРОНIЗАЦIЯ BAZA WWW ===') -and
+            $archiveScriptText.Contains('$syncSuccess = Sync-Folders -SourcePath $bazaWWWPaths.Source -DestinationPath $bazaWWWPaths.Destination') -and
+            $archiveScriptText.Contains('if ($bazaWWWLocalSyncEnabled -and $bazaWWWSourceAvailable -and $bazaWWWDestinationAvailable)')
+        ) `
+        -Name "Console/ArchiveSyncsBazaWwwLocally" `
+        -Failure "BAZA_WWW_LOCAL має синхронізувати bazaWWWPaths.Source -> bazaWWWPaths.Destination через Sync-Folders, за аналогією з BAZA_APP_LOCAL"
+    Test-BRAVOCondition `
+        -Condition (
+            $healthScriptText.Contains('function Get-BAZALocalSyncHealthIssues') -and
+            $healthScriptText.Contains('-SourcePath $bazaAppPaths.Source') -and
+            $healthScriptText.Contains('-SourcePath $bazaWWWPaths.Source') -and
+            $healthScriptText.Contains('-Label "BAZA APP"') -and
+            $healthScriptText.Contains('-Label "BAZA WWW"')
+        ) `
+        -Name "Health/BazaWwwLocalHealthCheckWired" `
+        -Failure "Health має перевіряти локальну копію BAZA_WWW тим самим read-only robocopy /L порівнянням, що й BAZA_APP (Get-BAZALocalSyncHealthIssues)"
 
     # Реальний випадок: WinSCP явно повідомляв "Error listing directory
     # '/baza_app'. No such file or directory" — самі каталоги на SFTP
@@ -2229,7 +2276,7 @@ try {
     Test-BRAVOCondition `
         -Condition (
             $archiveScriptText.Contains("function Invoke-ManualBAZASFTPSynchronization") -and
-            $archiveScriptText.Contains("Synchronization.BAZAWWWSFTP") -and
+            $archiveScriptText.Contains("Synchronization.BAZA_WWW_SFTP") -and
             $archiveScriptText.Contains("BAZA_APP / BAZA_WWW") -and
             $archiveScriptText.Contains("-SynchronizationOnly")
         ) `
