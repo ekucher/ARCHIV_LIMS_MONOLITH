@@ -3373,6 +3373,25 @@ try {
         -Name "Health/AlertFingerprintToleratesMissingIssueFields" `
         -Failure "Get-AlertFingerprint має читати поля проблеми через Get-BRAVOHealthIssueField — пряме звернення падає під Set-StrictMode для проблем без DifferenceCount"
 
+    # Той самий клас бага, інше поле: лише ОДНА з чотирьох гілок побудови
+    # проблеми "SFTPSynchronization" (Get-SFTPHealthIssues, "у хмарі
+    # відсутні...") насправді встановлює ActionCounts. Реальний прогін
+    # (BAZA-SFTP синхронізація увімкнена, локальний каталог BAZA відсутній)
+    # падав із "The property 'ActionCounts' cannot be found on this
+    # object" — Archive ловив це як відмову всього health-check, а не як
+    # окрему проблему в звіті.
+    Test-BRAVOCondition `
+        -Condition (
+            $healthRuntimeText.Contains('function Get-BRAVOHealthIssueActionCounts') -and
+            $healthRuntimeText.Contains("`$property = `$Issue.PSObject.Properties['ActionCounts']") -and
+            $healthRuntimeText.Contains('Get-BRAVOHealthIssueActionCounts -Issue $healthIssue') -and
+            $healthRuntimeText.Contains('Get-BRAVOHealthIssueActionCounts -Issue $Issue') -and
+            -not [regex]::IsMatch($healthRuntimeText, '\$healthIssue\.ActionCounts\b') -and
+            -not [regex]::IsMatch($healthRuntimeText, '\$Issue\.ActionCounts\b')
+        ) `
+        -Name "Health/SFTPSynchronizationToleratesMissingActionCounts" `
+        -Failure "три з чотирьох видів проблем SFTPSynchronization не несуть ActionCounts — читання має йти через Get-BRAVOHealthIssueActionCounts, пряме `$Issue.ActionCounts`/`$healthIssue.ActionCounts` падає під Set-StrictMode ще на порівнянні з `$null"
+
     # CLAUDE_CODE_TZ_ARCHIV_LIMS_MONOLITH.md: автоматичний Discovery джерел
     # (BRAVO_ROOT/WEB_ROOT/MODEL/BLOG/BRAVOEXCH/BAZA_APP/BAZA_WWW) за
     # встановленою службою BRAVO і активним bravo.ini, з повним ручним

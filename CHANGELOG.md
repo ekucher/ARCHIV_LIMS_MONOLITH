@@ -190,6 +190,32 @@
   Закрито тестами `Console/ArchiveLogsModelSource`,
   `Console/ArchiveLogsBlogSource`, `Console/ArchiveLogsBazaLocalSource`.
 
+- **Health падав із "The property 'ActionCounts' cannot be found on
+  this object" щоразу, коли синхронізація BAZA на SFTP увімкнена, а
+  локальний каталог BAZA відсутній.** Той самий клас бага, що вже
+  ловив AUD (`Get-AlertFingerprint` і `DifferenceCount` для `Kind =
+  "Service"`), але в іншому полі й інших місцях: лише ОДИН з чотирьох
+  способів побудови проблеми `"SFTPSynchronization"`
+  (`Get-SFTPHealthIssues`, гілка "у хмарі відсутні...") насправді
+  встановлює `ActionCounts`. Три інших ("не вдалося визначити локальне
+  джерело", "локальний каталог не знайдено", "не вдалося порівняти
+  каталоги") — ні, а консольний журнал і `Format-CompactSFTPIssue`
+  зверталися до `$healthIssue.ActionCounts`/`$Issue.ActionCounts`
+  напряму навіть усередині `if ($null -ne ...)` — під `Set-StrictMode`
+  це падає ще до самого порівняння. Archive (де Health викликається
+  in-process) ловив це як повну відмову health-check замість звичайної
+  проблеми в звіті — оператор не отримував жодної тривоги.
+
+  Новий `Get-BRAVOHealthIssueActionCounts` (той самий підхід, що вже
+  має `Get-BRAVOHealthIssueField`: `PSObject.Properties['ActionCounts']`
+  замість прямої крапки) замінив усі небезпечні звернення в обох
+  місцях. Перевірено живим прогоном `BRAVO_HEALTH.ps1` за тих самих
+  умов, що й реальний збій: третя проблема тепер коректно потрапляє у
+  звіт (`SFTP BAZA: локальний каталог BAZA не знайдено; ...; типи
+  розбіжностей: немає даних`) замість краху всього health-check.
+
+  Закрито тестом `Health/SFTPSynchronizationToleratesMissingActionCounts`.
+
 ## 4.4.2 — 2026-08-05
 
 Виправлення за результатами першого тестового розгортання на реальному

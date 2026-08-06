@@ -3068,13 +3068,14 @@ function Format-CompactSFTPIssue {
                     ""
                 }
                 $actionText = ""
-                if ($null -ne $Issue.ActionCounts) {
+                $issueActionCounts = Get-BRAVOHealthIssueActionCounts -Issue $Issue
+                if ($null -ne $issueActionCounts) {
                     $actionParts = @()
-                    if ([int]$Issue.ActionCounts.New -gt 0) {
-                        $actionParts += "відсутніх: $($Issue.ActionCounts.New)"
+                    if ([int]$issueActionCounts.New -gt 0) {
+                        $actionParts += "відсутніх: $($issueActionCounts.New)"
                     }
-                    if ([int]$Issue.ActionCounts.Updated -gt 0) {
-                        $actionParts += "застарілих: $($Issue.ActionCounts.Updated)"
+                    if ([int]$issueActionCounts.Updated -gt 0) {
+                        $actionParts += "застарілих: $($issueActionCounts.Updated)"
                     }
                     if ($actionParts.Count -gt 0) {
                         $actionText = " ($($actionParts -join '; '))"
@@ -3089,18 +3090,19 @@ function Format-CompactSFTPIssue {
                 [string]$Issue.DifferenceCount
             }
             $actionParts = @()
-            if ($null -ne $Issue.ActionCounts) {
-                if ([int]$Issue.ActionCounts.New -gt 0) {
-                    $actionParts += "нових: $($Issue.ActionCounts.New)"
+            $issueActionCounts = Get-BRAVOHealthIssueActionCounts -Issue $Issue
+            if ($null -ne $issueActionCounts) {
+                if ([int]$issueActionCounts.New -gt 0) {
+                    $actionParts += "нових: $($issueActionCounts.New)"
                 }
-                if ([int]$Issue.ActionCounts.Updated -gt 0) {
-                    $actionParts += "змінених: $($Issue.ActionCounts.Updated)"
+                if ([int]$issueActionCounts.Updated -gt 0) {
+                    $actionParts += "змінених: $($issueActionCounts.Updated)"
                 }
-                if ([int]$Issue.ActionCounts.RemoteExtra -gt 0) {
-                    $actionParts += "зайвих у хмарі: $($Issue.ActionCounts.RemoteExtra)"
+                if ([int]$issueActionCounts.RemoteExtra -gt 0) {
+                    $actionParts += "зайвих у хмарі: $($issueActionCounts.RemoteExtra)"
                 }
-                if ([int]$Issue.ActionCounts.Other -gt 0) {
-                    $actionParts += "очікують передачі: $($Issue.ActionCounts.Other)"
+                if ([int]$issueActionCounts.Other -gt 0) {
+                    $actionParts += "очікують передачі: $($issueActionCounts.Other)"
                 }
             }
             $actionText = if ($actionParts.Count -gt 0) {
@@ -3396,6 +3398,30 @@ function Get-BRAVOHealthIssueField {
         return ''
     }
     return [string]$property.Value
+}
+
+# ActionCounts — той самий випадок, але для вкладеного об'єкта, а не
+# рядка: лише ОДИН з чотирьох способів побудови проблеми
+# "SFTPSynchronization" (Get-SFTPHealthIssues, гілка "у хмарі відсутні...")
+# насправді встановлює це поле. Три інших ("не вдалося визначити
+# локальне джерело", "локальний каталог не знайдено", "не вдалося
+# порівняти каталоги") — ні, тому навіть перевірка на порожнечу цього
+# поля напряму через крапку під Set-StrictMode падає ще до самого
+# порівняння. Реальний випадок: BAZA-SFTP синхронізація увімкнена, а
+# локальний каталог BAZA відсутній — Archive ловив це як "Помилка
+# запуску окремого health-check: The property 'ActionCounts' cannot be
+# found".
+function Get-BRAVOHealthIssueActionCounts {
+    param([object]$Issue)
+
+    if ($null -eq $Issue) {
+        return $null
+    }
+    $property = $Issue.PSObject.Properties['ActionCounts']
+    if ($null -eq $property) {
+        return $null
+    }
+    return $property.Value
 }
 
 function Get-AlertFingerprint {
@@ -3908,16 +3934,19 @@ foreach ($healthIssue in $healthIssues) {
             Write-HealthLog "Проблема $($healthIssue.Component): $($healthIssue.Reason); каталог: $($healthIssue.Location); файл: $($healthIssue.FileName); фактичний розмір: $(Format-FileSize $healthIssue.ActualSizeBytes)" -Level "ERROR"
         }
         "SFTPSynchronization" {
+            $healthIssueActionCounts = Get-BRAVOHealthIssueActionCounts -Issue $healthIssue
             if ($healthIssue.Reason -eq "у хмарі відсутні або потребують оновлення локальні файли/папки") {
                 $pendingParts = @()
-                if ([int]$healthIssue.ActionCounts.New -gt 0) {
-                    $pendingParts += "відсутніх: $($healthIssue.ActionCounts.New)"
-                }
-                if ([int]$healthIssue.ActionCounts.Updated -gt 0) {
-                    $pendingParts += "застарілих: $($healthIssue.ActionCounts.Updated)"
-                }
-                if ([int]$healthIssue.ActionCounts.Other -gt 0) {
-                    $pendingParts += "без окремої класифікації: $($healthIssue.ActionCounts.Other)"
+                if ($null -ne $healthIssueActionCounts) {
+                    if ([int]$healthIssueActionCounts.New -gt 0) {
+                        $pendingParts += "відсутніх: $($healthIssueActionCounts.New)"
+                    }
+                    if ([int]$healthIssueActionCounts.Updated -gt 0) {
+                        $pendingParts += "застарілих: $($healthIssueActionCounts.Updated)"
+                    }
+                    if ([int]$healthIssueActionCounts.Other -gt 0) {
+                        $pendingParts += "без окремої класифікації: $($healthIssueActionCounts.Other)"
+                    }
                 }
                 $pendingSummary = if ($pendingParts.Count -gt 0) {
                     $pendingParts -join ", "
@@ -3926,8 +3955,8 @@ foreach ($healthIssue in $healthIssues) {
                 }
                 Write-HealthLog "Проблема $($healthIssue.Component): $($healthIssue.Reason); каталог: $($healthIssue.Location); очікують передачі: $($healthIssue.DifferenceCount) ($pendingSummary); розмір: $(Format-FileSize $healthIssue.SizeBytes)" -Level "ERROR"
             } else {
-                $actionSummary = if ($null -ne $healthIssue.ActionCounts) {
-                    "нових: $($healthIssue.ActionCounts.New), змінених: $($healthIssue.ActionCounts.Updated), зайвих у хмарі: $($healthIssue.ActionCounts.RemoteExtra), очікують передачі: $($healthIssue.ActionCounts.Other)"
+                $actionSummary = if ($null -ne $healthIssueActionCounts) {
+                    "нових: $($healthIssueActionCounts.New), змінених: $($healthIssueActionCounts.Updated), зайвих у хмарі: $($healthIssueActionCounts.RemoteExtra), очікують передачі: $($healthIssueActionCounts.Other)"
                 } else {
                     "типи розбіжностей: немає даних"
                 }
