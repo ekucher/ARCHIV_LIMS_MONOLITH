@@ -3820,7 +3820,6 @@ Write-Log -Message "==="
 Complete-BRAVOProgress
 $maintenanceMetrics = New-Object System.Collections.Specialized.OrderedDictionary
 $maintenanceMetrics.Add('Попереджень', $script:BRAVOWarningCount)
-$maintenanceMetrics.Add('Установа', [string]$script:ObjectName)
 # ЧАСТКОВО, а не ПОМИЛКА, за самих лише попереджень: обслуговування
 # відпрацювало, але щось потребує уваги. ПОМИЛКА лишається за критичним
 # збоєм — тим самим, що дає ненульовий код завершення.
