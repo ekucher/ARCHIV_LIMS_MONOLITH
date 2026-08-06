@@ -52,6 +52,14 @@ function Write-BRAVOHealthStep {
     )
 
     $script:BRAVOHealthStepCurrent++
+    # Вбудований виклик з Archive (SuppressHeader) не друкує власну
+    # покрокову нумерацію [N/5]: вона стоїть поряд із власною нумерацією
+    # Archive [N/7] і виглядає як другий незалежний прогін замість одного
+    # кроку "Перевірка резервних копій". Лічильник вище лишається
+    # безумовним — від нього залежить нумерація кроку "Сповіщення".
+    if ($SuppressHeader) {
+        return
+    }
     Write-BRAVOStepResult `
         -Current $script:BRAVOHealthStepCurrent `
         -Total $script:BRAVOHealthStepTotal `
@@ -126,40 +134,49 @@ function Complete-BRAVOHealthResult {
 
         Complete-BRAVOProgress
 
-        $metrics = New-Object System.Collections.Specialized.OrderedDictionary
-        $metrics.Add('Стан', [string]$Result.Status)
-        if ($null -ne $Result.PSObject.Properties['IssueCount']) {
-            $metrics.Add('Проблем', [int]$Result.IssueCount)
-        }
-        # Метрика вимкненого призначення бреше найгірше з усього виводу:
-        # «NAS/SMB: True» читається як «перевірено й усе гаразд», хоча
-        # перевірки не було взагалі. Вимкнений компонент не показуємо тут
-        # рівно так само, як не показуємо його етап.
-        foreach ($destination in @(
-            @{ Property = 'LocalVerified'; Title = 'Локальні копії'; Enabled = $true },
-            @{ Property = 'SftpVerified';  Title = 'SFTP';           Enabled = $script:BRAVOHealthSftpStepEnabled },
-            @{ Property = 'SmbVerified';   Title = 'NAS/SMB';        Enabled = $script:BRAVOHealthSmbStepEnabled }
-        )) {
-            if (-not $destination.Enabled) {
-                continue
+        # Вбудований виклик з Archive не друкує власний підсумок
+        # (Результат/Тривалість/.../Детальний журнал) — Archive вже показує
+        # свій ОДИН підсумок наприкінці, а окремий рядок
+        # "Health-check: знайдено проблем: N; повідомлення: ..." (Archive.Runtime.ps1)
+        # передає суть без другого блоку й другого посилання на лог-файл.
+        # Сам файл Health-логу як і раніше створюється — просто не
+        # анонсується другим "Детальний журнал:" у консолі.
+        if (-not $SuppressHeader) {
+            $metrics = New-Object System.Collections.Specialized.OrderedDictionary
+            $metrics.Add('Стан', [string]$Result.Status)
+            if ($null -ne $Result.PSObject.Properties['IssueCount']) {
+                $metrics.Add('Проблем', [int]$Result.IssueCount)
             }
-            $property = $Result.PSObject.Properties[$destination.Property]
-            if ($null -ne $property -and $null -ne $property.Value) {
-                $metrics.Add($destination.Title, $property.Value)
+            # Метрика вимкненого призначення бреше найгірше з усього виводу:
+            # «NAS/SMB: True» читається як «перевірено й усе гаразд», хоча
+            # перевірки не було взагалі. Вимкнений компонент не показуємо тут
+            # рівно так само, як не показуємо його етап.
+            foreach ($destination in @(
+                @{ Property = 'LocalVerified'; Title = 'Локальні копії'; Enabled = $true },
+                @{ Property = 'SftpVerified';  Title = 'SFTP';           Enabled = $script:BRAVOHealthSftpStepEnabled },
+                @{ Property = 'SmbVerified';   Title = 'NAS/SMB';        Enabled = $script:BRAVOHealthSmbStepEnabled }
+            )) {
+                if (-not $destination.Enabled) {
+                    continue
+                }
+                $property = $Result.PSObject.Properties[$destination.Property]
+                if ($null -ne $property -and $null -ne $property.Value) {
+                    $metrics.Add($destination.Title, $property.Value)
+                }
             }
-        }
-        if ($script:BRAVOHealthNotificationStepEnabled -and
-            $null -ne $Result.PSObject.Properties['Notification']) {
-            $metrics.Add('Сповіщення', [string]$Result.Notification)
-        }
+            if ($script:BRAVOHealthNotificationStepEnabled -and
+                $null -ne $Result.PSObject.Properties['Notification']) {
+                $metrics.Add('Сповіщення', [string]$Result.Notification)
+            }
 
-        Write-BRAVOSummary `
-            -Result (Get-BRAVOHealthSummaryResult `
-                -Status ([string]$Result.Status) `
-                -WarningCount $script:BRAVOWarningCount) `
-            -Duration ((Get-Date) - $healthCheckStarted) `
-            -Metrics $metrics `
-            -LogFile ([string]$Result.LogPath)
+            Write-BRAVOSummary `
+                -Result (Get-BRAVOHealthSummaryResult `
+                    -Status ([string]$Result.Status) `
+                    -WarningCount $script:BRAVOWarningCount) `
+                -Duration ((Get-Date) - $healthCheckStarted) `
+                -Metrics $metrics `
+                -LogFile ([string]$Result.LogPath)
+        }
     }
 
     return $Result
@@ -1880,10 +1897,14 @@ function Test-SFTPArchiveCopy {
                         -Value $backupMonitoring.SFTP.RequireServerSideArchiveHash)
                 )
                 if ($remoteHashSidecarVerified -and -not $requireServerSideHash) {
+                    # INFO, не WARNING: перевірка все одно УСПІШНА (через
+                    # .sha512-файл) — це нотатка про метод, яким сервер не
+                    # підтримує обчислення контрольної суми на своїй стороні,
+                    # а не привід для уваги оператора.
                     Write-HealthLog (
                         "SFTP $($ArchiveDefinition.Type): серверний SHA архіву недоступний; " +
                         "використано повний збіг віддаленого hash-файлу"
-                    ) -Level "WARNING"
+                    ) -Level "INFO"
                 } else {
                     $problems += (
                         "не вдалося обчислити контрольну суму віддаленого архіву: " +

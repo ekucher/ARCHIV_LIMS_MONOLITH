@@ -3511,6 +3511,78 @@ try {
         -Name "Console/EmbeddedHealthSuppressesDuplicateHeader" `
         -Failure "Invoke-BRAVOHealthCheck (вбудований виклик Health з Archive) має передавати -SuppressHeader у Invoke-BRAVOHealth, а Write-BRAVOHeader — приховувати лише текст заголовка, зберігаючи резервування місця під прогрес-бар"
 
+    # Реальний випадок (скріншот користувача, після прибирання заголовка):
+    # вбудований виклик Health усередині Archive все одно друкував ВЛАСНУ
+    # покрокову нумерацію [N/5] поряд із нумерацією Archive [N/7] — виглядало
+    # як два незалежні прогони. -SuppressHeader тепер вимикає й це.
+    $writeBravoHealthStepFunctionText = if ($healthRuntimeText -match
+        '(?s)function Write-BRAVOHealthStep \{.*?\n\}') {
+        $Matches[0]
+    } else {
+        ''
+    }
+    Test-BRAVOCondition `
+        -Condition (
+            -not [string]::IsNullOrWhiteSpace($writeBravoHealthStepFunctionText) -and
+            $writeBravoHealthStepFunctionText.Contains('if ($SuppressHeader) {') -and
+            # Лічильник кроків має інкрементуватись РАНІШЕ за перевірку —
+            # інакше номер кроку "Сповіщення" в кінці зіб'ється.
+            (
+                $writeBravoHealthStepFunctionText.IndexOf('$script:BRAVOHealthStepCurrent++')
+            ) -lt (
+                $writeBravoHealthStepFunctionText.IndexOf('if ($SuppressHeader) {')
+            )
+        ) `
+        -Name "Health/EmbeddedCallSuppressesStepNumbering" `
+        -Failure "Write-BRAVOHealthStep має пропускати власний друк [N/5] при -SuppressHeader (вбудований виклик з Archive), не збиваючи внутрішній лічильник кроків"
+
+    # Той самий реальний випадок: власний підсумок Health
+    # (Результат/Тривалість/.../Детальний журнал) усе одно друкувався другим
+    # блоком поряд із підсумком Archive — два "Детальний журнал:" на один
+    # прогін. Complete-BRAVOProgress (очищення прогрес-бару) лишається
+    # безумовним — лише текстовий підсумок і Write-BRAVOSummary придушені.
+    $completeHealthResultFunctionText = if ($healthRuntimeText -match
+        '(?s)function Complete-BRAVOHealthResult \{.*?\n\}') {
+        $Matches[0]
+    } else {
+        ''
+    }
+    Test-BRAVOCondition `
+        -Condition (
+            -not [string]::IsNullOrWhiteSpace($completeHealthResultFunctionText) -and
+            $completeHealthResultFunctionText.Contains('if (-not $SuppressHeader) {') -and
+            $completeHealthResultFunctionText.Contains('Write-BRAVOSummary') -and
+            (
+                $completeHealthResultFunctionText.IndexOf('Complete-BRAVOProgress')
+            ) -lt (
+                $completeHealthResultFunctionText.IndexOf('if (-not $SuppressHeader) {')
+            ) -and
+            (
+                $completeHealthResultFunctionText.IndexOf('if (-not $SuppressHeader) {')
+            ) -lt (
+                $completeHealthResultFunctionText.IndexOf('Write-BRAVOSummary')
+            )
+        ) `
+        -Name "Health/EmbeddedCallSuppressesOwnSummary" `
+        -Failure "Complete-BRAVOHealthResult має придушувати власний Write-BRAVOSummary при -SuppressHeader (вбудований виклик з Archive), не чіпаючи Complete-BRAVOProgress"
+
+    # Реальний випадок: "SFTP MODEL: серверний SHA архіву недоступний;
+    # використано повний збіг віддаленого hash-файлу" — перевірка все одно
+    # УСПІШНА (через .sha512), тому це нотатка про метод, а не WARNING, що
+    # привертає увагу оператора без причини.
+    Test-BRAVOCondition `
+        -Condition (
+            $healthRuntimeText.Contains(
+                '"SFTP $($ArchiveDefinition.Type): серверний SHA архіву недоступний; " +'
+            ) -and
+            [regex]::IsMatch(
+                $healthRuntimeText,
+                '(?s)серверний SHA архіву недоступний.*?використано повний збіг віддаленого hash-файлу"\s*\)\s*-Level "INFO"'
+            )
+        ) `
+        -Name "Health/ServerSideHashFallbackIsInfoNotWarning" `
+        -Failure "фолбек на .sha512-файл — це успішна перевірка іншим методом, а не WARNING; має логуватись як INFO"
+
     # CLAUDE_CODE_TZ_ARCHIV_LIMS_MONOLITH.md: автоматичний Discovery джерел
     # (BRAVO_ROOT/WEB_ROOT/MODEL/BLOG/BRAVOEXCH/BAZA_APP/BAZA_WWW) за
     # встановленою службою BRAVO і активним bravo.ini, з повним ручним
