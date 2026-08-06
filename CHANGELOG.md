@@ -137,6 +137,25 @@
   Закрито тестами `ToolManifest/ManifestPathIsInsideToolsDirectory`,
   `ToolManifest/ManifestFileLivesInsideTools`.
 
+- **`pathSettings.ArchiveRoot` дефолтився в обчислений здогад, а не в
+  каталог самого скрипта — корінь того, чому маніфест "губився".**
+  Раніше: `Join-Path (Split-Path -Parent $ConfigRoot) "ARCHIV"` —
+  «піднятись на рівень вище й зайти в підкаталог, що зветься буквально
+  ARCHIV». Працювало лише випадково, коли комплект розгорнутий у теці з
+  таким іменем. Запущений з git-чекауту (інша назва теки — наприклад,
+  `ARCHIV_LIMS_MONOLITH`) — обчислення тихо вказувало на каталог, якого
+  не існує, і `Tools\TOOLS_MANIFEST.json` "губився", хоча фізично лежав
+  поруч зі скриптом. Тепер — `$ConfigRoot` напряму.
+
+  Той самий недолік був і в `Resolve-BRAVOInstallationDiscovery`:
+  legacy-fallback для `BACKUP_ROOT` (коли служби BRAVO не знайдено)
+  теж комбінував `LIMSRoot + "ARCHIV"` — друга здогадка поверх першої,
+  і гірша за власний дефолт `BRAVO.config`. Тепер у цьому випадку
+  `BACKUP_ROOT` лишається порожнім, і перемагає дефолт `ArchiveRoot`.
+
+  Закрито тестами `Discovery/ArchiveRootDefaultsToScriptDirectory`,
+  `Discovery/BackupRootStaysEmptyWithoutRealService`.
+
 ## 4.4.2 — 2026-08-05
 
 Виправлення за результатами першого тестового розгортання на реальному

@@ -3423,6 +3423,16 @@ try {
             -Name "Discovery/LegacyFallbackWhenNoServiceFound" `
             -Failure "без встановленої служби BRAVO/Apache Resolve-BRAVOInstallationDiscovery має fallback-ити на чинну LIMSRoot-відносну поведінку (Model/BLOG у корені), а не повертати порожні значення"
 
+        # BACKUP_ROOT — інакше, ніж MODEL/BLOG: коли службу BRAVO не
+        # знайдено, "LIMSRoot\ARCHIV" — це ГІРШИЙ здогад, ніж дефолт,
+        # який BRAVO.config уже має сам (каталог скрипта). Тому в цьому
+        # випадку BACKUP_ROOT має лишатись порожнім, а не пропонувати
+        # другу здогадку поверх першої.
+        Test-BRAVOCondition `
+            -Condition ([string]::IsNullOrWhiteSpace([string]$noServiceDiscovery.BACKUP_ROOT)) `
+            -Name "Discovery/BackupRootStaysEmptyWithoutRealService" `
+            -Failure "без реально знайденої служби BRAVO BACKUP_ROOT має лишатись порожнім — LIMSRoot-відносна здогадка гірша за власний дефолт BRAVO.config (pathSettings.ArchiveRoot)"
+
         # Джерело істини — Service name ТА Display name одночасно.
         # Сторонній сервіс із Name="BRAVO", але іншим Display name (типова
         # підстава для помилкового спрацювання) не повинен визнаватись
@@ -3672,6 +3682,21 @@ try {
         ) `
         -Name "Discovery/ConfigUsesStrictBravoIdentityAndBackupRoot" `
         -Failure "BRAVO.config має передавати -BravoDisplayName='BRAVO Service' у Resolve-BRAVOInstallationDiscovery і використовувати BACKUP_ROOT як дефолт pathSettings.BackupRoot, лише якщо адміністратор не змінив його вручну"
+
+    # ArchiveRoot (Tools\/LOGS\/TOOLS_MANIFEST.json) має дефолтитись у
+    # каталог самого скрипта ($ConfigRoot) — НЕ в обчислений здогад
+    # "піднятись на рівень і зайти в підкаталог ARCHIV". Останній
+    # спрацьовував лише випадково, коли комплект розгорнутий у теці, яка
+    # називається буквально "ARCHIV" — на реальному сервері з git-чекаутом
+    # (інша назва теки) TOOLS_MANIFEST.json "губився", хоча фізично лежав
+    # поруч зі скриптом.
+    Test-BRAVOCondition `
+        -Condition (
+            [regex]::IsMatch($bravoConfigTextForDiscovery, '(?m)^\$defaultArchiveRoot\s*=\s*\$ConfigRoot\s*$') -and
+            -not $bravoConfigTextForDiscovery.Contains('Join-Path $defaultLIMSRoot "ARCHIV"')
+        ) `
+        -Name "Discovery/ArchiveRootDefaultsToScriptDirectory" `
+        -Failure "pathSettings.ArchiveRoot (Tools\, LOGS\, TOOLS_MANIFEST.json) має дефолтитись у `$ConfigRoot — каталог самого скрипта, а не в обчислений LIMSRoot\ARCHIV, який працює лише коли тека випадково називається 'ARCHIV'"
 
     # AUD-004 (аудит P0.4): restore drill. Читабельний і навіть SHA512/7za-
     # перевірений архів не доводить відновлюваність — Invoke-BRAVOSevenZipExtraction

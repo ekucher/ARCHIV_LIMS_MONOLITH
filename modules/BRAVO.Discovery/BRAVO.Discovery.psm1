@@ -452,15 +452,19 @@ function Resolve-BRAVOInstallationDiscovery {
 
     # --- BACKUP_ROOT: каталог збереження бекапів ---
     # Джерело істини: каталог "ARCHIV" усередині шляху встановлення служби
-    # BRAVO (той самий каталог, де лежить bravo.exe), а не LIMSRoot-
-    # відносний шлях, яким користувались до Discovery. BRAVO.config
-    # використовує це значення як дефолт pathSettings.BackupRoot, лише
-    # якщо адміністратор не змінив BackupRoot вручну.
+    # BRAVO (той самий каталог, де лежить bravo.exe) — але ЛИШЕ коли
+    # службу дійсно знайдено. Якщо ні — $bravoRoot тут це вже не каталог
+    # BRAVO, а LIMSRoot (legacy fallback, рядок вище): "LIMSRoot\ARCHIV"
+    # для BACKUP_ROOT — це не легша, а ГІРША здогадка за той дефолт, який
+    # BRAVO.config уже має сам (pathSettings.ArchiveRoot — каталог
+    # скрипта). Тому в цьому випадку BACKUP_ROOT лишається $null: нехай
+    # переможе дефолт BRAVO.config, а не другий здогад поверх першого.
     $backupRootResolved = Resolve-BRAVOSourceField `
         -FieldName "BACKUP_ROOT" -IniSection "__none__" -IniKey "__none__" `
         -DeriveFromIniValue $null `
         -LegacyFallbackPath $(
-            if (-not [string]::IsNullOrWhiteSpace($bravoRoot)) {
+            if (-not [string]::IsNullOrWhiteSpace($bravoRoot) -and
+                $bravoRootReason -notmatch '^legacy fallback') {
                 Join-Path $bravoRoot "ARCHIV"
             } else {
                 $null
