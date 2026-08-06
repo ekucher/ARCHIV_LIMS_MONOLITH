@@ -2818,7 +2818,7 @@ Initialize-BRAVOMaintenanceSteps -Total (
 )
 Write-BRAVOHeader `
     -Title ("BRAVO MAINTENANCE {0}" -f $global:ScriptVersion) `
-    -Institution ([string]$script:ObjectName) `
+    -Institution ([string]$bravoSettings.InstitutionName) `
     -InstitutionCode ([string]$bravoSettings.InstitutionCode) `
     -StartedAt $script:ScriptStartTime
 
