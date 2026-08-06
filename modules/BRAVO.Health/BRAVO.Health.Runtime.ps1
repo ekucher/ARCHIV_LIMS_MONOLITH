@@ -20,7 +20,14 @@ function Invoke-BRAVOHealth {
         [switch]$ForceNotification,
         [switch]$NotifyOnSuccess,
         [switch]$NoSlack,
-        [switch]$SkipIfBackupTaskRunning
+        [switch]$SkipIfBackupTaskRunning,
+        # Archive викликає Health усередині власного кроку "Перевірка
+        # резервних копій" (Invoke-BRAVOHealthCheck, dot-source-шлях) — там
+        # заголовок "BRAVO HEALTH X.X.X / Установа / Початок" виглядав як
+        # друга незалежна програма всередині виводу Archive. Самостійний
+        # запуск (BRAVO_HEALTH.ps1) цей параметр не передає — заголовок там
+        # лишається.
+        [switch]$SuppressHeader
     )
 
 # Нумерація етапів операційної консолі: [1/7], [2/7], ... Health має рівно
@@ -488,7 +495,8 @@ Write-BRAVOHeader `
     -Title ("BRAVO HEALTH {0}" -f $global:ScriptVersion) `
     -Institution ([string]$bravoSettings.InstitutionName) `
     -InstitutionCode ([string]$bravoSettings.InstitutionCode) `
-    -StartedAt $healthCheckStarted
+    -StartedAt $healthCheckStarted `
+    -SuppressText:$SuppressHeader
 $script:BRAVOHealthConsoleReady = $true
 
 function Write-HealthLog {

@@ -140,7 +140,15 @@ function Write-BRAVOHeader {
 
         [string]$InstitutionCode,
 
-        [datetime]$StartedAt = (Get-Date)
+        [datetime]$StartedAt = (Get-Date),
+
+        # Вбудований виклик (Health усередині кроку Archive) не повинен
+        # друкувати повний заголовок ІНШОЇ "програми" — оператор бачить
+        # два незалежні на вигляд титульні блоки поспіль, хоча це один
+        # прогін. Резервування місця під прогрес-бар лишається завжди:
+        # без нього перші рядки, що йдуть одразу після заголовка, ризикують
+        # опинитися під смугою.
+        [switch]$SuppressText
     )
 
     if (-not $script:BRAVOConsoleEnabled) {
@@ -151,6 +159,10 @@ function Write-BRAVOHeader {
         for ($i = 0; $i -lt $script:BRAVOConsoleProgressReservedLines; $i++) {
             Write-Host ''
         }
+    }
+
+    if ($SuppressText) {
+        return
     }
 
     Write-Host ''

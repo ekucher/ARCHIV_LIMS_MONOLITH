@@ -3469,6 +3469,48 @@ try {
         -Name "Health/SFTPSynchronizationToleratesMissingActionCounts" `
         -Failure "три з чотирьох видів проблем SFTPSynchronization не несуть ActionCounts — читання має йти через Get-BRAVOHealthIssueActionCounts, пряме `$Issue.ActionCounts`/`$healthIssue.ActionCounts` падає під Set-StrictMode ще на порівнянні з `$null"
 
+    # Реальний випадок (скріншот користувача): Archive викликає Health
+    # усередині власного кроку "Перевірка резервних копій", і Health
+    # безумовно друкував ПОВНИЙ заголовок "BRAVO HEALTH X.X.X / Установа /
+    # Початок" — виглядало як друга незалежна програма всередині виводу
+    # Archive. -SuppressHeader вимикає лише текст заголовка (не резервування
+    # місця під прогрес-бар — Write-BRAVOHeader продовжує друкувати порожні
+    # рядки навіть коли текст придушено), і передається лише зі шляху
+    # Invoke-BRAVOHealthCheck (вбудований виклик з Archive) — самостійний
+    # запуск BRAVO_HEALTH.ps1 його не бачить, заголовок там лишається.
+    $healthPsmText = [IO.File]::ReadAllText(
+        (Join-Path $root "modules\BRAVO.Health\BRAVO.Health.psm1"),
+        [Text.Encoding]::UTF8
+    )
+    $consoleScriptText = [IO.File]::ReadAllText(
+        (Join-Path $root "modules\BRAVO.Console\BRAVO.Console.psm1"),
+        [Text.Encoding]::UTF8
+    )
+    $writeBravoHeaderFunctionText = if ($consoleScriptText -match
+        '(?s)function Write-BRAVOHeader \{.*?\n\}') {
+        $Matches[0]
+    } else {
+        ''
+    }
+    Test-BRAVOCondition `
+        -Condition (
+            $healthRuntimeText.Contains('[switch]$SuppressHeader') -and
+            $healthRuntimeText.Contains('-SuppressText:$SuppressHeader') -and
+            [regex]::IsMatch($healthPsmText, '-SkipIfBackupTaskRunning:\$SkipIfBackupTaskRunning\s*`\r?\n\s*-SuppressHeader\r?\n') -and
+            -not [string]::IsNullOrWhiteSpace($writeBravoHeaderFunctionText) -and
+            $writeBravoHeaderFunctionText.Contains('[switch]$SuppressText') -and
+            $writeBravoHeaderFunctionText.Contains('if ($SuppressText) {') -and
+            # Резервування місця під прогрес-бар має лишитись БЕЗУМОВНИМ:
+            # цикл reserved lines має стояти РАНІШЕ за "if ($SuppressText)".
+            (
+                $writeBravoHeaderFunctionText.IndexOf('BRAVOConsoleProgressReservedLines')
+            ) -lt (
+                $writeBravoHeaderFunctionText.IndexOf('if ($SuppressText) {')
+            )
+        ) `
+        -Name "Console/EmbeddedHealthSuppressesDuplicateHeader" `
+        -Failure "Invoke-BRAVOHealthCheck (вбудований виклик Health з Archive) має передавати -SuppressHeader у Invoke-BRAVOHealth, а Write-BRAVOHeader — приховувати лише текст заголовка, зберігаючи резервування місця під прогрес-бар"
+
     # CLAUDE_CODE_TZ_ARCHIV_LIMS_MONOLITH.md: автоматичний Discovery джерел
     # (BRAVO_ROOT/WEB_ROOT/MODEL/BLOG/BRAVOEXCH/BAZA_APP/BAZA_WWW) за
     # встановленою службою BRAVO і активним bravo.ini, з повним ручним

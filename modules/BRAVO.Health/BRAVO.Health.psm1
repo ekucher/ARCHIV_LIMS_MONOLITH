@@ -48,12 +48,18 @@ function Invoke-BRAVOHealthCheck {
         # Dot-source only the private runtime definition. Its invocation guard
         # does not execute or exit when InvocationName is '.'.
         . $script:runtimePath @runtimeParameters
+        # -SuppressHeader: цей шлях — виключно вбудований виклик Archive
+        # (крок "Перевірка резервних копій"). Самостійний запуск
+        # BRAVO_HEALTH.ps1 не проходить через Invoke-BRAVOHealthCheck
+        # взагалі (він викликає Invoke-BRAVOHealth напряму, без цього
+        # параметра) — заголовок там лишається.
         return Invoke-BRAVOHealth `
             -ConfigPath $ConfigPath `
             -ForceNotification:$ForceNotification `
             -NotifyOnSuccess:$NotifyOnSuccess `
             -NoSlack:$NoSlack `
-            -SkipIfBackupTaskRunning:$SkipIfBackupTaskRunning
+            -SkipIfBackupTaskRunning:$SkipIfBackupTaskRunning `
+            -SuppressHeader
     } finally {
         # Programmatic calls run in this module's persistent script scope.
         # Never retain plaintext SFTP credentials or an SMB credential there.
