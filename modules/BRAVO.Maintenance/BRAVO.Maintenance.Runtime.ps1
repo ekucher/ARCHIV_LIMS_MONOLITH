@@ -2662,7 +2662,34 @@ if ([string]::IsNullOrWhiteSpace($ROOT_LIMS) -or
     exit 30
 }
 # Похідні шляхи
-$MODEL_PATH = "$ROOT_LIMS\Model"
+# MODEL_PATH: джерело істини — Resolve-BRAVOInstallationDiscovery
+# (bravoDiscoveryResult.MODEL_SOURCE, той самий, що вже читає Archive).
+# Discovery сам деградує до "$ROOT_LIMS\Model", якщо bravo.ini недоступний
+# — тому це не звужує сумісність, лише замінює локальний здогад на вже
+# перевірене джерело: раніше LIMSRoot-відносний шлях завжди мав збігатися
+# з реальним розташуванням MODEL випадково (лише коли LIMSRoot і справді
+# вказує на корінь інсталяції), а на цій-таки машині вже не збігався.
+$MODEL_PATH = if (-not [string]::IsNullOrWhiteSpace([string]$bravoDiscoveryResult.MODEL_SOURCE)) {
+    [string]$bravoDiscoveryResult.MODEL_SOURCE
+} else {
+    "$ROOT_LIMS\Model"
+}
+# Повний шлях до файлу проєкту (значення MODEL= з bravo.ini як є) — саме
+# те, що приймає bravocmd.exe. Без bravo.ini (Discovery не дав значення)
+# лишається старий здогад "$ROOT_LIMS\MODEL\lims".
+$MODEL_PROJECT_PATH = if (-not [string]::IsNullOrWhiteSpace([string]$bravoDiscoveryResult.MODEL_PROJECT_FILE)) {
+    [string]$bravoDiscoveryResult.MODEL_PROJECT_FILE
+} else {
+    "$ROOT_LIMS\MODEL\lims"
+}
+# bravocmd.exe стоїть поруч із bravo.exe (BRAVO_ROOT), не обов'язково в
+# LIMSRoot. Discovery сам деградує BRAVO_ROOT до LIMSRoot, коли служби
+# BRAVO не знайдено — той самий фолбек, що й був тут раніше.
+$BRAVOCMD_PATH = if (-not [string]::IsNullOrWhiteSpace([string]$bravoDiscoveryResult.BRAVO_ROOT)) {
+    Join-Path ([string]$bravoDiscoveryResult.BRAVO_ROOT) "bravocmd.exe"
+} else {
+    "$ROOT_LIMS\bravocmd.exe"
+}
 $LOG_DIR = Join-Path $ARCHIVE_ROOT "LOGS"
 $TRACE_DIR = Join-Path $ARCHIVE_ROOT "Trace"
 $ARC_DIR = if ($archiveDirs -and
@@ -3245,8 +3272,8 @@ if ($BravoMaintenanceEnabled -and $bravoStatus -ne "Running") {
                 Write-Log -Message "Архів моделі перед реставрацією створено та перевірено -> $beforeArchivePath" -Level "SUCCESS"
                 
                 # Виконання реставрації через bravocmd.exe (як в еталоні)
-                $restoreArgs = @("r", "null", "$ROOT_LIMS\MODEL\lims")
-                $exitCode = Invoke-CommandWithLog -Command "$ROOT_LIMS\bravocmd.exe" -Arguments $restoreArgs -Description "Виконання реставрації моделі LIMS"
+                $restoreArgs = @("r", "null", $MODEL_PROJECT_PATH)
+                $exitCode = Invoke-CommandWithLog -Command $BRAVOCMD_PATH -Arguments $restoreArgs -Description "Виконання реставрації моделі LIMS"
                 
                 if ($exitCode -eq 0) {
                     $restoreCompletedAt = Get-Date
