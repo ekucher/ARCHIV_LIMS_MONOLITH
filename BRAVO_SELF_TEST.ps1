@@ -1801,6 +1801,20 @@ try {
         -Name "Secrets/SevenZipPasswordUsesStdin" `
         -Failure "пароль 7-Zip не повинен потрапляти до командного рядка процесу"
 
+    # Реальний випадок: власний прогрес-бокс Test-NetConnection
+    # ("Attempting TCP connect", "Waiting for response") усе одно
+    # з'являвся в консолі поверх кроків BRAVO, хоча мав бути прихованим.
+    # Локальне присвоєння $ProgressPreference (без $global:) не
+    # придушує його надійно — відомий нюанс Windows PowerShell 5.1.
+    Test-BRAVOCondition `
+        -Condition (
+            $compatibilityScriptText.Contains('$previousGlobalProgressPreference = $global:ProgressPreference') -and
+            $compatibilityScriptText.Contains("`$global:ProgressPreference = 'SilentlyContinue'") -and
+            $compatibilityScriptText.Contains('$global:ProgressPreference = $previousGlobalProgressPreference')
+        ) `
+        -Name "Compatibility/TcpConnectionSuppressesGlobalProgress" `
+        -Failure "Test-BRAVOTcpConnection має тимчасово підміняти ГЛОБАЛЬНЕ `$ProgressPreference (і гарантовано відновлювати його в finally) — лише локальне присвоєння не придушує власний прогрес-бокс Test-NetConnection"
+
     # Аудит #5: секрет із Credential Manager більше не матеріалізується як
     # звичайний managed string у джерелі. У .NET рядок незмінний, тому його
     # неможливо занулити — копія пароля лишалась у керованій купі до збирання

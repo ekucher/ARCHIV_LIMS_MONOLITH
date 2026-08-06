@@ -277,6 +277,21 @@
   `Console/BazaComparisonReadsFileNameSafely`,
   `Console/BazaAuditUsesNoConsoleNotFileOnly`.
 
+- **Власний прогрес-бокс `Test-NetConnection` ("Attempting TCP connect",
+  "Waiting for response") усе одно з'являвся в консолі поверх кроків
+  BRAVO**, хоча мав бути прихованим. `Test-BRAVOTcpConnection` уже
+  придушував його через `$ProgressPreference = 'SilentlyContinue'`, але
+  локальне присвоєння (без `$global:`) ненадійне для цього конкретного
+  командлета — відомий нюанс Windows PowerShell 5.1, коли сам
+  `Test-NetConnection` не завжди резолвить preference-змінну лише з
+  локального scope виклику.
+
+  Тепер тимчасово підміняється ГЛОБАЛЬНЕ `$ProgressPreference`
+  (з гарантованим відновленням попереднього значення в `finally`) —
+  саме так, як і задумувалося коментарем, що вже існував у коді.
+
+  Закрито тестом `Compatibility/TcpConnectionSuppressesGlobalProgress`.
+
 ## 4.4.2 — 2026-08-05
 
 Виправлення за результатами першого тестового розгортання на реальному

@@ -1034,42 +1034,52 @@ function Test-BRAVOTcpConnection {
         [int]$TimeoutMilliseconds = 5000
     )
 
-    # Test-NetConnection малює власний Write-Progress ("Attempting TCP connect",
-    # "Waiting for response"), який перекриває єдиний індикатор BRAVO.
-    # Присвоєння створює локальну змінну: після виходу з функції глобальне
-    # значення лишається незмінним, тому власний прогрес не глушиться.
-    $ProgressPreference = 'SilentlyContinue'
-
-    if (Test-BRAVOCommandAvailable -Name "Test-NetConnection") {
-        try {
-            return [bool](Test-NetConnection `
-                -ComputerName $ComputerName `
-                -Port $Port `
-                -InformationLevel Quiet `
-                -WarningAction SilentlyContinue `
-                -ErrorAction Stop)
-        } catch {
-            # Якщо командлет є, але не підтримується поточною ОС/мережею,
-            # перевіряємо той самий TCP endpoint через .NET.
-        }
-    }
-
-    $client = New-Object System.Net.Sockets.TcpClient
-    $asyncResult = $null
+    # Test-NetConnection малює власний Write-Progress ("Attempting TCP
+    # connect", "Waiting for response"), який перекриває єдиний індикатор
+    # BRAVO. Локальне присвоєння $ProgressPreference (без $global:/$script:)
+    # цього надійно НЕ придушує — реальний випадок: прогрес-бокс Test-NetConnection
+    # все одно з'являвся в консолі поверх кроків BRAVO, хоча за дизайном мав
+    # бути прихованим. Відомий нюанс Windows PowerShell 5.1: сам командлет
+    # не завжди резолвить preference-змінну лише з локального scope
+    # виклику. Тому тимчасово підміняємо ГЛОБАЛЬНЕ значення й гарантовано
+    # повертаємо попереднє в finally — саме так, як і задумувалось коментарем
+    # вище (не має вплинути на прогрес BRAVO за межами цієї функції).
+    $previousGlobalProgressPreference = $global:ProgressPreference
+    $global:ProgressPreference = 'SilentlyContinue'
     try {
-        $asyncResult = $client.BeginConnect($ComputerName, $Port, $null, $null)
-        if (-not $asyncResult.AsyncWaitHandle.WaitOne($TimeoutMilliseconds, $false)) {
+        if (Test-BRAVOCommandAvailable -Name "Test-NetConnection") {
+            try {
+                return [bool](Test-NetConnection `
+                    -ComputerName $ComputerName `
+                    -Port $Port `
+                    -InformationLevel Quiet `
+                    -WarningAction SilentlyContinue `
+                    -ErrorAction Stop)
+            } catch {
+                # Якщо командлет є, але не підтримується поточною ОС/мережею,
+                # перевіряємо той самий TCP endpoint через .NET.
+            }
+        }
+
+        $client = New-Object System.Net.Sockets.TcpClient
+        $asyncResult = $null
+        try {
+            $asyncResult = $client.BeginConnect($ComputerName, $Port, $null, $null)
+            if (-not $asyncResult.AsyncWaitHandle.WaitOne($TimeoutMilliseconds, $false)) {
+                return $false
+            }
+            $client.EndConnect($asyncResult)
+            return $client.Connected
+        } catch {
             return $false
+        } finally {
+            if ($null -ne $asyncResult -and $null -ne $asyncResult.AsyncWaitHandle) {
+                $asyncResult.AsyncWaitHandle.Close()
+            }
+            $client.Close()
         }
-        $client.EndConnect($asyncResult)
-        return $client.Connected
-    } catch {
-        return $false
     } finally {
-        if ($null -ne $asyncResult -and $null -ne $asyncResult.AsyncWaitHandle) {
-            $asyncResult.AsyncWaitHandle.Close()
-        }
-        $client.Close()
+        $global:ProgressPreference = $previousGlobalProgressPreference
     }
 }
 
