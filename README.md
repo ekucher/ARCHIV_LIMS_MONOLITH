@@ -79,7 +79,8 @@ Archive, Health і Maintenance визначають рівень при кожн
 | `WinSCPnet.dll` | Автентифікований read-only тест SFTP |
 | `WinSCP.exe` | Працює в парі з `WinSCPnet.dll` під час тесту доступу |
 
-Еталон цілісності інструментів — `TOOLS_MANIFEST.json` у корені комплекту:
+Еталон цілісності інструментів — `Tools\TOOLS_MANIFEST.json`, у тому
+самому каталозі, що й самі утиліти:
 version-controlled файл із SHA-256 **усіх** виконуваних файлів `Tools\`
 (включно з `7za.dll`, `7zxa.dll`, `DragExt64.dll`, які тягне за собою
 7-Zip). Перед кожним запуском Archive/Health/Maintenance звіряють каталог

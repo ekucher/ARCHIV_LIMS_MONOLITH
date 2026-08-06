@@ -889,13 +889,42 @@ try {
     if (Test-Path -LiteralPath $repositoryToolsDirectory -PathType Container) {
         $repositoryManifestRun = Test-BRAVOToolManifestIntegrity `
             -ToolsDirectory $repositoryToolsDirectory `
-            -ManifestPath (Join-Path $root "TOOLS_MANIFEST.json") `
+            -ManifestPath (Join-Path $repositoryToolsDirectory "TOOLS_MANIFEST.json") `
             -Mode Enforce
         Test-BRAVOCondition `
             -Condition $repositoryManifestRun.IsValid `
             -Name "ToolManifest/RepositoryManifestMatchesTools" `
             -Failure "TOOLS_MANIFEST.json не відповідає реальним Tools у репозиторії: $($repositoryManifestRun.Message)"
     }
+
+    # Маніфест шукається в тому самому каталозі, що й самі утиліти
+    # (Tools\), а не поруч зі скриптом — BRAVO.config і всі три runtime
+    # (fallback на випадок непридатної конфігурації) мають бути
+    # узгоджені: жоден не повинен лишитись зі старим $archivPath/
+    # $bravoScriptDirectory-відносним шляхом.
+    $toolManifestLocationSources = @{
+        'BRAVO.config' = [IO.File]::ReadAllText((Join-Path $root 'BRAVO.config'), [Text.Encoding]::UTF8)
+        'modules\BRAVO.Archive\BRAVO.Archive.Runtime.ps1' = [IO.File]::ReadAllText((Join-Path $root 'modules\BRAVO.Archive\BRAVO.Archive.Runtime.ps1'), [Text.Encoding]::UTF8)
+        'modules\BRAVO.Health\BRAVO.Health.Runtime.ps1' = [IO.File]::ReadAllText((Join-Path $root 'modules\BRAVO.Health\BRAVO.Health.Runtime.ps1'), [Text.Encoding]::UTF8)
+        'modules\BRAVO.Maintenance\BRAVO.Maintenance.Runtime.ps1' = [IO.File]::ReadAllText((Join-Path $root 'modules\BRAVO.Maintenance\BRAVO.Maintenance.Runtime.ps1'), [Text.Encoding]::UTF8)
+    }
+    $filesWithWrongManifestLocation = @(
+        $toolManifestLocationSources.Keys | Where-Object {
+            -not [regex]::IsMatch($toolManifestLocationSources[$_], 'Join-Path\s+\$toolsPath\s+"TOOLS_MANIFEST\.json"')
+        }
+    )
+    Test-BRAVOCondition `
+        -Condition ($filesWithWrongManifestLocation.Count -eq 0) `
+        -Name "ToolManifest/ManifestPathIsInsideToolsDirectory" `
+        -Failure "TOOLS_MANIFEST.json має шукатись через Join-Path `$toolsPath 'TOOLS_MANIFEST.json' (той самий каталог, що й утиліти), а не поруч зі скриптом; не узгоджені: $($filesWithWrongManifestLocation -join ', ')"
+
+    Test-BRAVOCondition `
+        -Condition (
+            (Test-Path -LiteralPath (Join-Path $root 'Tools\TOOLS_MANIFEST.json') -PathType Leaf) -and
+            -not (Test-Path -LiteralPath (Join-Path $root 'TOOLS_MANIFEST.json') -PathType Leaf)
+        ) `
+        -Name "ToolManifest/ManifestFileLivesInsideTools" `
+        -Failure "TOOLS_MANIFEST.json має фізично лежати в Tools\, а не в корені репозиторію"
 
     Remove-Module -Name 'BRAVO.Logging' -Force -ErrorAction SilentlyContinue
     Import-Module -Name (Join-Path $root "modules\BRAVO.Logging\BRAVO.Logging.psd1") -Force -ErrorAction Stop
@@ -3491,9 +3520,9 @@ try {
         # override-механізм, що й решта Sources-полів.
         Test-BRAVOCondition `
             -Condition ($autoDiscovery.BACKUP_ROOT -eq (Join-Path $discoveryTestRoot "ARCHIV")) `
-            -Name "Discovery/ArchivRootDerivedFromBravoRoot" `
+            -Name "Discovery/BackupRootDerivedFromBravoRoot" `
             -Failure "BACKUP_ROOT має обчислюватись як підкаталог 'ARCHIV' усередині BRAVO_ROOT — каталогу встановлення служби BRAVO"
-        $archivRootOverrideDiscovery = Resolve-BRAVOInstallationDiscovery `
+        $BackupRootOverrideDiscovery = Resolve-BRAVOInstallationDiscovery `
             -LimsRoot $discoveryTestRoot `
             -BravoServiceName "BRAVO" `
             -BravoDisplayName "BRAVO Service" `
@@ -3502,10 +3531,10 @@ try {
             -DiscoverySettings @{ Sources = @{ BACKUP_ROOT = "D:\Explicit\Backups" } }
         Test-BRAVOCondition `
             -Condition (
-                $archivRootOverrideDiscovery.BACKUP_ROOT -eq "D:\Explicit\Backups" -and
-                [bool]$archivRootOverrideDiscovery.Overrides["BACKUP_ROOT"]
+                $BackupRootOverrideDiscovery.BACKUP_ROOT -eq "D:\Explicit\Backups" -and
+                [bool]$BackupRootOverrideDiscovery.Overrides["BACKUP_ROOT"]
             ) `
-            -Name "Discovery/ArchivRootOverrideWins" `
+            -Name "Discovery/BackupRootOverrideWins" `
             -Failure "явний discoverySettings.Sources.BACKUP_ROOT override має перемагати над автоматично обчисленим підкаталогом BRAVO_ROOT"
 
         $missingSourceResult = [pscustomobject]@{
@@ -3641,7 +3670,7 @@ try {
             $bravoConfigTextForDiscovery.Contains('$bravoDiscoveryResult.BACKUP_ROOT') -and
             [regex]::IsMatch($bravoConfigTextForDiscovery, '\$pathSettings\.BackupRoot\s+-eq\s+\$defaultArchiveRoot')
         ) `
-        -Name "Discovery/ConfigUsesStrictBravoIdentityAndArchivRoot" `
+        -Name "Discovery/ConfigUsesStrictBravoIdentityAndBackupRoot" `
         -Failure "BRAVO.config має передавати -BravoDisplayName='BRAVO Service' у Resolve-BRAVOInstallationDiscovery і використовувати BACKUP_ROOT як дефолт pathSettings.BackupRoot, лише якщо адміністратор не змінив його вручну"
 
     # AUD-004 (аудит P0.4): restore drill. Читабельний і навіть SHA512/7za-

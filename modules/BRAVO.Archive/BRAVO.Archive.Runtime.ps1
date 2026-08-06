@@ -458,7 +458,7 @@ function Test-Compatibility {
     # NT AUTHORITY\SYSTEM, тому підмінений 7za.exe/WinSCP.com отримав би
     # найвищі права в системі.
     $manifestMode = 'Enforce'
-    $manifestPath = Join-Path $bravoScriptDirectory "TOOLS_MANIFEST.json"
+    $manifestPath = Join-Path $toolsPath "TOOLS_MANIFEST.json"
     if ($toolIntegritySettings -is [System.Collections.IDictionary]) {
         if (-not [string]::IsNullOrWhiteSpace([string]$toolIntegritySettings.Mode)) {
             $manifestMode = [string]$toolIntegritySettings.Mode

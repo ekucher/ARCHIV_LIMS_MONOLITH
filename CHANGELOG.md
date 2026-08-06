@@ -114,9 +114,28 @@
   `Discovery/SystemDirectoryIsPrimaryBravoIniSource`,
   `Discovery/Win32UsesSystem32NotSysWOW64`,
   `Discovery/FallsBackNextToExecutableWhenSystemIniMissing`,
-  `Discovery/ArchivRootDerivedFromBravoRoot`,
-  `Discovery/ArchivRootOverrideWins`,
-  `Discovery/ConfigUsesStrictBravoIdentityAndArchivRoot`.
+  `Discovery/BackupRootDerivedFromBravoRoot`,
+  `Discovery/BackupRootOverrideWins`,
+  `Discovery/ConfigUsesStrictBravoIdentityAndBackupRoot`.
+
+  (Поле переймено на `BACKUP_ROOT` уже в цьому циклі — `ARCHIV_ROOT`
+  збігалося з уже наявним `pathSettings.ArchiveRoot`, геть іншим
+  поняттям: каталогом самого скрипта, де лежать `Tools\`/`LOGS\`.)
+
+- **`Tools\TOOLS_MANIFEST.json` — маніфест переїхав у той самий
+  каталог, що й самі утиліти.** Раніше шукався поруч зі скриптом
+  (`$archivPath\TOOLS_MANIFEST.json`), окремо від `Tools\`, де
+  фактично лежать `7za.exe`/`WinSCP.*`. Тепер — `Tools\TOOLS_MANIFEST.json`,
+  узгоджено з `TOOLS_INTEGRITY.json` (TOFU-базова лінія), який завжди
+  був там. Оновлено всюди: `BRAVO.config`, fallback-значення в усіх
+  трьох runtime, `ci\Update-BRAVOToolsManifest.ps1`,
+  `ci\Update-BRAVORuntimeManifest.ps1` (сам маніфест теж
+  version-controlled і входить у `RUNTIME_MANIFEST.json` — довелось
+  оновити шлях і там, інакше він випав би з перевірки цілісності
+  мовчки), `README.md`, `SECURITY.md`.
+
+  Закрито тестами `ToolManifest/ManifestPathIsInsideToolsDirectory`,
+  `ToolManifest/ManifestFileLivesInsideTools`.
 
 ## 4.4.2 — 2026-08-05
 

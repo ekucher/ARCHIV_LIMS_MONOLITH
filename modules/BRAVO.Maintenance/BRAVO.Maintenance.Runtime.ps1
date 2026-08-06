@@ -2834,7 +2834,7 @@ if ($script:BRAVOToolIntegrity.HasIntegrityIssue) {
 # здатний заблокувати запуск. Maintenance викликає архіватор і WinSCP,
 # тому підмінений інструмент так само отримав би права SYSTEM.
 $script:BRAVOToolManifestMode = 'Enforce'
-$script:BRAVOToolManifestPath = Join-Path $bravoScriptDirectory "TOOLS_MANIFEST.json"
+$script:BRAVOToolManifestPath = Join-Path $toolsPath "TOOLS_MANIFEST.json"
 if ($toolIntegritySettings -is [System.Collections.IDictionary]) {
     if (-not [string]::IsNullOrWhiteSpace([string]$toolIntegritySettings.Mode)) {
         $script:BRAVOToolManifestMode = [string]$toolIntegritySettings.Mode

@@ -33,7 +33,9 @@ $manifestPath = Join-Path $Root 'RUNTIME_MANIFEST.json'
 # нього не існує. Замість цього guard окремо перевіряє, що конфігурація
 # не послаблює захист.
 $includedExtensions = @('.ps1', '.psm1', '.psd1')
-$includedExtraFiles = @('VERSION.json', 'TOOLS_MANIFEST.json')
+# Відносні шляхи, не самі лише імена: TOOLS_MANIFEST.json лежить у
+# Tools\ (поруч із самими утилітами), а не в корені комплекту.
+$includedExtraFiles = @('VERSION.json', 'Tools\TOOLS_MANIFEST.json')
 $excludedDirectoryPattern = '^(LOGS|\.git|\.vscode|local-backups)[\\/]'
 
 $rootPrefixLength = $Root.TrimEnd('\', '/').Length + 1
@@ -43,8 +45,8 @@ $candidates = New-Object System.Collections.ArrayList
 Get-ChildItem -LiteralPath $Root -Recurse -File |
     Where-Object { $includedExtensions -contains $_.Extension.ToLowerInvariant() } |
     ForEach-Object { [void]$candidates.Add($_.FullName) }
-foreach ($extraName in $includedExtraFiles) {
-    $extraPath = Join-Path $Root $extraName
+foreach ($extraRelativePath in $includedExtraFiles) {
+    $extraPath = Join-Path $Root $extraRelativePath
     if (Test-Path -LiteralPath $extraPath -PathType Leaf) {
         [void]$candidates.Add((Resolve-Path -LiteralPath $extraPath).Path)
     }

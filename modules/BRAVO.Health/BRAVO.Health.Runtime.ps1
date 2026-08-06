@@ -3739,7 +3739,7 @@ if ($script:BRAVOToolIntegrity.HasIntegrityIssue) {
 # звітує. Саме він має першим помітити підміну й підняти тривогу навіть
 # тоді, коли архівація ще не запускалась. Блокують Archive і Maintenance.
 $script:BRAVOToolManifestMode = 'Enforce'
-$script:BRAVOToolManifestPath = Join-Path $bravoScriptDirectory "TOOLS_MANIFEST.json"
+$script:BRAVOToolManifestPath = Join-Path $toolsPath "TOOLS_MANIFEST.json"
 if ($toolIntegritySettings -is [System.Collections.IDictionary]) {
     if (-not [string]::IsNullOrWhiteSpace([string]$toolIntegritySettings.Mode)) {
         $script:BRAVOToolManifestMode = [string]$toolIntegritySettings.Mode
