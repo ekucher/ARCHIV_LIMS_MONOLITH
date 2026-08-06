@@ -3500,16 +3500,19 @@ try {
             -not [string]::IsNullOrWhiteSpace($writeBravoHeaderFunctionText) -and
             $writeBravoHeaderFunctionText.Contains('[switch]$SuppressText') -and
             $writeBravoHeaderFunctionText.Contains('if ($SuppressText) {') -and
-            # Резервування місця під прогрес-бар має лишитись БЕЗУМОВНИМ:
-            # цикл reserved lines має стояти РАНІШЕ за "if ($SuppressText)".
+            # Реальний випадок: фіксований блок порожніх рядків (раніше
+            # безумовний) лишався видимим розривом навіть без жодного
+            # тексту заголовка для захисту — SuppressText тепер вимикає
+            # ВЕСЬ вивід Write-BRAVOHeader, і перевірка на це має стояти
+            # РАНІШЕ за цикл резервування рядків, а не після нього.
             (
-                $writeBravoHeaderFunctionText.IndexOf('BRAVOConsoleProgressReservedLines')
-            ) -lt (
                 $writeBravoHeaderFunctionText.IndexOf('if ($SuppressText) {')
+            ) -lt (
+                $writeBravoHeaderFunctionText.IndexOf('for ($i = 0; $i -lt $script:BRAVOConsoleProgressReservedLines')
             )
         ) `
         -Name "Console/EmbeddedHealthSuppressesDuplicateHeader" `
-        -Failure "Invoke-BRAVOHealthCheck (вбудований виклик Health з Archive) має передавати -SuppressHeader у Invoke-BRAVOHealth, а Write-BRAVOHeader — приховувати лише текст заголовка, зберігаючи резервування місця під прогрес-бар"
+        -Failure "Invoke-BRAVOHealthCheck (вбудований виклик Health з Archive) має передавати -SuppressHeader у Invoke-BRAVOHealth, а Write-BRAVOHeader — повністю пропускати вивід (і текст, і резервування рядків під прогрес-бар), коли текст придушено"
 
     # Реальний випадок (скріншот користувача, після прибирання заголовка):
     # вбудований виклик Health усередині Archive все одно друкував ВЛАСНУ
