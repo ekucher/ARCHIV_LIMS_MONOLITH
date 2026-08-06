@@ -1877,6 +1877,50 @@ try {
         -Name "Secrets/SecureCredentialSkipsPlainText" `
         -Failure "New-BRAVOSecureCredential має будувати PSCredential напряму з SecureString, без проміжного плейнтексту"
 
+    # Ручний запуск з вiдсутнiми обов'язковими credentials пропонує
+    # налаштувати їх одразу — але лише коли за клавіатурою реально людина,
+    # лише для поточного користувача, і лише запитуючи те, чого справдi
+    # бракує (не перезаписуючи вже наявне). AST/regex-перевірка, бо живий
+    # функціональний тест вимагав би реальної інтерактивної консолі та
+    # довiльного доступу до Credential Manager під час CI.
+    # Якір навмисно від САМОГО КОДУ (умова if), а не від пояснювального
+    # коментаря вище: коментар навмисно згадує і "-StoreFor CurrentUser",
+    # і "-StoreFor ScheduledTaskAccount" прозою, і перша ж спроба цієї
+    # перевірки зловила власний коментар замість реального виклику.
+    $archiveCredentialSetupBlockText = if ($archiveScriptText -match
+        '(?s)if \(\$credentialHelperLoaded -and -not \$NoPause.*?-StoreFor CurrentUser') {
+        $Matches[0]
+    } else {
+        ''
+    }
+    Test-BRAVOCondition `
+        -Condition (
+            -not [string]::IsNullOrWhiteSpace($archiveCredentialSetupBlockText) -and
+            $archiveCredentialSetupBlockText.Contains('-not $NoPause') -and
+            $archiveCredentialSetupBlockText.Contains('[Environment]::UserInteractive') -and
+            $archiveCredentialSetupBlockText.Contains('[Console]::IsInputRedirected')
+        ) `
+        -Name "Console/ArchiveOffersCredentialSetupOnlyWhenInteractive" `
+        -Failure "автозапуск BRAVO_CREDENTIALS_SETUP.ps1 має спрацьовувати лише коли НЕ -NoPause, [Environment]::UserInteractive і НЕ [Console]::IsInputRedirected — інакше заплановане завдання чи дочірній процес автоматизації зависне на Read-Host"
+    Test-BRAVOCondition `
+        -Condition (
+            -not [string]::IsNullOrWhiteSpace($archiveCredentialSetupBlockText) -and
+            $archiveCredentialSetupBlockText.Contains('-Action Ensure') -and
+            $archiveCredentialSetupBlockText.Contains('-Component Required') -and
+            $archiveCredentialSetupBlockText.Contains('-StoreFor CurrentUser') -and
+            -not $archiveCredentialSetupBlockText.Contains('ScheduledTaskAccount') -and
+            -not $archiveCredentialSetupBlockText.Contains('-StoreFor Both')
+        ) `
+        -Name "Console/ArchiveCredentialSetupUsesEnsureAndCurrentUserOnly" `
+        -Failure "автозапуск має викликати BRAVO_CREDENTIALS_SETUP.ps1 з -Action Ensure (запитати лише відсутнє, не перезаписувати наявне) -Component Required -StoreFor CurrentUser — ніколи ScheduledTaskAccount/Both зі скрипта, що виконує архівацію"
+    Test-BRAVOCondition `
+        -Condition (
+            -not [string]::IsNullOrWhiteSpace($archiveCredentialSetupBlockText) -and
+            [regex]::IsMatch($archiveCredentialSetupBlockText, '&\s+powershell\.exe\s+-NoProfile\s+-ExecutionPolicy Bypass[^\r\n]*\r?\n\s*-File \$credentialsSetupPath')
+        ) `
+        -Name "Console/ArchiveCredentialSetupRunsAsIsolatedProcess" `
+        -Failure "BRAVO_CREDENTIALS_SETUP.ps1 має запускатись окремим процесом (powershell.exe -File), а не &/dot-source: інакше він перезапише глобальний стан BRAVO.config поточного запуску Archive"
+
     # SMB-шлях плейнтексту не потребує взагалі: далі використовується лише
     # PSCredential. Регресія тут означала б повернення незанулюваної копії
     # пароля в пам'ять кожного запуску Archive і Health.

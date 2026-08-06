@@ -230,6 +230,72 @@ if ($institutionSettingsRequired -or
     }
 }
 
+# Ручний запуск (не через Планувальник) з відсутнiми обов'язковими
+# обліковими даними — пропонуємо налаштувати їх зараз (лише для
+# ПОТОЧНОГО користувача) замiсть того, щоб просто впасти з помилкою й
+# змусити шукати окремий скрипт. -StoreFor CurrentUser навмисно: обліковi
+# данi облiкового запису запланованого завдання (SYSTEM) налаштовуються
+# окремо й свiдомо через BRAVO_SETUP.ps1/BRAVO_CREDENTIALS_SETUP.ps1
+# -StoreFor ScheduledTaskAccount — тут ми їх не чіпаємо.
+#
+# -NoPause і перевірки нижче — той самий "чи це людина за клавіатурою"
+# сигнал, що вже охороняє Wait-BRAVOManualExit: SYSTEM-завдання завжди
+# передає -NoPause, а IsInputRedirected ловить дочірні процеси
+# автоматизації (самотест, CI), які успадкували консоль батьківського
+# процесу, але не мають кому відповідати на Read-Host.
+if ($credentialHelperLoaded -and -not $NoPause -and
+    ($archiveCredentialRequired -or $sftpCredentialRequired)) {
+    $missingRequiredCredentialTargets = New-Object System.Collections.Generic.List[string]
+    if ($archiveCredentialRequired) {
+        $checkTarget = [string]$credentialSettings.Targets.ArchivePassword
+        if ([string]::IsNullOrWhiteSpace($checkTarget)) { $checkTarget = "BRAVO_7Z_PASSWORD" }
+        if ([string]::IsNullOrWhiteSpace((Get-BRAVOCredentialSecret -Target $checkTarget))) {
+            [void]$missingRequiredCredentialTargets.Add($checkTarget)
+        }
+    }
+    if ($sftpCredentialRequired) {
+        $checkLoginTarget = [string]$credentialSettings.Targets.SFTPLogin
+        if ([string]::IsNullOrWhiteSpace($checkLoginTarget)) { $checkLoginTarget = "BRAVO_SFTP_LOGIN" }
+        $checkPasswordTarget = [string]$credentialSettings.Targets.SFTPPassword
+        if ([string]::IsNullOrWhiteSpace($checkPasswordTarget)) { $checkPasswordTarget = "BRAVO_SFTP_PASSWORD" }
+        if ([string]::IsNullOrWhiteSpace((Get-BRAVOCredentialSecret -Target $checkLoginTarget))) {
+            [void]$missingRequiredCredentialTargets.Add($checkLoginTarget)
+        }
+        if ([string]::IsNullOrWhiteSpace((Get-BRAVOCredentialSecret -Target $checkPasswordTarget))) {
+            [void]$missingRequiredCredentialTargets.Add($checkPasswordTarget)
+        }
+    }
+
+    if ($missingRequiredCredentialTargets.Count -gt 0) {
+        $isRealInteractiveSession = $false
+        try {
+            $isRealInteractiveSession = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected
+        } catch {
+            $isRealInteractiveSession = $false
+        }
+        if ($isRealInteractiveSession) {
+            Write-Host ""
+            Write-Host "Вiдсутнi обов'язковi облiковi данi: $($missingRequiredCredentialTargets -join ', ')" -ForegroundColor $logColors.WARNING
+            Write-Host "Запускаю налаштування для поточного користувача ($([Security.Principal.WindowsIdentity]::GetCurrent().Name))..." -ForegroundColor $logColors.WARNING
+            $credentialsSetupPath = Join-Path $bravoScriptDirectory 'BRAVO_CREDENTIALS_SETUP.ps1'
+            if (Test-Path -LiteralPath $credentialsSetupPath -PathType Leaf) {
+                # Окремий процес, не dot-source/&: BRAVO_CREDENTIALS_SETUP.ps1
+                # сам виконує повне завантаження BRAVO.config і перезаписав
+                # би глобальний стан (pathSettings, componentSettings тощо)
+                # цього процесу — ізоляція важливіша за швидкість запуску.
+                & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+                    -File $credentialsSetupPath `
+                    -ConfigPath $ConfigPath `
+                    -Action Ensure `
+                    -Component Required `
+                    -StoreFor CurrentUser
+            } else {
+                Write-Host "Не знайдено BRAVO_CREDENTIALS_SETUP.ps1 — налаштуйте облiковi данi вручну." -ForegroundColor $logColors.WARNING
+            }
+        }
+    }
+}
+
 if ($credentialHelperLoaded) {
     try {
         [void](Import-BRAVOInstitutionSettings `

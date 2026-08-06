@@ -156,6 +156,26 @@
   Закрито тестами `Discovery/ArchiveRootDefaultsToScriptDirectory`,
   `Discovery/BackupRootStaysEmptyWithoutRealService`.
 
+- **Ручний запуск `BRAVO_ARCHIV.ps1` з відсутніми обов'язковими
+  обліковими даними тепер сам пропонує їх налаштувати**, замість того
+  щоб просто впасти з помилкою `Не вдалося завантажити пароль архiвiв`
+  і змусити шукати окремий скрипт. Якщо запуск інтерактивний (не
+  `-NoPause`, реальна консоль — та сама перевірка
+  `[Environment]::UserInteractive -and -not [Console]::IsInputRedirected`,
+  що вже охороняє паузу перед закриттям) і не вистачає `BRAVO_7Z_PASSWORD`
+  та/або `BRAVO_SFTP_LOGIN`/`BRAVO_SFTP_PASSWORD` (останні — лише якщо
+  компонент їх справді потребує), автоматично запускається
+  `BRAVO_CREDENTIALS_SETUP.ps1 -Action Ensure -Component Required
+  -StoreFor CurrentUser` окремим процесом (ізольовано, щоб не
+  перезаписати глобальний стан поточного запуску) — і лише для
+  поточного користувача; обліковий запис запланованого завдання
+  (`-StoreFor ScheduledTaskAccount`) як і раніше налаштовується окремо
+  через `BRAVO_SETUP.ps1`/`BRAVO_CREDENTIALS_SETUP.ps1`.
+
+  Закрито тестами `Console/ArchiveOffersCredentialSetupOnlyWhenInteractive`,
+  `Console/ArchiveCredentialSetupUsesEnsureAndCurrentUserOnly`,
+  `Console/ArchiveCredentialSetupRunsAsIsolatedProcess`.
+
 ## 4.4.2 — 2026-08-05
 
 Виправлення за результатами першого тестового розгортання на реальному
