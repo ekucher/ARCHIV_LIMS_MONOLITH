@@ -445,10 +445,48 @@ function Resolve-BRAVOInstallationDiscovery {
     $modelProjectFile = Get-BRAVOIniValue -IniData $iniData -Section "model" -Key "MODEL"
 
     # --- BAZA_APP ---
-    $bazaAppResolved = Resolve-BRAVOSourceField `
-        -FieldName "BAZA_APP" -IniSection "__none__" -IniKey "__none__" `
-        -DeriveFromIniValue $null `
-        -LegacyFallbackPath (Join-Path $bravoRoot "BAZA")
+    # BAZA не має власного ключа в bravo.ini. Коли MODEL/BLOG вже взято з
+    # bravo.ini (реальна інсталяція), BAZA_APP надійніше вивести як
+    # сусідній каталог у тому самому корені LIMS-інсталяції, ніж через
+    # BRAVO_ROOT: останній залежить від того, чи знайдено саму
+    # Windows-службу BRAVO, а MODEL/BLOG з bravo.ini — ні. Реальний
+    # випадок: службу BRAVO не встановлено (лише bravo.ini на диску),
+    # BRAVO_ROOT деградує до LIMSRoot — без цього кроку BAZA_APP шукався
+    # б поруч із LIMSRoot, а не поруч із реальним MODEL/BLOG.
+    $iniInstallationRoot = if ($modelResolved.Reason -like "bravo.ini *") {
+        Split-Path -Path $modelResolved.Value -Parent
+    } elseif ($blogResolved.Reason -like "bravo.ini *") {
+        Split-Path -Path $blogResolved.Value -Parent
+    } else {
+        $null
+    }
+    $bazaAppOverrideValue = if ($sourceOverrides.Contains("BAZA_APP") -and
+        -not [string]::IsNullOrWhiteSpace([string]$sourceOverrides["BAZA_APP"])) {
+        [string]$sourceOverrides["BAZA_APP"]
+    } else {
+        $null
+    }
+    $bazaAppResolved = if (-not [string]::IsNullOrWhiteSpace($bazaAppOverrideValue)) {
+        $overrides["BAZA_APP"] = $true
+        [pscustomobject]@{
+            Value = $bazaAppOverrideValue
+            Reason = "явний override discoverySettings.Sources.BAZA_APP"
+        }
+    } elseif (-not [string]::IsNullOrWhiteSpace($iniInstallationRoot)) {
+        [pscustomobject]@{
+            Value = Join-Path $iniInstallationRoot "BAZA"
+            Reason = "поруч із MODEL/BLOG з bravo.ini: $iniInstallationRoot"
+        }
+    } else {
+        [pscustomobject]@{
+            Value = if (-not [string]::IsNullOrWhiteSpace($bravoRoot)) {
+                Join-Path $bravoRoot "BAZA"
+            } else {
+                $null
+            }
+            Reason = "legacy fallback: BRAVO_ROOT-відносний шлях (bravo.ini недоступний)"
+        }
+    }
 
     # --- BACKUP_ROOT: каталог збереження бекапів ---
     # Джерело істини: каталог "ARCHIV" усередині шляху встановлення служби

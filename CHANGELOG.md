@@ -216,6 +216,25 @@
 
   Закрито тестом `Health/SFTPSynchronizationToleratesMissingActionCounts`.
 
+- **`BAZA_APP` шукався поруч із `LIMSRoot`, а не поруч із реальним
+  `MODEL`/`BLOG` з `bravo.ini`.** `BAZA` не має власного ключа в
+  `bravo.ini`, тому `BAZA_APP` завжди виводився як `<BRAVO_ROOT>\BAZA`
+  — а `BRAVO_ROOT`, коли Windows-службу BRAVO не знайдено (типова
+  dev/test-машина без встановленої служби, лише з конфігом), деградує
+  до `LIMSRoot`-фолбеку. Реальний випадок: `bravo.ini` знайдено
+  (системний каталог Windows не залежить від служби), `MODEL`/`BLOG` з
+  нього коректно вказували на `D:\LIMS-NEW\...`, а `BAZA_APP` усе одно
+  шукався в `C:\Users\...\Documents\BAZA` — зовсім іншому місці.
+
+  Тепер, коли `MODEL` або `BLOG` вже взято з `bravo.ini`, `BAZA_APP`
+  виводиться як сусідній каталог у тому самому корені інсталяції
+  (`Split-Path -Parent` від `MODEL_SOURCE`/`BLOG_SOURCE`) — і лише
+  якщо жоден з них з `bravo.ini` не прийшов, лишається старий
+  `<BRAVO_ROOT>\BAZA` fallback.
+
+  Закрито тестом
+  `Discovery/BazaAppFollowsIniInstallationRootNotBravoRootFallback`.
+
 ## 4.4.2 — 2026-08-05
 
 Виправлення за результатами першого тестового розгортання на реальному

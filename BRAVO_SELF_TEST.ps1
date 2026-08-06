@@ -3523,6 +3523,39 @@ try {
             -Name "Discovery/BackupRootStaysEmptyWithoutRealService" `
             -Failure "без реально знайденої служби BRAVO BACKUP_ROOT має лишатись порожнім — LIMSRoot-відносна здогадка гірша за власний дефолт BRAVO.config (pathSettings.ArchiveRoot)"
 
+        # Реальний випадок (звіт користувача, реальна dev-машина): служби
+        # BRAVO немає взагалі, але системний bravo.ini є — і MODEL/BLOG у
+        # ньому вказують на зовсім інший диск/каталог, ніж LimsRoot
+        # ("D:\LIMS-NEW\..." проти "C:\Users\...\Documents"). BRAVO_ROOT
+        # тоді деградує до LimsRoot-фолбеку — без цього виправлення
+        # BAZA_APP шукався б поруч із LimsRoot, а не поруч із реальним
+        # MODEL/BLOG, куди насправді дивиться bravo.ini.
+        $iniOnlyInstallRoot = Join-Path $discoveryTestRoot "IniOnlyInstall"
+        [void][IO.Directory]::CreateDirectory($iniOnlyInstallRoot)
+        $iniOnlySystemRoot = Join-Path $discoveryTestRoot "IniOnlyWindows"
+        $iniOnlySysWow64Dir = Join-Path $iniOnlySystemRoot "SysWOW64"
+        [void][IO.Directory]::CreateDirectory($iniOnlySysWow64Dir)
+        [IO.File]::WriteAllLines((Join-Path $iniOnlySysWow64Dir "bravo.ini"), @(
+            '[model]',
+            ("MODEL={0}" -f (Join-Path $iniOnlyInstallRoot "Model\lims")),
+            ("BLOG={0}\" -f (Join-Path $iniOnlyInstallRoot "BLOG"))
+        ))
+        $iniOnlyDiscovery = Resolve-BRAVOInstallationDiscovery `
+            -LimsRoot $discoveryTestRoot `
+            -BravoServiceName "BRAVO_NOT_INSTALLED" `
+            -Services @() `
+            -SystemRoot $iniOnlySystemRoot `
+            -Is64BitOperatingSystem $true
+        Test-BRAVOCondition `
+            -Condition (
+                $iniOnlyDiscovery.BRAVO_ROOT -eq $discoveryTestRoot -and
+                $iniOnlyDiscovery.MODEL_SOURCE -eq (Join-Path $iniOnlyInstallRoot "Model") -and
+                $iniOnlyDiscovery.BAZA_APP -eq (Join-Path $iniOnlyInstallRoot "BAZA") -and
+                $iniOnlyDiscovery.Reasons.BAZA_APP.Contains("MODEL/BLOG з bravo.ini")
+            ) `
+            -Name "Discovery/BazaAppFollowsIniInstallationRootNotBravoRootFallback" `
+            -Failure "коли bravo.ini знайдено, а служби BRAVO немає, BAZA_APP має братись поруч із MODEL/BLOG з bravo.ini, а не поруч із LimsRoot-фолбеком BRAVO_ROOT"
+
         # Джерело істини — Service name ТА Display name одночасно.
         # Сторонній сервіс із Name="BRAVO", але іншим Display name (типова
         # підстава для помилкового спрацювання) не повинен визнаватись
