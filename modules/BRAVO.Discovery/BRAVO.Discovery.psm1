@@ -1,9 +1,29 @@
 ﻿# Автоматичний Discovery джерел BRAVO: визначення BRAVO_ROOT/WEB_ROOT і
-# джерел MODEL/BLOG/BRAVOEXCH/BAZA_APP/BAZA_WWW за встановленими Windows-
-# службами та активним bravo.ini, з повним ручним перевизначенням через
-# BRAVO.config.
+# джерел MODEL/BLOG/BRAVOEXCH/BAZA_APP/BAZA_WWW/BACKUP_ROOT за встановленими
+# Windows-службами та активним bravo.ini, з повним ручним перевизначенням
+# через BRAVO.config.
+#
+# BRAVO_ROOT — каталог встановлення служби BRAVO (де лежить bravo.exe).
+# Не плутати з pathSettings.ArchiveRoot (BRAVO.config) — каталогом самого
+# скрипта резервного копіювання (де лежать Tools\/LOGS\/TOOLS_MANIFEST.json,
+# завжди поруч зі скриптом, ніколи не через Discovery). BACKUP_ROOT —
+# підкаталог "ARCHIV" усередині BRAVO_ROOT, дефолт для
+# pathSettings.BackupRoot (куди зберігаються самі архіви) — третє окреме
+# поняття, яке легко сплутати з двома першими через спільне слово
+# "ARCHIV"/"архів".
 #
 # Мінімальна підтримувана версія: Windows PowerShell 3.0.
+#
+# Явна залежність від BRAVO.Compatibility (Get-BRAVOWmiInstance): кожен
+# PowerShell-модуль має власний session state, тому імпорт Compatibility
+# кудись ІНШИМ модулем/скриптом (наприклад, BRAVO.Health.Runtime.ps1 перед
+# Import-BravoConfiguration) не робить її функції видимими тут — це підтвердив
+# живий прогін BRAVO_HEALTH.ps1: Get-BRAVOWmiInstance була "не розпізнана"
+# всередині Find-BRAVOServiceByCandidates, хоча той самий виклик успішно
+# знаходив реальну службу Br-a-vo.web поза цим модулем. Той самий патерн уже
+# в BRAVO.Notifications/BRAVO.ArchiveRuntime/BRAVO.ArchiveHelpers.
+$compatibilityManifest = Join-Path (Split-Path $PSScriptRoot -Parent) 'BRAVO.Compatibility\BRAVO.Compatibility.psd1'
+Import-Module -Name $compatibilityManifest -ErrorAction Stop
 
 function Get-BRAVOServiceExecutablePath {
     # Парсить Win32_Service.PathName ("C:\...\bravo.exe" -k runservice ->
@@ -210,6 +230,91 @@ function Get-BRAVOIniValue {
     return $null
 }
 
+function Get-BRAVOApacheDocumentRoot {
+    # Мінімальний парсер httpd.conf: шукає перше неекрановане "DocumentRoot"
+    # (Apache-директиви регістронезалежні). Значення може бути в лапках чи
+    # без них, зі слешами в будь-який бік — Apache на Windows традиційно
+    # пише шлях через "/" (підтверджено наданим httpd.conf: DocumentRoot
+    # "c:/br-a-vo.web/www"). Не заходить усередину <VirtualHost>-блоків:
+    # для інсталяції, поставленої разом з BRAVO, основний DocumentRoot
+    # завжди в головній секції конфігу.
+    [CmdletBinding()]
+    param(
+        [string]$Path,
+        [string[]]$Content
+    )
+
+    if ($null -eq $Content) {
+        if ([string]::IsNullOrWhiteSpace($Path) -or
+            -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+            return $null
+        }
+        $Content = Get-Content -LiteralPath $Path -Encoding UTF8
+    }
+
+    foreach ($rawLine in @($Content)) {
+        $line = ([string]$rawLine).Trim()
+        if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith("#")) {
+            continue
+        }
+        $quotedMatch = [regex]::Match($line, '(?i)^DocumentRoot\s+"([^"]*)"\s*$')
+        if ($quotedMatch.Success) {
+            $rawValue = $quotedMatch.Groups[1].Value.Trim()
+        } else {
+            $unquotedMatch = [regex]::Match($line, '(?i)^DocumentRoot\s+(\S+)\s*$')
+            $rawValue = if ($unquotedMatch.Success) {
+                $unquotedMatch.Groups[1].Value.Trim()
+            } else {
+                $null
+            }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($rawValue)) {
+            return $rawValue.Replace('/', '\')
+        }
+    }
+    return $null
+}
+
+function Get-BRAVOSystemBravoIniPath {
+    # bravo.ini не лежить поруч із bravo.exe — служба BRAVO пише його в
+    # системний каталог Windows. Джерело істини (підтверджено на реальних
+    # інсталяціях): %SystemRoot%\SysWOW64\bravo.ini на 64-бітній Windows,
+    # %SystemRoot%\System32\bravo.ini на 32-бітній.
+    #
+    # Причина розбіжності — WOW64 File System Redirector: BRAVO 32-бітний
+    # процес, і коли він звертається до "System32", 64-бітна Windows
+    # прозоро для нього перенаправляє звернення в SysWOW64. Якщо PowerShell
+    # тут запущено як 64-бітний процес (типово для запланованих завдань),
+    # він бачить СПРАВЖНІй System32 без редиректу — і bravo.ini там просто
+    # немає, бо служба писала його в SysWOW64. На 32-бітній Windows шару
+    # редиректора не існує взагалі, тому System32 — це вже правильний шлях.
+    #
+    # -Is64BitOperatingSystem/-SystemRoot дозволяють self-test підставити
+    # синтетичне значення замість [Environment]::Is64BitOperatingSystem/
+    # $env:SystemRoot — той самий injectable-патерн, що й -Services.
+    [CmdletBinding()]
+    param(
+        [string]$SystemRoot,
+        [Nullable[bool]]$Is64BitOperatingSystem
+    )
+
+    $resolvedSystemRoot = if (-not [string]::IsNullOrWhiteSpace($SystemRoot)) {
+        $SystemRoot
+    } else {
+        $env:SystemRoot
+    }
+    if ([string]::IsNullOrWhiteSpace($resolvedSystemRoot)) {
+        return $null
+    }
+    $resolvedIs64Bit = if ($null -ne $Is64BitOperatingSystem) {
+        [bool]$Is64BitOperatingSystem
+    } else {
+        [Environment]::Is64BitOperatingSystem
+    }
+    $systemSubDirectory = if ($resolvedIs64Bit) { 'SysWOW64' } else { 'System32' }
+    return Join-Path $resolvedSystemRoot "$systemSubDirectory\bravo.ini"
+}
+
 function Resolve-BRAVOInstallationDiscovery {
     # Пріоритетний ланцюг (аудит/ТЗ CLAUDE_CODE_TZ_ARCHIV_LIMS_MONOLITH.md):
     # 1. CLI-параметри runtime-скриптів — не реалізовано в цій ітерації.
@@ -229,9 +334,15 @@ function Resolve-BRAVOInstallationDiscovery {
         [Parameter(Mandatory = $true)][string]$LimsRoot,
         [hashtable]$DiscoverySettings,
         [string]$BravoServiceName = "BRAVO",
+        # Джерело істини для ідентифікації служби BRAVO — Service name
+        # ТА Display name одночасно, а не будь-яке з них окремо: сторонній
+        # сервіс із випадково схожим ім'ям не повинен пройти як BRAVO.
+        [string]$BravoDisplayName = "BRAVO Service",
         [string[]]$WebServiceCandidates = @(),
         [string]$ExchangeApiServiceName,
-        [object[]]$Services
+        [object[]]$Services,
+        [string]$SystemRoot,
+        [Nullable[bool]]$Is64BitOperatingSystem
     )
 
     $reasons = @{}
@@ -261,9 +372,19 @@ function Resolve-BRAVOInstallationDiscovery {
         $null
     }
 
-    $bravoServices = Find-BRAVOServiceByCandidates `
-        -ServiceCandidates @($BravoServiceName) `
+    # Пошук веде за обома іменами (ширша сітка — Name АБО DisplayName
+    # дорівнює будь-якому кандидату), але службою BRAVO визнається лише
+    # та, що пройшла СТРОГУ перевірку нижче: Name -eq BravoServiceName
+    # І DisplayName -eq BravoDisplayName одночасно. Джерело істини.
+    $bravoServiceSearchCandidates = @(
+        $BravoServiceName, $BravoDisplayName
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+    $bravoServicesFound = Find-BRAVOServiceByCandidates `
+        -ServiceCandidates $bravoServiceSearchCandidates `
         -Services $Services
+    $bravoServices = @($bravoServicesFound | Where-Object {
+        $_.Name -ieq $BravoServiceName -and $_.DisplayName -ieq $BravoDisplayName
+    })
     $bravoServiceMatch = $bravoServices | Select-Object -First 1
     # AUD-007 (аудит P1.1): кілька служб BRAVO з РІЗНИМИ виконуваними
     # файлами — ознака stale/дублюючої інсталяції. Обираємо перший
@@ -294,20 +415,31 @@ function Resolve-BRAVOInstallationDiscovery {
     }
     $reasons["BravoRoot"] = $bravoRootReason
 
+    # Джерело істини — системний каталог Windows (Get-BRAVOSystemBravoIniPath),
+    # НЕ каталог встановлення bravo.exe: bravo.ini туди не пишеться.
+    # Шлях поруч із bravo.exe лишається лише вторинним fallback — на
+    # випадок нетипової інсталяції, де файл справді лежить там.
+    $systemBravoIniPath = Get-BRAVOSystemBravoIniPath -SystemRoot $SystemRoot -Is64BitOperatingSystem $Is64BitOperatingSystem
     $bravoIniPath = $null
     $bravoIniReason = $null
     if (-not [string]::IsNullOrWhiteSpace($bravoIniPathOverride)) {
         $bravoIniPath = $bravoIniPathOverride
         $overrides["BravoIniPath"] = $true
         $bravoIniReason = "явний override discoverySettings.BravoIniPath"
+    } elseif (-not [string]::IsNullOrWhiteSpace($systemBravoIniPath) -and
+        (Test-Path -LiteralPath $systemBravoIniPath -PathType Leaf)) {
+        $bravoIniPath = $systemBravoIniPath
+        $bravoIniReason = "знайдено в системному каталозі Windows: $systemBravoIniPath"
     } elseif (-not [string]::IsNullOrWhiteSpace($bravoRoot)) {
         $candidateIniPath = Join-Path $bravoRoot "bravo.ini"
         if (Test-Path -LiteralPath $candidateIniPath -PathType Leaf) {
             $bravoIniPath = $candidateIniPath
-            $bravoIniReason = "знайдено поруч з bravo.exe: $candidateIniPath"
+            $bravoIniReason = "не знайдено в системному каталозі ($systemBravoIniPath); знайдено поруч з bravo.exe: $candidateIniPath"
         } else {
-            $bravoIniReason = "bravo.ini не знайдено за шляхом $candidateIniPath"
+            $bravoIniReason = "bravo.ini не знайдено ні в системному каталозі ($systemBravoIniPath), ні поруч з bravo.exe ($candidateIniPath)"
         }
+    } else {
+        $bravoIniReason = "bravo.ini не знайдено в системному каталозі ($systemBravoIniPath), а BRAVO_ROOT невідомий"
     }
     $reasons["BravoIniPath"] = $bravoIniReason
 
@@ -369,10 +501,69 @@ function Resolve-BRAVOInstallationDiscovery {
     $modelProjectFile = Get-BRAVOIniValue -IniData $iniData -Section "model" -Key "MODEL"
 
     # --- BAZA_APP ---
-    $bazaAppResolved = Resolve-BRAVOSourceField `
-        -FieldName "BAZA_APP" -IniSection "__none__" -IniKey "__none__" `
+    # BAZA не має власного ключа в bravo.ini. Коли MODEL/BLOG вже взято з
+    # bravo.ini (реальна інсталяція), BAZA_APP надійніше вивести як
+    # сусідній каталог у тому самому корені LIMS-інсталяції, ніж через
+    # BRAVO_ROOT: останній залежить від того, чи знайдено саму
+    # Windows-службу BRAVO, а MODEL/BLOG з bravo.ini — ні. Реальний
+    # випадок: службу BRAVO не встановлено (лише bravo.ini на диску),
+    # BRAVO_ROOT деградує до LIMSRoot — без цього кроку BAZA_APP шукався
+    # б поруч із LIMSRoot, а не поруч із реальним MODEL/BLOG.
+    $iniInstallationRoot = if ($modelResolved.Reason -like "bravo.ini *") {
+        Split-Path -Path $modelResolved.Value -Parent
+    } elseif ($blogResolved.Reason -like "bravo.ini *") {
+        Split-Path -Path $blogResolved.Value -Parent
+    } else {
+        $null
+    }
+    $bazaAppOverrideValue = if ($sourceOverrides.Contains("BAZA_APP") -and
+        -not [string]::IsNullOrWhiteSpace([string]$sourceOverrides["BAZA_APP"])) {
+        [string]$sourceOverrides["BAZA_APP"]
+    } else {
+        $null
+    }
+    $bazaAppResolved = if (-not [string]::IsNullOrWhiteSpace($bazaAppOverrideValue)) {
+        $overrides["BAZA_APP"] = $true
+        [pscustomobject]@{
+            Value = $bazaAppOverrideValue
+            Reason = "явний override discoverySettings.Sources.BAZA_APP"
+        }
+    } elseif (-not [string]::IsNullOrWhiteSpace($iniInstallationRoot)) {
+        [pscustomobject]@{
+            Value = Join-Path $iniInstallationRoot "BAZA"
+            Reason = "поруч із MODEL/BLOG з bravo.ini: $iniInstallationRoot"
+        }
+    } else {
+        [pscustomobject]@{
+            Value = if (-not [string]::IsNullOrWhiteSpace($bravoRoot)) {
+                Join-Path $bravoRoot "BAZA"
+            } else {
+                $null
+            }
+            Reason = "legacy fallback: BRAVO_ROOT-відносний шлях (bravo.ini недоступний)"
+        }
+    }
+
+    # --- BACKUP_ROOT: каталог збереження бекапів ---
+    # Джерело істини: каталог "ARCHIV" усередині шляху встановлення служби
+    # BRAVO (той самий каталог, де лежить bravo.exe) — але ЛИШЕ коли
+    # службу дійсно знайдено. Якщо ні — $bravoRoot тут це вже не каталог
+    # BRAVO, а LIMSRoot (legacy fallback, рядок вище): "LIMSRoot\ARCHIV"
+    # для BACKUP_ROOT — це не легша, а ГІРША здогадка за той дефолт, який
+    # BRAVO.config уже має сам (pathSettings.ArchiveRoot — каталог
+    # скрипта). Тому в цьому випадку BACKUP_ROOT лишається $null: нехай
+    # переможе дефолт BRAVO.config, а не другий здогад поверх першого.
+    $backupRootResolved = Resolve-BRAVOSourceField `
+        -FieldName "BACKUP_ROOT" -IniSection "__none__" -IniKey "__none__" `
         -DeriveFromIniValue $null `
-        -LegacyFallbackPath (Join-Path $bravoRoot "BAZA")
+        -LegacyFallbackPath $(
+            if (-not [string]::IsNullOrWhiteSpace($bravoRoot) -and
+                $bravoRootReason -notmatch '^legacy fallback') {
+                Join-Path $bravoRoot "ARCHIV"
+            } else {
+                $null
+            }
+        )
 
     # --- WEB_ROOT / BAZA_WWW через Apache-службу ---
     $webRootOverride = if ($normalizedDiscoverySettings.Contains("WebRoot")) {
@@ -397,6 +588,10 @@ function Resolve-BRAVOInstallationDiscovery {
     $webRootAmbiguous = $distinctWebExecutables.Count -gt 1
     $webRoot = $null
     $webRootReason = $null
+    # ServerRoot Apache (<ServerRoot>\conf\httpd.conf, <ServerRoot>\bin\httpd.exe)
+    # — окремо від WEB_ROOT: WEB_ROOT на рівень вище (батько ServerRoot),
+    # ServerRoot потрібен лише для пошуку самого httpd.conf.
+    $apacheServerRoot = $null
     if (-not [string]::IsNullOrWhiteSpace($webRootOverride)) {
         $webRoot = $webRootOverride
         $overrides["WebRoot"] = $true
@@ -404,10 +599,10 @@ function Resolve-BRAVOInstallationDiscovery {
     } elseif ($null -ne $webServiceMatch -and
         -not [string]::IsNullOrWhiteSpace($webServiceMatch.ExecutablePath) -and
         [System.IO.Path]::GetFileName($webServiceMatch.ExecutablePath) -ieq "httpd.exe") {
-        # <WEB_ROOT>\apache\bin\httpd.exe -> bin -> apache -> WEB_ROOT.
+        # <WEB_ROOT>\apache\bin\httpd.exe -> bin -> apache (ServerRoot) -> WEB_ROOT.
         $binDir = Split-Path -Path $webServiceMatch.ExecutablePath -Parent
-        $apacheDir = Split-Path -Path $binDir -Parent
-        $webRoot = Split-Path -Path $apacheDir -Parent
+        $apacheServerRoot = Split-Path -Path $binDir -Parent
+        $webRoot = Split-Path -Path $apacheServerRoot -Parent
         $webRootReason = "служба '$($webServiceMatch.Name)' -> $($webServiceMatch.ExecutablePath)"
         if ($webRootAmbiguous) {
             $webRootReason += " [УВАГА: знайдено кілька Apache-подібних служб з різними виконуваними файлами, обрано першу]"
@@ -417,19 +612,55 @@ function Resolve-BRAVOInstallationDiscovery {
     }
     $reasons["WebRoot"] = $webRootReason
 
+    # --- DocumentRoot з httpd.conf встановленої Apache-служби ---
+    # Джерело істини для BAZA_WWW: не здогадка "<WEB_ROOT>\www", а реальний
+    # DocumentRoot з конфігу тієї самої служби (bravo.ini для MODEL/BLOG —
+    # той самий принцип, тут для BAZA_WWW). httpd.conf лежить поруч з
+    # httpd.exe за стандартним для Apache Windows розкладом:
+    # <ServerRoot>\conf\httpd.conf, де <ServerRoot> = батько bin.
+    $httpdConfPath = $null
+    $apacheDocumentRoot = $null
+    $documentRootReason = $null
+    if (-not [string]::IsNullOrWhiteSpace($apacheServerRoot)) {
+        $httpdConfPath = Join-Path $apacheServerRoot "conf\httpd.conf"
+        if (Test-Path -LiteralPath $httpdConfPath -PathType Leaf) {
+            $apacheDocumentRoot = Get-BRAVOApacheDocumentRoot -Path $httpdConfPath
+            if (-not [string]::IsNullOrWhiteSpace($apacheDocumentRoot)) {
+                $documentRootReason = "httpd.conf: DocumentRoot=$apacheDocumentRoot ($httpdConfPath)"
+            } else {
+                $documentRootReason = "DocumentRoot не знайдено в httpd.conf: $httpdConfPath"
+            }
+        } else {
+            $documentRootReason = "httpd.conf не знайдено за очікуваним шляхом: $httpdConfPath"
+        }
+    }
+
     $bazaWwwResolved = Resolve-BRAVOSourceField `
         -FieldName "BAZA_WWW" -IniSection "__none__" -IniKey "__none__" `
         -DeriveFromIniValue $null `
         -LegacyFallbackPath $(
-            if (-not [string]::IsNullOrWhiteSpace($webRoot)) {
+            if (-not [string]::IsNullOrWhiteSpace($apacheDocumentRoot)) {
+                Join-Path $apacheDocumentRoot "BAZA"
+            } elseif (-not [string]::IsNullOrWhiteSpace($webRoot)) {
+                # httpd.conf недоступний або без DocumentRoot — деградуємо
+                # до старої здогадки, а не мовчки лишаємо BAZA_WWW порожнім:
+                # причина нижче явно позначає це як fallback, не як норму.
                 Join-Path $webRoot "www\BAZA"
             } else {
                 $null
             }
         )
-    if ([string]::IsNullOrWhiteSpace($bazaWwwResolved.Value) -and
-        -not $overrides.Contains("BAZA_WWW")) {
-        $bazaWwwResolved.Reason = $webRootReason
+    if (-not $overrides.Contains("BAZA_WWW")) {
+        if (-not [string]::IsNullOrWhiteSpace($apacheDocumentRoot)) {
+            $bazaWwwResolved.Reason = $documentRootReason
+        } elseif (-not [string]::IsNullOrWhiteSpace($webRoot)) {
+            $bazaWwwResolved.Reason = (
+                "fallback (не вдалося визначити DocumentRoot: $documentRootReason): " +
+                "<WEB_ROOT>\www\BAZA"
+            )
+        } elseif ([string]::IsNullOrWhiteSpace($bazaWwwResolved.Value)) {
+            $bazaWwwResolved.Reason = $webRootReason
+        }
     }
 
     # --- ExchangeAPI: лише ідентифікація служби, шлях завжди з bravo.ini ---
@@ -446,13 +677,21 @@ function Resolve-BRAVOInstallationDiscovery {
     return [pscustomobject]@{
         BRAVO_ROOT = $bravoRoot
         WEB_ROOT = $webRoot
+        # Явно, а не лише через Services: викликач (BRAVO.config) будував
+        # би той самий фільтр за BravoWebCandidates вдруге, аби просто
+        # залогувати, яка саме служба дала BAZA_WWW.
+        WebServiceName = if ($null -ne $webServiceMatch) { [string]$webServiceMatch.Name } else { $null }
+        WebServiceDisplayName = if ($null -ne $webServiceMatch) { [string]$webServiceMatch.DisplayName } else { $null }
+        WebServiceExecutable = if ($null -ne $webServiceMatch) { [string]$webServiceMatch.ExecutablePath } else { $null }
         BravoIniPath = $bravoIniPath
+        HttpdConfPath = $httpdConfPath
         MODEL_PROJECT_FILE = $modelProjectFile
         MODEL_SOURCE = $modelResolved.Value
         BLOG_SOURCE = $blogResolved.Value
         BRAVOEXCH_SOURCE = $bravoexchResolved.Value
         BAZA_APP = $bazaAppResolved.Value
         BAZA_WWW = $bazaWwwResolved.Value
+        BACKUP_ROOT = $backupRootResolved.Value
         Services = $allServices
         Overrides = $overrides
         Ambiguous = @{
@@ -468,6 +707,7 @@ function Resolve-BRAVOInstallationDiscovery {
             BRAVOEXCH = $bravoexchResolved.Reason
             BAZA_APP = $bazaAppResolved.Reason
             BAZA_WWW = $bazaWwwResolved.Reason
+            BACKUP_ROOT = $backupRootResolved.Reason
         }
     }
 }
@@ -570,7 +810,7 @@ function Test-BRAVODiscoveryResult {
 
 $script:BRAVODiscoveryBaselineFields = @(
     'BRAVO_ROOT', 'WEB_ROOT', 'MODEL_SOURCE', 'BLOG_SOURCE',
-    'BRAVOEXCH_SOURCE', 'BAZA_APP', 'BAZA_WWW'
+    'BRAVOEXCH_SOURCE', 'BAZA_APP', 'BAZA_WWW', 'BACKUP_ROOT'
 )
 
 function Save-BRAVODiscoveryBaseline {
@@ -652,6 +892,8 @@ Export-ModuleMember -Function @(
     'Get-BRAVOServiceExecutablePath',
     'Find-BRAVOServiceByCandidates',
     'ConvertFrom-BRAVOIniFile',
+    'Get-BRAVOApacheDocumentRoot',
+    'Get-BRAVOSystemBravoIniPath',
     'Resolve-BRAVOInstallationDiscovery',
     'Test-BRAVODiscoveryResult',
     'Save-BRAVODiscoveryBaseline',

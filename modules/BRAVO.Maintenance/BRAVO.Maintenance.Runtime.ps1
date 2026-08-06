@@ -16,6 +16,7 @@ param (
     [ValidateSet("on", "off")]
     [string]$ArchiveAfterMaintenance,
     [string]$ConfigPath,
+    [switch]$NoPause,
     [Parameter(Mandatory = $true)][string]$RuntimeRoot,
     [Parameter(Mandatory = $true)][string]$EntryScriptPath
 )
@@ -40,6 +41,14 @@ if (-not (Test-Path -LiteralPath $notificationHelpersPath -PathType Leaf)) {
     throw "Не знайдено PowerShell-модуль notifications: $notificationHelpersPath"
 }
 Import-Module -Name $notificationHelpersPath -ErrorAction Stop
+
+# Пауза при ручному запуску мала охопити геть усі точки виходу нижче
+# (їх багато, розкидані по всьому файлу), а не лише останню. exit
+# всередині try ГАРАНТОВАНО проходить крізь усі finally на своєму шляху
+# (перевірено емпірично, включно з вкладеними try/catch/finally) — тому
+# один зовнішній try/finally навколо решти файлу безпечніше й надійніше,
+# ніж вставляти виклик паузи перед кожним окремим exit.
+try {
 
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $bravoScriptDirectory "BRAVO.config"
@@ -2637,17 +2646,14 @@ if ($BravoWebMaintenanceEnabled -and (Test-Path $BRAVO_WEB_DIR)) {
     }
 }
 
-# Каталог розташування скрипта перевіряється окремо, а робочі шляхи
-# беруться зі спільної секції pathSettings у BRAVO.config.
-$scriptPath = $bravoScriptDirectory
-
-if ((Split-Path -Leaf $scriptPath) -ne "ARCHIV") {
-    $errorMessage = "ПОМИЛКА: Скрипт має запускатись лише з папки ARCHIV!"
-    "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $errorMessage" | Out-File "$env:TEMP\lims_error.log" -Append
-    Write-Host $errorMessage -ForegroundColor Red
-    exit 90
-}
-
+# Робочі шляхи беруться зі спільної секції pathSettings у BRAVO.config,
+# а не з імені каталогу скрипта. Раніше тут була жорстка вимога "каталог
+# скрипта має називатись буквально ARCHIV" — той самий крихкий здогад,
+# що вже прибрано з ArchiveRoot (pathSettings): він працював лише
+# випадково, коли комплект справді розгорнутий у теці з таким іменем, і
+# блокував Maintenance у будь-якому іншому розташуванні (наприклад,
+# git-чекаут з іменем репозиторію) без жодної реальної причини —
+# ArchiveRoot/LIMSRoot і так явно задані нижче.
 $ROOT_LIMS = [Environment]::ExpandEnvironmentVariables([string]$pathSettings.LIMSRoot)
 $ARCHIVE_ROOT = [Environment]::ExpandEnvironmentVariables([string]$pathSettings.ArchiveRoot)
 if ([string]::IsNullOrWhiteSpace($ROOT_LIMS) -or
@@ -2656,7 +2662,34 @@ if ([string]::IsNullOrWhiteSpace($ROOT_LIMS) -or
     exit 30
 }
 # Похідні шляхи
-$MODEL_PATH = "$ROOT_LIMS\Model"
+# MODEL_PATH: джерело істини — Resolve-BRAVOInstallationDiscovery
+# (bravoDiscoveryResult.MODEL_SOURCE, той самий, що вже читає Archive).
+# Discovery сам деградує до "$ROOT_LIMS\Model", якщо bravo.ini недоступний
+# — тому це не звужує сумісність, лише замінює локальний здогад на вже
+# перевірене джерело: раніше LIMSRoot-відносний шлях завжди мав збігатися
+# з реальним розташуванням MODEL випадково (лише коли LIMSRoot і справді
+# вказує на корінь інсталяції), а на цій-таки машині вже не збігався.
+$MODEL_PATH = if (-not [string]::IsNullOrWhiteSpace([string]$bravoDiscoveryResult.MODEL_SOURCE)) {
+    [string]$bravoDiscoveryResult.MODEL_SOURCE
+} else {
+    "$ROOT_LIMS\Model"
+}
+# Повний шлях до файлу проєкту (значення MODEL= з bravo.ini як є) — саме
+# те, що приймає bravocmd.exe. Без bravo.ini (Discovery не дав значення)
+# лишається старий здогад "$ROOT_LIMS\MODEL\lims".
+$MODEL_PROJECT_PATH = if (-not [string]::IsNullOrWhiteSpace([string]$bravoDiscoveryResult.MODEL_PROJECT_FILE)) {
+    [string]$bravoDiscoveryResult.MODEL_PROJECT_FILE
+} else {
+    "$ROOT_LIMS\MODEL\lims"
+}
+# bravocmd.exe стоїть поруч із bravo.exe (BRAVO_ROOT), не обов'язково в
+# LIMSRoot. Discovery сам деградує BRAVO_ROOT до LIMSRoot, коли служби
+# BRAVO не знайдено — той самий фолбек, що й був тут раніше.
+$BRAVOCMD_PATH = if (-not [string]::IsNullOrWhiteSpace([string]$bravoDiscoveryResult.BRAVO_ROOT)) {
+    Join-Path ([string]$bravoDiscoveryResult.BRAVO_ROOT) "bravocmd.exe"
+} else {
+    "$ROOT_LIMS\bravocmd.exe"
+}
 $LOG_DIR = Join-Path $ARCHIVE_ROOT "LOGS"
 $TRACE_DIR = Join-Path $ARCHIVE_ROOT "Trace"
 $ARC_DIR = if ($archiveDirs -and
@@ -2785,7 +2818,7 @@ Initialize-BRAVOMaintenanceSteps -Total (
 )
 Write-BRAVOHeader `
     -Title ("BRAVO MAINTENANCE {0}" -f $global:ScriptVersion) `
-    -Institution ([string]$script:ObjectName) `
+    -Institution ([string]$bravoSettings.InstitutionName) `
     -InstitutionCode ([string]$bravoSettings.InstitutionCode) `
     -StartedAt $script:ScriptStartTime
 
@@ -2825,7 +2858,7 @@ if ($script:BRAVOToolIntegrity.HasIntegrityIssue) {
 # здатний заблокувати запуск. Maintenance викликає архіватор і WinSCP,
 # тому підмінений інструмент так само отримав би права SYSTEM.
 $script:BRAVOToolManifestMode = 'Enforce'
-$script:BRAVOToolManifestPath = Join-Path $bravoScriptDirectory "TOOLS_MANIFEST.json"
+$script:BRAVOToolManifestPath = Join-Path $toolsPath "TOOLS_MANIFEST.json"
 if ($toolIntegritySettings -is [System.Collections.IDictionary]) {
     if (-not [string]::IsNullOrWhiteSpace([string]$toolIntegritySettings.Mode)) {
         $script:BRAVOToolManifestMode = [string]$toolIntegritySettings.Mode
@@ -3239,8 +3272,8 @@ if ($BravoMaintenanceEnabled -and $bravoStatus -ne "Running") {
                 Write-Log -Message "Архів моделі перед реставрацією створено та перевірено -> $beforeArchivePath" -Level "SUCCESS"
                 
                 # Виконання реставрації через bravocmd.exe (як в еталоні)
-                $restoreArgs = @("r", "null", "$ROOT_LIMS\MODEL\lims")
-                $exitCode = Invoke-CommandWithLog -Command "$ROOT_LIMS\bravocmd.exe" -Arguments $restoreArgs -Description "Виконання реставрації моделі LIMS"
+                $restoreArgs = @("r", "null", $MODEL_PROJECT_PATH)
+                $exitCode = Invoke-CommandWithLog -Command $BRAVOCMD_PATH -Arguments $restoreArgs -Description "Виконання реставрації моделі LIMS"
                 
                 if ($exitCode -eq 0) {
                     $restoreCompletedAt = Get-Date
@@ -3787,7 +3820,6 @@ Write-Log -Message "==="
 Complete-BRAVOProgress
 $maintenanceMetrics = New-Object System.Collections.Specialized.OrderedDictionary
 $maintenanceMetrics.Add('Попереджень', $script:BRAVOWarningCount)
-$maintenanceMetrics.Add('Установа', [string]$script:ObjectName)
 # ЧАСТКОВО, а не ПОМИЛКА, за самих лише попереджень: обслуговування
 # відпрацювало, але щось потребує уваги. ПОМИЛКА лишається за критичним
 # збоєм — тим самим, що дає ненульовий код завершення.
@@ -3822,4 +3854,14 @@ if ($script:criticalErrorOccurred) {
     exit (Resolve-BRAVOExitCode -HasWarnings)
 } else {
     exit 0
+}
+
+} finally {
+    # Закриває try, відкритий одразу після імпорту модулів. exit усередині
+    # try проходить крізь finally перед тим, як процес справді завершиться
+    # (перевірено емпірично) — тому це охоплює геть усі ~28 точок exit
+    # вище, включно з рідко відвідуваними (config не знайдено, lock
+    # зайнятий, tool integrity) — саме там, де оператору найпотрібніше
+    # встигнути прочитати повідомлення до закриття вікна.
+    Wait-BRAVOManualExit -NoPause:$NoPause
 }

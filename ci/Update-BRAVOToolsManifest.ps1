@@ -26,8 +26,10 @@ if (-not (Test-Path -LiteralPath (Join-Path $Root 'BRAVO_SELF_TEST.ps1') -PathTy
     exit 1
 }
 
-$manifestPath = Join-Path $Root 'TOOLS_MANIFEST.json'
 $toolsDirectory = Join-Path $Root 'Tools'
+# Маніфест лежить у тому самому каталозі, що й самі інструменти —
+# так само, як TOOLS_INTEGRITY.json (TOFU-базова лінія).
+$manifestPath = Join-Path $toolsDirectory 'TOOLS_MANIFEST.json'
 
 if (-not (Test-Path -LiteralPath $toolsDirectory -PathType Container)) {
     Write-Host "Не знайдено каталог Tools: $toolsDirectory" -ForegroundColor Red

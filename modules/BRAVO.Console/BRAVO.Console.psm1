@@ -140,10 +140,25 @@ function Write-BRAVOHeader {
 
         [string]$InstitutionCode,
 
-        [datetime]$StartedAt = (Get-Date)
+        [datetime]$StartedAt = (Get-Date),
+
+        # Вбудований виклик (Health усередині кроку Archive) не повинен
+        # друкувати повний заголовок ІНШОЇ "програми" — оператор бачить
+        # два незалежні на вигляд титульні блоки поспіль, хоча це один
+        # прогін. Резервування порожніх рядків під прогрес-бар тут НЕ
+        # потрібне: воно захищало саме текст заголовка (Title/Установа/
+        # Початок) від накладання прогрес-бару — немає тексту, немає що
+        # захищати. Реальний випадок: фіксований блок порожніх рядків
+        # лишався видимим розривом між кроками Archive навіть тоді, коли
+        # Health не знайшла жодної проблеми для показу.
+        [switch]$SuppressText
     )
 
     if (-not $script:BRAVOConsoleEnabled) {
+        return
+    }
+
+    if ($SuppressText) {
         return
     }
 
@@ -354,6 +369,82 @@ function Write-BRAVOSummary {
     Write-Host ''
 }
 
+# Пауза перед закриттям вікна консолі при ручному запуску — інакше вікно,
+# відкрите подвійним кліком чи ярликом, зникає разом з помилкою, щойно
+# скрипт завершується, і оператор нічого не встигає прочитати.
+#
+# Ніколи не повинна спрацювати під час запланованого завдання: це
+# зупинило б нічне резервне копіювання назавжди, без жодного індикатора
+# для моніторингу. Тому перевірки нижче навмисно асиметрично обережні —
+# за замовчуванням НЕ чекати, щойно з'являється хоч найменший сумнів:
+#   1. -NoPause — явний сигнал від Планувальника (BRAVO_TASKS_INSTALL.ps1
+#      додає його до кожного запланованого завдання) і від самотесту.
+#      Найнадійніший сигнал, бо не залежить від жодної евристики.
+#   2. consoleSettings.PauseOnExit — ручне вимкнення в BRAVO.config.
+#   3. [Environment]::UserInteractive — false в сесії 0 (SYSTEM-завдання
+#      "Run whether user is logged on or not").
+#   4. [Console]::IsInputRedirected — true, коли stdin перенаправлено
+#      (CI, автоматизація, дочірній процес самотесту).
+# Кожна з трьох останніх перевірок обгорнута в try/catch: будь-яка
+# помилка під час перевірки веде до пропуску паузи, а не до її форсування.
+function Wait-BRAVOManualExit {
+    [CmdletBinding()]
+    param([switch]$NoPause)
+
+    if ($NoPause) {
+        return
+    }
+
+    $pauseOnExit = $true
+    $prompt = "Натиснiть будь-яку клавiшу для закриття вiкна..."
+    try {
+        # $global:consoleSettings може бути ще не завантажений (рання
+        # помилка до Import-BravoConfiguration) — Set-StrictMode тоді
+        # кидає помилку на самому зверненні до змінної; catch нижче
+        # лишає безпечні дефолти (чекати, стандартний текст).
+        if ($global:consoleSettings.Contains('PauseOnExit')) {
+            $pauseOnExit = [bool]$global:consoleSettings.PauseOnExit
+        }
+        if ($global:consoleSettings.Contains('PausePrompt') -and
+            -not [string]::IsNullOrWhiteSpace([string]$global:consoleSettings.PausePrompt)) {
+            $prompt = [string]$global:consoleSettings.PausePrompt
+        }
+    } catch {
+        # Конфігурація недоступна — дефолти вище лишаються чинними.
+    }
+
+    if (-not $pauseOnExit) {
+        return
+    }
+
+    try {
+        if (-not [Environment]::UserInteractive) {
+            return
+        }
+        if ([Console]::IsInputRedirected) {
+            return
+        }
+    } catch {
+        # Немає доступу до консолі взагалі (нетиповий хост) — не блокуємо.
+        return
+    }
+
+    Write-Host ""
+    Write-Host $prompt -ForegroundColor Cyan
+    try {
+        # RawUI.ReadKey не підтримується у Windows PowerShell ISE — там
+        # немає справжнього дескриптора консолі, і виклик кидає виняток.
+        [void]$Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    } catch {
+        try {
+            [void](Read-Host)
+        } catch {
+            # Фоновий/нетиповий хост без можливості почекати на клавішу —
+            # це не привід завершити скрипт помилкою.
+        }
+    }
+}
+
 Export-ModuleMember -Function @(
     'Initialize-BRAVOConsole',
     'Initialize-BRAVOProgress',
@@ -368,5 +459,6 @@ Export-ModuleMember -Function @(
     'Write-BRAVOConsoleMessage',
     'Write-BRAVOWarning',
     'Write-BRAVOError',
-    'Write-BRAVOSummary'
+    'Write-BRAVOSummary',
+    'Wait-BRAVOManualExit'
 )

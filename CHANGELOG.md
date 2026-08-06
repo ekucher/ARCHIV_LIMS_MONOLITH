@@ -1,5 +1,465 @@
 # Changelog
 
+## 4.5.0-dev.1 — 2026-08-05
+
+Перший development-реліз циклу `4.5.0`. Відкриває нову модель гілок і
+версій, описану в `RELEASE_POLICY.md`.
+
+- **`RELEASE_POLICY.md`.** Що дозволено випускати з кожної гілки:
+  `developer` — лише `X.Y.Z-dev.N` / `X.Y.Z-rc.N`, `master` — лише
+  `X.Y.Z`; гілки ніколи не несуть однакової версії; stable виникає лише
+  promotion перевіреного RC, без нових функцій. Чек-лист відповідає на
+  питання «що зробити перед випуском», політика — «що взагалі дозволено
+  випускати звідси».
+
+- **`releaseChannel` повернувся у `VERSION.json`.** AUD-016 колись
+  вивів його з `.git/HEAD`, бо ручна синхронізація між гілками двічі
+  підвела на fast-forward merge. Але розгорнутий на сервері комплект
+  приходить ZIP-ом, копіюванням, SFTP або SMB — `.git` там немає взагалі,
+  і канал нізвідки взяти. Причину AUD-016 усунуто інакше: гілки більше
+  не можуть містити однакову версію, тому fast-forward між ними
+  неможливий, а замість людської дисципліни працює механічний gate.
+
+  `Resolve-BRAVOReleaseChannelFromGit` лишилась — уже не як джерело
+  значення, а як перехресна перевірка (`ReleaseChannelMatchesGit`).
+
+- **`ci\Test-BRAVOReleasePolicy.ps1` + крок CI.** Stable-версія на
+  `developer` або `-dev`/`-rc` на `master` тепер валить CI, а не їде на
+  сервер непоміченою. Перевіряє також `ModuleVersion`, наявність версії
+  в `CHANGELOG.md` і заголовки `README.md` / `BRAVO_SETUP.md`. У Pull
+  Request гілка береться з цільової (`GITHUB_BASE_REF`): promotion
+  `developer` → `master` несе вже stable-версію і має перевірятись
+  правилами `master`.
+
+- **`ModuleVersion` = базова частина версії.** `ModuleVersion` це
+  `[System.Version]` — prerelease-суфікса він не приймає, а
+  `New-ModuleManifest` у Windows PowerShell 5.1 не має `-Prerelease`
+  (перевірено на цільовій платформі). Тому маніфести модулів несуть
+  `4.5.0`, а повна версія пакета (`4.5.0-dev.1`) завжди береться з
+  `VERSION.json`.
+
+- Закрито тестами `Version/DeveloperBranchCarriesPrereleaseVersion`,
+  `Version/ReleaseChannelStoredInPackage`, `Version/ModuleManifests`,
+  `Documentation/ReleasePolicyExists`,
+  `Documentation/ReleasePolicyCoversVersionModel`,
+  `ReleasePolicy/CiGateEnforcesBranchVersionChannel`.
+
+- **Ручний запуск не через Планувальник тепер чекає на клавішу — в усіх
+  трьох runtime, а не лише в Archive.** `BRAVO_ARCHIV.ps1` уже мав робочу
+  паузу (`RawUI.ReadKey` з фолбеком на `Read-Host` для ISE);
+  `BRAVO_HEALTH.ps1` приймав `-NoPause`, але ніде його не використовував
+  — Health ніколи не чекав; `BRAVO_MAINTENANCE.ps1` не мав ні параметра,
+  ні паузи взагалі. Обидва тепер працюють так само, як Archive.
+
+  Спільна реалізація — `Wait-BRAVOManualExit` (`BRAVO.Console`) — не
+  спрацьовує без явного дозволу: `-NoPause`, вимкнений `PauseOnExit` у
+  `BRAVO.config`, `[Environment]::UserInteractive = $false` (сесія 0,
+  де й виконуються SYSTEM-завдання) чи перенаправлений stdin — кожна з
+  цих причин самостійно скасовує очікування. Для 6 ранніх `exit`
+  guard-блоку (до `Import-Module`, коли жоден модуль BRAVO ще не
+  довірений) — самодостатній інлайн-варіант без залежності від модулів,
+  за тим самим принципом, що й сам guard.
+
+  `Maintenance.Runtime.ps1` має майже 30 точок `exit`, розкиданих по
+  всьому файлу. Замість редагування кожної — один зовнішній
+  `try/finally`: `exit` усередині `try` гарантовано проходить крізь усі
+  `finally` на своєму шляху, перш ніж процес завершиться (властивість
+  PowerShell, перевірено емпірично, включно з вкладеними
+  `try/catch/finally`), тому один `finally` на весь файл охоплює їх усі.
+
+  Попутно знайдено й закрито реальну прогалину: `BRAVO_TASKS_INSTALL.ps1`
+  додавав `-NoPause` вибірково за типом завдання — `Recovery` і
+  `Maintenance` (нічний, найризикованіший) його не отримували взагалі.
+  Не мало наслідків, доки в цих runtime не було паузи; після цієї зміни
+  було б реальним ризиком зависання нічної автоматизації. Тепер
+  `-NoPause` додається безумовно для кожного типу.
+
+- Закрито тестами `Console/WaitManualExitChecksNoPauseFirst`,
+  `Console/WaitManualExitNoPauseReturnsImmediately`,
+  `Console/EarlyGuardExitsPauseBeforeClosing`,
+  `Console/HealthPausesOnEveryExitPath`,
+  `Console/MaintenancePausesOnEveryExitPath`,
+  `Console/MaintenanceAcceptsNoPauseParameter`,
+  `Console/EntrypointsForwardNoPauseToRuntime`,
+  `Scheduler/EveryTaskTypeGetsNoPauseUnconditionally`.
+
+- **Discovery: уточнене джерело істини для служби BRAVO — за прямою
+  вказівкою користувача.** Три виправлення:
+
+  1. **Ідентифікація служби BRAVO** — тепер Service name ТА Display name
+     одночасно (`"BRAVO"` і `"BRAVO Service"`), а не будь-яке з них
+     окремо. Сторонній сервіс із випадково схожим ім'ям більше не
+     проходить як BRAVO.
+
+  2. **`bravo.ini` шукається в системному каталозі Windows**
+     (`%SystemRoot%\SysWOW64` на 64-бітній ОС, `\System32` на 32-бітній),
+     а не поруч із `bravo.exe`, як вважалось раніше. Причина —
+     WOW64 File System Redirector: BRAVO 32-бітний, і коли він пише в
+     "System32", 64-бітна Windows прозоро перенаправляє це в SysWOW64;
+     64-бітний PowerShell (типово для запланованих завдань), звертаючись
+     до "System32" напряму, бачить каталог без редиректу — і файлу там
+     просто немає. Підтверджено буквально: на машині розробки він
+     справді лежить у `SysWOW64`, і початкова версія тестів це
+     випадково довела, підхопивши реальний файл замість фікстури.
+     Старий шлях (поруч із `bravo.exe`) лишився вторинним fallback.
+
+  3. **`BACKUP_ROOT`** — каталог збереження бекапів тепер визначається як
+     підкаталог `ARCHIV` усередині шляху встановлення служби BRAVO, а не
+     LIMSRoot-відносний шлях. `BRAVO.config` використовує це значення як
+     дефолт `pathSettings.BackupRoot`, лише якщо адміністратор не змінив
+     `BackupRoot` вручну — override ніколи не перезаписується мовчки,
+     той самий принцип, що й для решти discovery-полів.
+
+  Закрито тестами `Discovery/BravoServiceRequiresNameAndDisplayNameMatch`,
+  `Discovery/SystemDirectoryIsPrimaryBravoIniSource`,
+  `Discovery/Win32UsesSystem32NotSysWOW64`,
+  `Discovery/FallsBackNextToExecutableWhenSystemIniMissing`,
+  `Discovery/BackupRootDerivedFromBravoRoot`,
+  `Discovery/BackupRootOverrideWins`,
+  `Discovery/ConfigUsesStrictBravoIdentityAndBackupRoot`.
+
+  (Поле переймено на `BACKUP_ROOT` уже в цьому циклі — `ARCHIV_ROOT`
+  збігалося з уже наявним `pathSettings.ArchiveRoot`, геть іншим
+  поняттям: каталогом самого скрипта, де лежать `Tools\`/`LOGS\`.)
+
+- **`Tools\TOOLS_MANIFEST.json` — маніфест переїхав у той самий
+  каталог, що й самі утиліти.** Раніше шукався поруч зі скриптом
+  (`$archivPath\TOOLS_MANIFEST.json`), окремо від `Tools\`, де
+  фактично лежать `7za.exe`/`WinSCP.*`. Тепер — `Tools\TOOLS_MANIFEST.json`,
+  узгоджено з `TOOLS_INTEGRITY.json` (TOFU-базова лінія), який завжди
+  був там. Оновлено всюди: `BRAVO.config`, fallback-значення в усіх
+  трьох runtime, `ci\Update-BRAVOToolsManifest.ps1`,
+  `ci\Update-BRAVORuntimeManifest.ps1` (сам маніфест теж
+  version-controlled і входить у `RUNTIME_MANIFEST.json` — довелось
+  оновити шлях і там, інакше він випав би з перевірки цілісності
+  мовчки), `README.md`, `SECURITY.md`.
+
+  Закрито тестами `ToolManifest/ManifestPathIsInsideToolsDirectory`,
+  `ToolManifest/ManifestFileLivesInsideTools`.
+
+- **`pathSettings.ArchiveRoot` дефолтився в обчислений здогад, а не в
+  каталог самого скрипта — корінь того, чому маніфест "губився".**
+  Раніше: `Join-Path (Split-Path -Parent $ConfigRoot) "ARCHIV"` —
+  «піднятись на рівень вище й зайти в підкаталог, що зветься буквально
+  ARCHIV». Працювало лише випадково, коли комплект розгорнутий у теці з
+  таким іменем. Запущений з git-чекауту (інша назва теки — наприклад,
+  `ARCHIV_LIMS_MONOLITH`) — обчислення тихо вказувало на каталог, якого
+  не існує, і `Tools\TOOLS_MANIFEST.json` "губився", хоча фізично лежав
+  поруч зі скриптом. Тепер — `$ConfigRoot` напряму.
+
+  Той самий недолік був і в `Resolve-BRAVOInstallationDiscovery`:
+  legacy-fallback для `BACKUP_ROOT` (коли служби BRAVO не знайдено)
+  теж комбінував `LIMSRoot + "ARCHIV"` — друга здогадка поверх першої,
+  і гірша за власний дефолт `BRAVO.config`. Тепер у цьому випадку
+  `BACKUP_ROOT` лишається порожнім, і перемагає дефолт `ArchiveRoot`.
+
+  Закрито тестами `Discovery/ArchiveRootDefaultsToScriptDirectory`,
+  `Discovery/BackupRootStaysEmptyWithoutRealService`.
+
+- **Ручний запуск `BRAVO_ARCHIV.ps1` з відсутніми обов'язковими
+  обліковими даними тепер сам пропонує їх налаштувати**, замість того
+  щоб просто впасти з помилкою `Не вдалося завантажити пароль архiвiв`
+  і змусити шукати окремий скрипт. Якщо запуск інтерактивний (не
+  `-NoPause`, реальна консоль — та сама перевірка
+  `[Environment]::UserInteractive -and -not [Console]::IsInputRedirected`,
+  що вже охороняє паузу перед закриттям) і не вистачає `BRAVO_7Z_PASSWORD`
+  та/або `BRAVO_SFTP_LOGIN`/`BRAVO_SFTP_PASSWORD` (останні — лише якщо
+  компонент їх справді потребує), автоматично запускається
+  `BRAVO_CREDENTIALS_SETUP.ps1 -Action Ensure -Component Required
+  -StoreFor CurrentUser` окремим процесом (ізольовано, щоб не
+  перезаписати глобальний стан поточного запуску) — і лише для
+  поточного користувача; обліковий запис запланованого завдання
+  (`-StoreFor ScheduledTaskAccount`) як і раніше налаштовується окремо
+  через `BRAVO_SETUP.ps1`/`BRAVO_CREDENTIALS_SETUP.ps1`.
+
+  Закрито тестами `Console/ArchiveOffersCredentialSetupOnlyWhenInteractive`,
+  `Console/ArchiveCredentialSetupUsesEnsureAndCurrentUserOnly`,
+  `Console/ArchiveCredentialSetupRunsAsIsolatedProcess`.
+
+- **Лог-файл тепер показує обране джерело для MODEL/BLOG/BAZA**, а не
+  лише "УВIМКНЕНО"/"ВИМКНЕНО" як раніше. Секція `=== ОПЦIЇ СКРИПТА ===`
+  для кожного увімкненого компонента додатково виводить рядок
+  `Джерело <TYPE>: <шлях> (<причина>)`, де причина береться з
+  `bravoDiscoveryResult.Reasons` (наприклад, `bravo.ini [model]
+  MODEL=D:\LIMS-NEW\Model\lims` або `legacy fallback: ...`) — той самий
+  формат, що вже показує `BRAVO_SETUP.ps1 -ValidateOnly`. Якщо джерело
+  не вдалось визначити — `ERROR`-рядок з тією ж причиною замість
+  мовчазного `null`. BRAVOEXCH і BAZA WWW це вже мали (окремі блоки),
+  тепер симетрично й для MODEL/BLOG/BAZA.
+
+  Закрито тестами `Console/ArchiveLogsModelSource`,
+  `Console/ArchiveLogsBlogSource`, `Console/ArchiveLogsBazaLocalSource`.
+
+- **Health падав із "The property 'ActionCounts' cannot be found on
+  this object" щоразу, коли синхронізація BAZA на SFTP увімкнена, а
+  локальний каталог BAZA відсутній.** Той самий клас бага, що вже
+  ловив AUD (`Get-AlertFingerprint` і `DifferenceCount` для `Kind =
+  "Service"`), але в іншому полі й інших місцях: лише ОДИН з чотирьох
+  способів побудови проблеми `"SFTPSynchronization"`
+  (`Get-SFTPHealthIssues`, гілка "у хмарі відсутні...") насправді
+  встановлює `ActionCounts`. Три інших ("не вдалося визначити локальне
+  джерело", "локальний каталог не знайдено", "не вдалося порівняти
+  каталоги") — ні, а консольний журнал і `Format-CompactSFTPIssue`
+  зверталися до `$healthIssue.ActionCounts`/`$Issue.ActionCounts`
+  напряму навіть усередині `if ($null -ne ...)` — під `Set-StrictMode`
+  це падає ще до самого порівняння. Archive (де Health викликається
+  in-process) ловив це як повну відмову health-check замість звичайної
+  проблеми в звіті — оператор не отримував жодної тривоги.
+
+  Новий `Get-BRAVOHealthIssueActionCounts` (той самий підхід, що вже
+  має `Get-BRAVOHealthIssueField`: `PSObject.Properties['ActionCounts']`
+  замість прямої крапки) замінив усі небезпечні звернення в обох
+  місцях. Перевірено живим прогоном `BRAVO_HEALTH.ps1` за тих самих
+  умов, що й реальний збій: третя проблема тепер коректно потрапляє у
+  звіт (`SFTP BAZA: локальний каталог BAZA не знайдено; ...; типи
+  розбіжностей: немає даних`) замість краху всього health-check.
+
+  Закрито тестом `Health/SFTPSynchronizationToleratesMissingActionCounts`.
+
+- **`BAZA_APP` шукався поруч із `LIMSRoot`, а не поруч із реальним
+  `MODEL`/`BLOG` з `bravo.ini`.** `BAZA` не має власного ключа в
+  `bravo.ini`, тому `BAZA_APP` завжди виводився як `<BRAVO_ROOT>\BAZA`
+  — а `BRAVO_ROOT`, коли Windows-службу BRAVO не знайдено (типова
+  dev/test-машина без встановленої служби, лише з конфігом), деградує
+  до `LIMSRoot`-фолбеку. Реальний випадок: `bravo.ini` знайдено
+  (системний каталог Windows не залежить від служби), `MODEL`/`BLOG` з
+  нього коректно вказували на `D:\LIMS-NEW\...`, а `BAZA_APP` усе одно
+  шукався в `C:\Users\...\Documents\BAZA` — зовсім іншому місці.
+
+  Тепер, коли `MODEL` або `BLOG` вже взято з `bravo.ini`, `BAZA_APP`
+  виводиться як сусідній каталог у тому самому корені інсталяції
+  (`Split-Path -Parent` від `MODEL_SOURCE`/`BLOG_SOURCE`) — і лише
+  якщо жоден з них з `bravo.ini` не прийшов, лишається старий
+  `<BRAVO_ROOT>\BAZA` fallback.
+
+  Закрито тестом
+  `Discovery/BazaAppFollowsIniInstallationRootNotBravoRootFallback`.
+
+- **SFTP: скрипт тепер сам створює відсутні кореневі каталоги**
+  (`model`/`blog`/`bravoexch`/`baza_app`/...) замість того, щоб просто
+  падати. Реальний випадок: WinSCP явно повідомляв `Error listing
+  directory '/baza_app'. No such file or directory` — жоден із
+  каталогів на сервері ще не існував, і кожна передача (як окремих
+  файлів, так і синхронізація BAZA) провалювалася кодом 1.
+
+  Новий `Initialize-BRAVOSFTPRemoteDirectories` викликається одним
+  пакетним WinSCP-скриптом одразу після підтвердженого з'єднання, перед
+  Send-FileViaWinSCP/Sync-FolderToSFTP — і в автоматичному потоці, і в
+  ручній `-SyncBAZA`. `option batch continue` навмисно: `mkdir` на вже
+  наявному каталозі повертає помилку (а після першого успішного запуску
+  каталоги вже існують щоразу), тому виклик — best-effort і ніколи не є
+  джерелом істини про успіх; реальний результат перевіряють окремі
+  виклики передачі, які на це не зважають.
+
+  Це оголило два раніше недосяжні StrictMode-баги в самій `Sync-FolderToSFTP`
+  (аудит BAZA до цього завжди падав на "каталог не знайдено" ще до того,
+  як доходило до цього коду):
+  - `Get-BAZASFTPComparison` читав ім'я локального елемента порівняння
+    через `.FullName` — а `$difference.Local` з WinSCP `CompareDirectories`
+    це `WinSCP.RemoteFileInfo` (навіть для локальної сторони), а не
+    `System.IO.FileInfo`: такої властивості там немає взагалі, лише
+    `.FileName` (той самий API, що вже коректно працює через
+    `$side.FileName` у `BRAVO.Health.Runtime.ps1`).
+  - `Write-BAZASFTPComparisonAudit`/`Write-BAZARemoteNameCompatibilityAudit`
+    викликали `Write-BRAVOLog -FileOnly` — цей перемикач існує лише на
+    локальному шимі `Write-Log` (транслює його в `-NoConsole`), а сам
+    `Write-BRAVOLog` такого параметра не має і падає з
+    `InputValidationError`.
+
+  Перевірено живим прогоном на реальному SFTP (Hetzner Storage Box):
+  до фіксів — 0 з 6 файлів; після mkdir-фіксу — 6 з 6 файлів, але аудит
+  BAZA падав на `.FullName`; після `.FileName`-фіксу — падав на
+  `-FileOnly` при спробі залогувати 374 елементи аудиту; після всіх
+  трьох фіксів разом — `374 з 374` файлів BAZA синхронізовано,
+  `Каталог BAZA повнiстю синхронiзовано з /baza_app`.
+
+  Закрито тестами `Console/ArchiveEnsuresSFTPDirectoriesBeforeTransfer`,
+  `Console/BazaComparisonReadsFileNameSafely`,
+  `Console/BazaAuditUsesNoConsoleNotFileOnly`.
+
+- **Власний прогрес-бокс `Test-NetConnection` ("Attempting TCP connect",
+  "Waiting for response") усе одно з'являвся в консолі поверх кроків
+  BRAVO**, хоча мав бути прихованим. `Test-BRAVOTcpConnection` уже
+  придушував його через `$ProgressPreference = 'SilentlyContinue'`, але
+  локальне присвоєння (без `$global:`) ненадійне для цього конкретного
+  командлета — відомий нюанс Windows PowerShell 5.1, коли сам
+  `Test-NetConnection` не завжди резолвить preference-змінну лише з
+  локального scope виклику.
+
+  Тепер тимчасово підміняється ГЛОБАЛЬНЕ `$ProgressPreference`
+  (з гарантованим відновленням попереднього значення в `finally`) —
+  саме так, як і задумувалося коментарем, що вже існував у коді.
+
+  Закрито тестом `Compatibility/TcpConnectionSuppressesGlobalProgress`.
+
+- **`BRAVO_ARCHIV.ps1` друкував ПОВНИЙ заголовок Health усередині
+  власного кроку "Перевірка резервних копій"** — "BRAVO HEALTH X.X.X /
+  Установа / Початок" виглядало як друга незалежна програма всередині
+  виводу Archive, з власною версією й міткою часу, хоча це один
+  прогін. Реальний випадок (скріншот користувача): "дублювання
+  зявляється при запуску BRAVO_ARCHIV.ps1 + BRAVO_HEALTH.ps1 — у
+  кожного свої заголовки та етапи".
+
+  `Invoke-BRAVOHealth` отримав новий `-SuppressHeader`, який передається
+  лише зі шляху `Invoke-BRAVOHealthCheck` (`BRAVO.Health.psm1`) —
+  вбудований виклик з Archive. Самостійний запуск `BRAVO_HEALTH.ps1`
+  проходить іншим шляхом (без цього параметра), тому там заголовок
+  лишається без змін. `Write-BRAVOHeader` (BRAVO.Console) отримав
+  `-SuppressText`: приховує сам текст заголовка, але зберігає
+  резервування порожніх рядків під прогрес-бар — без цього перші рядки
+  вбудованого Health-звіту ризикували опинитися під смугою.
+
+  Закрито тестом `Console/EmbeddedHealthSuppressesDuplicateHeader`.
+
+- **Уніфіковано вбудований звіт Health усередині `BRAVO_ARCHIV.ps1`** —
+  прибирання заголовка (див. вище) закрило лише частину проблеми
+  (реальний скріншот користувача, зроблений після цього): вбудований
+  виклик усе одно друкував ВЛАСНУ покрокову нумерацію `[N/5]` поряд із
+  нумерацією Archive `[N/7]`, ВЛАСНИЙ підсумок (`Результат`/
+  `Тривалість`/.../`Детальний журнал`) поряд із підсумком Archive —
+  фактично два незалежні звіти замість одного. Плюс `SFTP MODEL:
+  серверний SHA архіву недоступний; використано повний збіг
+  віддаленого hash-файлу` показувалось як WARNING, хоча перевірка все
+  одно успішна (просто іншим методом).
+
+  `Write-BRAVOHealthStep` тепер пропускає власний друк `[N/5]` при
+  `-SuppressHeader`, не збиваючи внутрішній лічильник кроків (від нього
+  залежить нумерація кроку "Сповіщення"). `Complete-BRAVOHealthResult`
+  придушує власний `Write-BRAVOSummary` — `Complete-BRAVOProgress`
+  (очищення прогрес-бару) лишається безумовним. Фолбек на `.sha512`
+  тепер логується як INFO, а не WARNING: перевірка успішна, це нотатка
+  про метод, а не привід для уваги оператора. Разом з попереднім
+  прибиранням заголовка вбудований виклик тепер показує лише те, що
+  справді потрібно: значущі "Проблема ..." деталі (якщо є) і ОДИН
+  підсумок Archive з ОДНИМ посиланням на лог-файл.
+
+  Закрито тестами `Health/EmbeddedCallSuppressesStepNumbering`,
+  `Health/EmbeddedCallSuppressesOwnSummary`,
+  `Health/ServerSideHashFallbackIsInfoNotWarning`.
+
+- **Зайвий порожній розрив між `[6/7]` і `[7/7]` усередині
+  `BRAVO_ARCHIV.ps1`** — після прибирання заголовка й підсумку Health
+  (див. вище) лишався фіксований блок із 6 порожніх рядків
+  (`BRAVOConsoleProgressReservedLines`), який раніше захищав текст
+  заголовка Health від накладання прогрес-бару. Без самого тексту
+  захищати вже нічого, а блок лишався видимим розривом навіть тоді,
+  коли Health не знаходила жодної проблеми для показу (реальний
+  скріншот користувача). `Write-BRAVOHeader -SuppressText` тепер
+  пропускає ввесь вивід одразу — і текст, і резервування рядків.
+
+- **`BAZA_WWW` (бекап `{DocumentRoot}\BAZA` встановленого Apache) тепер
+  визначається автоматично, а не задається вручну.** `Resolve-BRAVOInstallationDiscovery`
+  шукає службу Apache2.4/Br-a-vo.web (той самий канал кандидатів, що й
+  раніше), знаходить її `httpd.exe`, читає `<ServerRoot>\conf\httpd.conf`
+  новим парсером `Get-BRAVOApacheDocumentRoot` і бере `DocumentRoot`
+  звідти — а не вгадує його з розташування `apache\`. Синхронізація
+  вмикається лише тоді, коли служба справді встановлена і `DocumentRoot`
+  вдалось прочитати; каталог на SFTP лишається `baza_www`, без змін.
+  `BRAVO.config` більше не містить окремої логіки пошуку (видалено
+  ~130-рядковий `Find-BRAVOWebBAZASource` з обходом предків і евристикою
+  "перша непорожня папка") — тепер це тонкий адаптер над результатом
+  Discovery.
+
+  Попутно знайдено й виправлено реальний баг, який виявився лише на
+  живій машині з дійсно встановленою службою Apache: `BRAVO.Discovery`
+  викликає `Get-BRAVOWmiInstance` (з `BRAVO.Compatibility`), не
+  імпортувавши цей модуль сам — і те, що виклик модуля-споживача
+  (наприклад, `BRAVO.Health.Runtime.ps1`) імпортує `BRAVO.Compatibility`
+  РАНІШЕ, не робить її функції видимими всередині чужого модуля: кожен
+  PowerShell-модуль має власний session state. Через це `WEB_ROOT` і
+  `BAZA_WWW` мовчки лишались порожніми на машині з реально запущеною
+  службою `Br-a-vo.web`, хоча той самий пошук служби прекрасно
+  спрацьовував поза модулем. Виправлено додаванням явного
+  `Import-Module BRAVO.Compatibility` на початку `BRAVO.Discovery.psm1`
+  — той самий патерн, що вже застосовано в `BRAVO.Notifications`,
+  `BRAVO.ArchiveRuntime`, `BRAVO.ArchiveHelpers`.
+
+  Закрито тестами `Discovery/ApacheDocumentRootParserReadsQuotedForwardSlashPath`,
+  `Discovery/ApacheDocumentRootParserIgnoresCommentedDirective`,
+  `Discovery/BazaWwwUsesHttpdConfDocumentRoot`. Підтверджено живим
+  прогоном `BRAVO_HEALTH.ps1` на машині з реальною службою
+  `Br-a-vo.web`: `WEB_ROOT`, `HttpdConfPath`, `BAZA_WWW` заповнюються
+  коректно зі справжнього `httpd.conf`.
+
+- **Визначення BAZA обмежено рівно чотирма незалежними значеннями:
+  `BAZA_APP_SFTP`, `BAZA_WWW_SFTP`, `BAZA_APP_LOCAL`, `BAZA_WWW_LOCAL`.**
+  Раніше `componentSettings.Synchronization` називав ці прапорці
+  `BAZALocal`/`BAZASFTP`/`BAZAWWWSFTP` — бареве `BAZA` без суфікса
+  означало "APP", що легко сплутати з `BAZA WWW` при читанні коду чи
+  конфігурації. Перейменовано наскрізно (`BRAVO.config`, `BRAVO.Archive`,
+  `BRAVO.Health`, `BRAVO_DRY_RUN.ps1`, `BRAVO_SETUP.ps1`,
+  `BRAVO_CREDENTIALS_SETUP.ps1`, `BRAVO_TASKS_INSTALL.ps1`) разом із
+  похідними змінними (`bazaAppLocalSyncEnabled` тощо) і текстом логів
+  ("Синхронiзацiя BAZA APP на SFTP" замість голого "BAZA"). Discovery-поля
+  (`BAZA_APP`/`BAZA_WWW` — шляхи-джерела, не прапорці) і каталоги на SFTP
+  (`baza_app`/`baza_www`) не чіпались — вони й так уже однозначні.
+
+  **`BAZA_WWW_LOCAL` — нова функція**, а не просто перейменування: локальна
+  копія `BAZA_WWW` (`{DocumentRoot}\BAZA` встановленого Apache/Br-a-vo.web)
+  у каталог `BackupRoot\BAZA_WWW`, точно за тим самим принципом, що вже
+  давно робить `BAZA_APP_LOCAL` (`Sync-Folders` через robocopy). За
+  замовчуванням вимкнено (`$false`), як і `BAZA_APP_LOCAL`. Health отримав
+  той самий read-only `robocopy /L` контроль актуальності, що вже був для
+  `BAZA_APP_LOCAL` (спільна `Get-BAZALocalSyncHealthIssues`, раніше
+  `Get-BAZALocalHealthIssues`, з новим параметром `-Label`).
+
+  Закрито тестами `Discovery/ConfigDefinesExactlyFourBazaSyncFlags`,
+  `Discovery/ArchiveReadsExactlyFourBazaSyncFlags`,
+  `Console/ArchiveSyncsBazaWwwLocally`, `Health/BazaWwwLocalHealthCheckWired`.
+
+- **`BRAVO_MAINTENANCE.ps1` відмовлявся запускатись, якщо каталог скрипта
+  назвався не буквально `ARCHIV`.** Той самий крихкий здогад, що вже
+  прибрано з `ArchiveRoot` (`pathSettings`, дивись запис нижче в цьому ж
+  циклі) — і так само працював лише випадково, коли комплект розгорнутий
+  саме в теці з таким іменем. Будь-яке інше розташування (наприклад,
+  git-чекаут з іменем репозиторію) блокувало Maintenance повідомленням
+  "Скрипт має запускатись лише з папки ARCHIV!" (код `90`) без жодної
+  реальної причини — `ArchiveRoot`/`LIMSRoot` і так явно задаються
+  окремо в `pathSettings`. Перевірку прибрано; жодне інше місце в
+  комплекті на неї не покладалось.
+
+- **`BRAVO_MAINTENANCE.ps1` мовчки пропускав до 3 із 7 етапів, коли
+  `LIMSRoot` не вказує на реальний корінь LIMS-інсталяції.** `Check-MdFileSizes`
+  сканував `$MODEL_PATH = "$ROOT_LIMS\Model"` — той самий крихкий
+  LIMSRoot-відносний здогад, що вже прибрано з `MODEL_SOURCE` в Archive.
+  Коли реальний каталог MODEL не збігався з цим здогадом (`LIMSRoot`
+  вказував не на корінь інсталяції), `EnumerateFiles` кидав
+  `DirectoryNotFoundException`, який ніхто не ловив аж до
+  `Invoke-BRAVOMaintenanceEntrypoint`: `finally`-блоки встигали відновити
+  служби й показати "Натисніть будь-яку клавішу", але етапи "Реставрація
+  моделі"/"Обробка trace і логів"/"Очистка" пропускались мовчки, без
+  видимої помилки в консолі (лише after-the-fact `Write-Error`, після
+  натискання клавіші).
+
+  Той самий здогад використовувала й **реставрація моделі через
+  `bravocmd.exe`** (`$ROOT_LIMS\MODEL\lims`) та шлях до самого
+  `bravocmd.exe` (`$ROOT_LIMS\bravocmd.exe`) — деструктивна операція, яка
+  на нетиповій структурі диска так само вказувала б у порожнечу.
+
+  Усі три джерела істини — `bravoDiscoveryResult.MODEL_SOURCE`,
+  `.MODEL_PROJECT_FILE` (точне значення `MODEL=` з `bravo.ini`, те, що
+  приймає `bravocmd.exe`) і `.BRAVO_ROOT` (каталог `bravo.exe`, де
+  логічно лежить і `bravocmd.exe`) — з тим самим фолбеком на старий
+  LIMSRoot-відносний шлях, коли Discovery нічого не знайшов (bravo.ini чи
+  служба відсутні), тому поведінка на типовому розгортанні не змінюється.
+
+  Перевірка: живий прогін на машині, де раніше падало на кроці
+  "Перевірка розмірів .md" — тепер усі 7 етапів показуються й
+  завершуються, результат УСПІШНО.
+
+- **Заголовок `BRAVO_MAINTENANCE.ps1` дублював код установи:**
+  "Установа: Тестова установа [0000000] [0000000]". `Write-BRAVOHeader`
+  сам додає `[InstitutionCode]` до `-Institution`, а Maintenance передавав
+  туди вже складений `$script:ObjectName` (`"$InstitutionName [$InstitutionCode]"`,
+  той самий рядок, що йде в Slack/лог-підсумок) — замість самої лише
+  назви, як роблять Archive і Health. Виправлено на `bravoSettings.InstitutionName`,
+  узгоджено з обома іншими runtime. Підтверджено живим прогоном.
+
+- **Консольний підсумок `BRAVO_MAINTENANCE.ps1` теж повторював установу**
+  окремим рядком "Установа: ..." після "Попереджень: 0" — зайве, коли та
+  сама інформація вже показана в заголовку рядком вище. Ні Archive, ні
+  Health установу в підсумку не дублюють. Прибрано.
+
 ## 4.4.2 — 2026-08-05
 
 Виправлення за результатами першого тестового розгортання на реальному

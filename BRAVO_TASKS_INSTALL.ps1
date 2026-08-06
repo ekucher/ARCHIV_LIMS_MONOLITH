@@ -353,8 +353,15 @@ function New-BRAVOTaskDefinition {
     $actionArguments += " -ExecutionPolicy Bypass"
     $actionArguments += " -File `"$scriptPath`""
     $actionArguments += " -ConfigPath `"$ResolvedConfigPath`""
+    # -NoPause — безумовно, для КОЖНОГО типу завдання, а не вибірково за
+    # типом. Заплановане завдання ніколи не повинно чекати на клавішу: це
+    # зупинило б автоматизацію назавжди, без жодного індикатора для
+    # моніторингу. Раніше Recovery і Maintenance не отримували -NoPause
+    # взагалі — байдуже, доки в самих скриптах не було паузи; ця
+    # безумовна форма унеможливлює саме такий тип прогалини надалі.
+    $actionArguments += " -NoPause"
     if ($TaskType -eq "Health") {
-        $actionArguments += " -NotifyOnSuccess -NoPause"
+        $actionArguments += " -NotifyOnSuccess"
         if ($TaskSettings.SkipIfBackupTaskRunning) {
             $actionArguments += " -SkipIfBackupTaskRunning"
         }
@@ -362,11 +369,8 @@ function New-BRAVOTaskDefinition {
     if ($TaskType -eq "Recovery") {
         $actionArguments += " -RunMissedRestoreOnly"
     }
-    if ($TaskType -eq "Backup") {
-        $actionArguments += " -NoPause"
-    }
     if ($TaskType -eq "BAZASync") {
-        $actionArguments += " -SyncBAZA -NoPause"
+        $actionArguments += " -SyncBAZA"
     }
     $action = $definition.Actions.Create(0) # TASK_ACTION_EXEC
     $action.Path = [string]$schedulerSettings.PowerShellExecutable
@@ -556,7 +560,7 @@ try {
     if ($null -ne $componentSettings -and
         $null -ne $componentSettings.Synchronization) {
         $bazaSftpEnabled = [System.Convert]::ToBoolean(
-            $componentSettings.Synchronization.BAZASFTP
+            $componentSettings.Synchronization.BAZA_APP_SFTP
         )
     }
 
@@ -571,8 +575,8 @@ try {
             ExecutionTimeLimitHours = 2
         }
     } else {
-        # BAZA Sync не повинен запускатися, якщо SFTP-синхронізацію BAZA
-        # вимкнено у componentSettings.Synchronization.BAZASFTP.
+        # BAZA Sync не повинен запускатися, якщо SFTP-синхронізацію BAZA_APP
+        # вимкнено у componentSettings.Synchronization.BAZA_APP_SFTP.
         $schedulerSettings.BAZASync.Enabled = (
             [System.Convert]::ToBoolean($schedulerSettings.BAZASync.Enabled) -and
             $bazaSftpEnabled

@@ -54,15 +54,14 @@
       BOM (`[IO.File]::ReadAllBytes` перші 3 байти `EF BB BF`) —
       `BRAVO_SELF_TEST.ps1` перевіряє парсинг, але не сам факт BOM;
       звірте вручну для кожного зміненого файла.
-- [ ] `releaseChannel` (AUD-016): вручну редагувати `VERSION.json` НЕ
-      потрібно — значення визначається автоматично з `.git/HEAD`
-      (`Resolve-BRAVOReleaseChannelFromGit`). Переконайтесь лише, що
-      `VERSION.json.releaseChannel` лишається однаковим (`"stable"`) на
-      обох гілках (`git diff master developer -- VERSION.json` не
-      повинен показувати різницю в цьому полі) —
-      `Version/StableBranchNotDevelopmentChannel` і
-      `Version/DeveloperBranchResolvesToDevelopmentViaGit` у self-test
-      перевіряють ефективне значення автоматично, коли доступний `.git`.
+- [ ] `packageVersion` і `releaseChannel` відповідають гілці
+      (`RELEASE_POLICY.md`, розділи 2 і 5.3): `developer` —
+      `X.Y.Z-dev.N` + `development` або `X.Y.Z-rc.N` + `prerelease`;
+      `master` — `X.Y.Z` + `stable`. Перевіряється механічно:
+      `.\ci\Test-BRAVOReleasePolicy.ps1` локально і крок «Release policy»
+      у CI. Вручну звіряти `git diff master developer -- VERSION.json`
+      більше не потрібно — навпаки, різниця там тепер обов'язкова
+      (розділ 4 політики: однакова версія в обох гілках заборонена).
 - [ ] Git tag `vX.Y.Z` створено на комміті релізу (анотований —
       `git tag -a`, з описом ключових змін версії).
 - [ ] `git diff` перед комітом переглянуто вручну — жодних секретів,

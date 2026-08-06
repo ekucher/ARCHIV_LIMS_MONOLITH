@@ -171,8 +171,8 @@ $script:notificationRequestTimeoutSeconds = if ($null -ne $bravoSettings.Notific
 }
 $sftpCredentialRequired = $SyncBAZA -or
     [bool]$componentSettings.SFTP.ArchiveUpload -or
-    [bool]$componentSettings.Synchronization.BAZASFTP -or
-    [bool]$componentSettings.Synchronization.BAZAWWWSFTP
+    [bool]$componentSettings.Synchronization.BAZA_APP_SFTP -or
+    [bool]$componentSettings.Synchronization.BAZA_WWW_SFTP
 $smbCredentialRequired = -not $SyncBAZA -and
     [bool]$componentSettings.SMB.ArchiveCopy
 $archiveCredentialRequired = -not $SyncBAZA -and (
@@ -226,6 +226,72 @@ if ($institutionSettingsRequired -or
         }
         if ($notificationCredentialRequired) {
             $script:notificationCredentialInitializationError = $sanitizedCredentialError
+        }
+    }
+}
+
+# Ручний запуск (не через Планувальник) з відсутнiми обов'язковими
+# обліковими даними — пропонуємо налаштувати їх зараз (лише для
+# ПОТОЧНОГО користувача) замiсть того, щоб просто впасти з помилкою й
+# змусити шукати окремий скрипт. -StoreFor CurrentUser навмисно: обліковi
+# данi облiкового запису запланованого завдання (SYSTEM) налаштовуються
+# окремо й свiдомо через BRAVO_SETUP.ps1/BRAVO_CREDENTIALS_SETUP.ps1
+# -StoreFor ScheduledTaskAccount — тут ми їх не чіпаємо.
+#
+# -NoPause і перевірки нижче — той самий "чи це людина за клавіатурою"
+# сигнал, що вже охороняє Wait-BRAVOManualExit: SYSTEM-завдання завжди
+# передає -NoPause, а IsInputRedirected ловить дочірні процеси
+# автоматизації (самотест, CI), які успадкували консоль батьківського
+# процесу, але не мають кому відповідати на Read-Host.
+if ($credentialHelperLoaded -and -not $NoPause -and
+    ($archiveCredentialRequired -or $sftpCredentialRequired)) {
+    $missingRequiredCredentialTargets = New-Object System.Collections.Generic.List[string]
+    if ($archiveCredentialRequired) {
+        $checkTarget = [string]$credentialSettings.Targets.ArchivePassword
+        if ([string]::IsNullOrWhiteSpace($checkTarget)) { $checkTarget = "BRAVO_7Z_PASSWORD" }
+        if ([string]::IsNullOrWhiteSpace((Get-BRAVOCredentialSecret -Target $checkTarget))) {
+            [void]$missingRequiredCredentialTargets.Add($checkTarget)
+        }
+    }
+    if ($sftpCredentialRequired) {
+        $checkLoginTarget = [string]$credentialSettings.Targets.SFTPLogin
+        if ([string]::IsNullOrWhiteSpace($checkLoginTarget)) { $checkLoginTarget = "BRAVO_SFTP_LOGIN" }
+        $checkPasswordTarget = [string]$credentialSettings.Targets.SFTPPassword
+        if ([string]::IsNullOrWhiteSpace($checkPasswordTarget)) { $checkPasswordTarget = "BRAVO_SFTP_PASSWORD" }
+        if ([string]::IsNullOrWhiteSpace((Get-BRAVOCredentialSecret -Target $checkLoginTarget))) {
+            [void]$missingRequiredCredentialTargets.Add($checkLoginTarget)
+        }
+        if ([string]::IsNullOrWhiteSpace((Get-BRAVOCredentialSecret -Target $checkPasswordTarget))) {
+            [void]$missingRequiredCredentialTargets.Add($checkPasswordTarget)
+        }
+    }
+
+    if ($missingRequiredCredentialTargets.Count -gt 0) {
+        $isRealInteractiveSession = $false
+        try {
+            $isRealInteractiveSession = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected
+        } catch {
+            $isRealInteractiveSession = $false
+        }
+        if ($isRealInteractiveSession) {
+            Write-Host ""
+            Write-Host "Вiдсутнi обов'язковi облiковi данi: $($missingRequiredCredentialTargets -join ', ')" -ForegroundColor $logColors.WARNING
+            Write-Host "Запускаю налаштування для поточного користувача ($([Security.Principal.WindowsIdentity]::GetCurrent().Name))..." -ForegroundColor $logColors.WARNING
+            $credentialsSetupPath = Join-Path $bravoScriptDirectory 'BRAVO_CREDENTIALS_SETUP.ps1'
+            if (Test-Path -LiteralPath $credentialsSetupPath -PathType Leaf) {
+                # Окремий процес, не dot-source/&: BRAVO_CREDENTIALS_SETUP.ps1
+                # сам виконує повне завантаження BRAVO.config і перезаписав
+                # би глобальний стан (pathSettings, componentSettings тощо)
+                # цього процесу — ізоляція важливіша за швидкість запуску.
+                & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+                    -File $credentialsSetupPath `
+                    -ConfigPath $ConfigPath `
+                    -Action Ensure `
+                    -Component Required `
+                    -StoreFor CurrentUser
+            } else {
+                Write-Host "Не знайдено BRAVO_CREDENTIALS_SETUP.ps1 — налаштуйте облiковi данi вручну." -ForegroundColor $logColors.WARNING
+            }
         }
     }
 }
@@ -458,7 +524,7 @@ function Test-Compatibility {
     # NT AUTHORITY\SYSTEM, тому підмінений 7za.exe/WinSCP.com отримав би
     # найвищі права в системі.
     $manifestMode = 'Enforce'
-    $manifestPath = Join-Path $bravoScriptDirectory "TOOLS_MANIFEST.json"
+    $manifestPath = Join-Path $toolsPath "TOOLS_MANIFEST.json"
     if ($toolIntegritySettings -is [System.Collections.IDictionary]) {
         if (-not [string]::IsNullOrWhiteSpace([string]$toolIntegritySettings.Mode)) {
             $manifestMode = [string]$toolIntegritySettings.Mode
@@ -788,27 +854,11 @@ function Show-RunningProgress {
 }
 
 function Wait-ForManualExit {
-    if ($NoPause -or -not $consoleSettings.PauseOnExit) {
-        return
-    }
-
-    $prompt = [string]$consoleSettings.PausePrompt
-    if ([string]::IsNullOrWhiteSpace($prompt)) {
-        $prompt = "Натиснiть будь-яку клавiшу для закриття вiкна..."
-    }
-
-    Write-Host ""
-    Write-Host $prompt -ForegroundColor $logColors.Progress
-    try {
-        [void]$Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-    } catch {
-        # У хостах без RawUI очікуємо Enter; для -NonInteractive помилку ігноруємо.
-        try {
-            [void](Read-Host)
-        } catch {
-            Write-BRAVOLog -Component 'GENERAL' -Message "Пауза завершення недоступна у цьому режимi PowerShell" -Level "DEBUG"
-        }
-    }
+    # Спільна реалізація — modules\BRAVO.Console\BRAVO.Console.psm1. Той
+    # самий механізм (RawUI.ReadKey з фолбеком на Read-Host для ISE) тепер
+    # використовують і Health, і Maintenance; тут лишається тонка обгортка
+    # заради стабільності єдиного виклику нижче (рядок ~4230).
+    Wait-BRAVOManualExit -NoPause:$NoPause
 }
 
 function Test-PathWithLog {
@@ -1643,20 +1693,20 @@ function Test-SFTPConfig {
         }
     }
 
-    if ($BAZAOnly -or $componentSettings.Synchronization.BAZASFTP) {
+    if ($BAZAOnly -or $componentSettings.Synchronization.BAZA_APP_SFTP) {
         if (-not $sftpDirectories.ContainsKey("BAZA") -or [string]::IsNullOrWhiteSpace($sftpDirectories.BAZA)) {
             $configurationErrors += "не встановлено SFTP каталог для BAZA"
         }
     }
-    if ($componentSettings.Synchronization.BAZAWWWSFTP) {
+    if ($componentSettings.Synchronization.BAZA_WWW_SFTP) {
         if (-not $sftpDirectories.ContainsKey("BAZAWWW") -or
             [string]::IsNullOrWhiteSpace($sftpDirectories.BAZAWWW)) {
             $configurationErrors += "не встановлено SFTP каталог для BAZA WWW"
         }
     }
     if ($BAZAOnly -or
-        $componentSettings.Synchronization.BAZASFTP -or
-        $componentSettings.Synchronization.BAZAWWWSFTP) {
+        $componentSettings.Synchronization.BAZA_APP_SFTP -or
+        $componentSettings.Synchronization.BAZA_WWW_SFTP) {
         if ([string]$sftpSynchronizationOptions -match '(?i)(^|\s)-delete(\s|$)') {
             $configurationErrors += "опція -delete заборонена для BAZA: віддалені файли мають зберігатися для відновлення"
         }
@@ -2199,14 +2249,26 @@ function Get-BAZASFTPComparison {
                 continue
             }
 
+            # $difference.Local — це WinSCP.RemoteFileInfo (навіть для
+            # локальної сторони порівняння), а не System.IO.FileInfo:
+            # .FullName на ньому немає взагалі, лише .FileName (те саме
+            # WinSCP CompareDirectories API, що вже коректно працює через
+            # $side.FileName у Health.Runtime.ps1). Під Set-StrictMode
+            # звернення до .FullName тут падало ще ДО порівняння з
+            # порожнім рядком — реальний випадок: щойно створений на SFTP
+            # каталог /baza_app зробив цю гілку вперше досяжною (раніше
+            # порівняння саме падало на "каталог не знайдено" раніше, ніж
+            # доходило сюди).
             $localItem = $difference.Local
             $localItemPath = if ($null -ne $localItem) {
-                [string]$localItem.FullName
+                $fileNameProperty = $localItem.PSObject.Properties['FileName']
+                if ($null -ne $fileNameProperty -and $null -ne $fileNameProperty.Value) {
+                    [string]$fileNameProperty.Value
+                } else {
+                    ""
+                }
             } else {
                 ""
-            }
-            if ([string]::IsNullOrWhiteSpace($localItemPath) -and $null -ne $localItem) {
-                $localItemPath = [string]$localItem.FileName
             }
             if (-not [string]::IsNullOrWhiteSpace($localItemPath) -and
                 -not [IO.Path]::IsPathRooted($localItemPath)) {
@@ -2299,10 +2361,16 @@ function Write-BAZASFTPComparisonAudit {
         } else {
             ""
         }
-        Write-BRAVOLog -Component 'SFTP' -Message "AUDIT $ComponentName $stageText [$itemType] [$($pendingFile.Reason)] $($pendingFile.Path)$sizeText" -Level $summaryLevel -FileOnly
+        # -FileOnly не існує на Write-BRAVOLog — це параметр локального шиму
+        # Write-Log (транслює його в -NoConsole). Реальний випадок: 374
+        # елементи в аудиті BAZA вперше зробили цей цикл досяжним і
+        # негайно провалили весь runtime помилкою "A parameter cannot be
+        # found that matches parameter name 'FileOnly'" — раніше сюди
+        # взагалі не доходило через попередні два краші того самого аудиту.
+        Write-BRAVOLog -Component 'SFTP' -Message "AUDIT $ComponentName $stageText [$itemType] [$($pendingFile.Reason)] $($pendingFile.Path)$sizeText" -Level $summaryLevel -NoConsole
     }
     foreach ($pendingFile in $incompatiblePendingFiles) {
-        Write-BRAVOLog -Component 'SFTP' -Message "AUDIT $ComponentName $stageText [ПРОПУЩЕНО: НЕСУМІСНЕ ІМ'Я] $($pendingFile.Path)" -Level "WARNING" -FileOnly
+        Write-BRAVOLog -Component 'SFTP' -Message "AUDIT $ComponentName $stageText [ПРОПУЩЕНО: НЕСУМІСНЕ ІМ'Я] $($pendingFile.Path)" -Level "WARNING" -NoConsole
     }
 }
 
@@ -2510,7 +2578,7 @@ function Write-BAZARemoteNameCompatibilityAudit {
     Write-BRAVOLog -Component 'SFTP' -Message "Перевiрка iмен ${ComponentName}: знайдено несумiсних iмен: $($issues.Count). Цi об'єкти буде пропущено; потрiбне скорочення локальних iмен" -Level "ERROR"
     foreach ($issue in $issues) {
         $itemType = if ($issue.IsDirectory) { "КАТАЛОГ" } else { "ФАЙЛ" }
-        Write-BRAVOLog -Component 'SFTP' -Message "AUDIT $ComponentName НЕСУМIСНЕ IМ'Я [$itemType] [довжина: $($issue.CharacterCount) символів; $($issue.Utf8ByteCount)/$($issue.MaximumUtf8Bytes) UTF-8 байт] $($issue.Path)" -Level "ERROR" -FileOnly
+        Write-BRAVOLog -Component 'SFTP' -Message "AUDIT $ComponentName НЕСУМIСНЕ IМ'Я [$itemType] [довжина: $($issue.CharacterCount) символів; $($issue.Utf8ByteCount)/$($issue.MaximumUtf8Bytes) UTF-8 байт] $($issue.Path)" -Level "ERROR" -NoConsole
     }
 
     # Notification failures must never stop the actual SFTP synchronization.
@@ -2726,6 +2794,101 @@ $examplesText
         Write-BRAVOLog -Component 'SFTP' -Message "Сповіщення про $($Issues.Count) несумісних імен $ComponentName відправлено у $($script:notificationProviderDisplayName)$chunkText" -Level "SUCCESS"
     } catch {
         Write-BRAVOLog -Component 'SFTP' -Message "Не вдалося відправити сповіщення про несумісні імена $ComponentName у $($script:notificationProviderDisplayName): $($_.Exception.Message)" -Level "ERROR"
+    }
+}
+
+function Initialize-BRAVOSFTPRemoteDirectories {
+    # Створює відсутні кореневі каталоги на SFTP (model/blog/bravoexch/
+    # baza_app/...) одним пакетним викликом WinSCP, перед тим як
+    # Send-FileViaWinSCP/Sync-FolderToSFTP спробують передати щось
+    # усередину них. Реальний випадок: WinSCP явно повідомляв "Error
+    # listing directory '/baza_app'. No such file or directory" — сам
+    # каталог просто ніколи не створювався на сервері.
+    #
+    # option batch continue навмисно: mkdir на вже наявному каталозі
+    # повертає помилку (а після першого успішного запуску каталоги вже
+    # існують щоразу), і Sync-FolderToSFTP окремо документує, що це
+    # звело б підсумковий $process.ExitCode до 1 навіть у режимі continue.
+    # Тому цей виклик — best-effort і НІКОЛИ не є джерелом істини про
+    # успіх/невдачу: реальний результат передачі перевіряють окремі
+    # виклики Send-FileViaWinSCP/Sync-FolderToSFTP після нього, які на
+    # це не зважають.
+    param(
+        [string]$WinSCPPath,
+        [string]$RepositorySFTPUrl,
+        [string]$HostKey,
+        [string[]]$RemoteDirectories
+    )
+
+    $normalizedDirectories = @(
+        $RemoteDirectories |
+            ForEach-Object { [string]$_ } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            ForEach-Object { "/" + $_.Replace("\", "/").Trim("/") } |
+            Where-Object { $_ -ne "/" } |
+            Select-Object -Unique
+    )
+    if ($normalizedDirectories.Count -eq 0) {
+        return
+    }
+    if (-not (Test-Path -Path $WinSCPPath -PathType Leaf)) {
+        Write-BRAVOLog -Component 'SFTP' -Message "WinSCP не знайдено: $WinSCPPath" -Level "WARNING"
+        return
+    }
+
+    Write-BRAVOLog -Component 'SFTP' -Message "Перевiрка/створення потрiбних каталогiв на SFTP: $($normalizedDirectories -join ', ')"
+
+    $mkdirCommands = ($normalizedDirectories | ForEach-Object { "mkdir `"$_`"" }) -join [Environment]::NewLine
+    $winscpCommand = @"
+option batch continue
+option confirm off
+open $RepositorySFTPUrl -hostkey=$HostKey -timeout=$sftpConnectionTimeoutSeconds
+$mkdirCommands
+exit
+"@
+
+    $tempScript = New-BRAVOWinSCPTemporaryScriptPath
+    try {
+        $winscpCommand | Out-File -FilePath $tempScript -Encoding $winSCPScriptEncoding -Force
+
+        $processInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $processInfo.FileName = $WinSCPPath
+        $processInfo.Arguments = "/ini=$winSCPIniPath /script=`"$tempScript`""
+        $processInfo.RedirectStandardOutput = $true
+        $processInfo.RedirectStandardError = $true
+        $processInfo.UseShellExecute = $false
+        $processInfo.CreateNoWindow = $true
+
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $processInfo
+        $winSCPAvailability = Test-BRAVOWinSCPAvailable -WinSCPPath $WinSCPPath
+        if (-not $winSCPAvailability.Available) {
+            Write-BRAVOLog -Component 'SFTP' -Message (Get-BRAVOWinSCPBusyMessage -Availability $winSCPAvailability -Operation "створення каталогiв на SFTP") -Level "WARNING"
+            return
+        }
+        $outputCapture = Start-BRAVOProcessOutputCapture -Process $process
+        $operationTimeoutSeconds = [math]::Max(1, [int]$backupMonitoring.SFTP.OperationTimeoutSeconds)
+        if (-not $process.WaitForExit($operationTimeoutSeconds * 1000)) {
+            try {
+                $process.Kill()
+                [void]$process.WaitForExit(5000)
+            } catch {
+                Write-BRAVOLog -Component 'SFTP' -Message "Не вдалося завершити WinSCP пiсля таймауту створення каталогiв: $($_.Exception.Message)" -Level "WARNING"
+            }
+        }
+        $capturedOutput = Complete-BRAVOProcessOutputCapture -Capture $outputCapture
+        $safeOutput = Get-SanitizedWinSCPDiagnostic -Text $capturedOutput.StandardOutput
+        if (-not [string]::IsNullOrWhiteSpace($safeOutput)) {
+            Write-BRAVOLog -Component 'SFTP' -Message "WinSCP вивiд (створення каталогiв): $safeOutput" -Level "DEBUG"
+        }
+    } catch {
+        Write-BRAVOLog -Component 'SFTP' -Message "Помилка пiд час створення каталогiв на SFTP: $($_.Exception.Message)" -Level "WARNING"
+    } finally {
+        try {
+            Remove-BRAVOWinSCPSensitiveTemporaryScript -Path $tempScript
+        } catch {
+            Write-BRAVOLog -Component 'SFTP' -Message "Не вдалося видалити тимчасовий скрипт: $($_.Exception.Message)" -Level "WARNING"
+        }
     }
 }
 
@@ -3130,11 +3293,11 @@ function Invoke-ManualBAZASFTPSynchronization {
 
     $syncTargets = @()
     $sourceConfigurationFailed = $false
-    if ([bool]$componentSettings.Synchronization.BAZASFTP) {
-        if (Test-PathWithLog -Path $bazaPaths.Source -Description "Каталог BAZA_APP" -CreateIfMissing $false) {
+    if ([bool]$componentSettings.Synchronization.BAZA_APP_SFTP) {
+        if (Test-PathWithLog -Path $bazaAppPaths.Source -Description "Каталог BAZA_APP" -CreateIfMissing $false) {
             $syncTargets += [pscustomobject]@{
                 Name = "BAZA_APP"
-                Source = [string]$bazaPaths.Source
+                Source = [string]$bazaAppPaths.Source
                 Destination = [string]$sftpDirectories.BAZA
             }
         } else {
@@ -3142,7 +3305,7 @@ function Invoke-ManualBAZASFTPSynchronization {
             Write-BRAVOLog -Component 'SFTP' -Message "Ручну синхронізацію BAZA_APP пропущено: локальний каталог недоступний" -Level "ERROR"
         }
     }
-    if ([bool]$componentSettings.Synchronization.BAZAWWWSFTP) {
+    if ([bool]$componentSettings.Synchronization.BAZA_WWW_SFTP) {
         if ($bazaWWWDetection.Success -and
             -not [string]::IsNullOrWhiteSpace([string]$bazaWWWPaths.Source) -and
             (Test-PathWithLog -Path $bazaWWWPaths.Source -Description "Каталог BAZA_WWW" -CreateIfMissing $false)) {
@@ -3158,7 +3321,7 @@ function Invoke-ManualBAZASFTPSynchronization {
         }
     }
     if ($syncTargets.Count -eq 0) {
-        Write-BRAVOLog -Component 'SFTP' -Message "Ручну синхронізацію скасовано: BAZASFTP і BAZAWWWSFTP вимкнені або їхні джерела недоступні" -Level "ERROR"
+        Write-BRAVOLog -Component 'SFTP' -Message "Ручну синхронізацію скасовано: BAZA_APP_SFTP і BAZA_WWW_SFTP вимкнені або їхні джерела недоступні" -Level "ERROR"
         return $false
     }
 
@@ -3180,6 +3343,12 @@ function Invoke-ManualBAZASFTPSynchronization {
         Write-BRAVOLog -Component 'SFTP' -Message "Ручну синхронiзацiю BAZA_APP / BAZA_WWW зупинено: не вдалося пiдключитися до SFTP" -Level "ERROR"
         return $false
     }
+
+    Initialize-BRAVOSFTPRemoteDirectories `
+        -WinSCPPath $winSCPPath `
+        -RepositorySFTPUrl $sftpUrl `
+        -HostKey $sftpHostKey `
+        -RemoteDirectories @($syncTargets | ForEach-Object { [string]$_.Destination })
 
     $syncFailed = $sourceConfigurationFailed
     $syncIndex = 0
@@ -3374,14 +3543,15 @@ function Main {
     $enabledArchives = @($archiveDefinitions | Where-Object { $_.Enabled })
     $readyArchives = @()
     $results = @{}
-    $bazaLocalSyncEnabled = [bool]$componentSettings.Synchronization.BAZALocal
-    $bazaSFTPSyncEnabled = [bool]$componentSettings.Synchronization.BAZASFTP
-    $bazaWWWSFTPSyncEnabled = [bool]$componentSettings.Synchronization.BAZAWWWSFTP
+    $bazaAppLocalSyncEnabled = [bool]$componentSettings.Synchronization.BAZA_APP_LOCAL
+    $bazaAppSFTPSyncEnabled = [bool]$componentSettings.Synchronization.BAZA_APP_SFTP
+    $bazaWWWSFTPSyncEnabled = [bool]$componentSettings.Synchronization.BAZA_WWW_SFTP
+    $bazaWWWLocalSyncEnabled = [bool]$componentSettings.Synchronization.BAZA_WWW_LOCAL
     $sftpArchiveUploadEnabled = [bool]$componentSettings.SFTP.ArchiveUpload
     $smbArchiveCopyEnabled = [bool]$componentSettings.SMB.ArchiveCopy
     $sftpTransferEnabled = (
         $sftpArchiveUploadEnabled -or
-        $bazaSFTPSyncEnabled -or
+        $bazaAppSFTPSyncEnabled -or
         $bazaWWWSFTPSyncEnabled
     )
     $operationFailed = $false
@@ -3462,6 +3632,23 @@ function Main {
     foreach ($archive in $archiveDefinitions) {
         Write-Log "Архiвацiя $($archive.Type): $(if ($archive.Enabled) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
     }
+    # Джерело показуємо для кожного увiмкненого компонента — інакше з
+    # самого лише "УВIМКНЕНО" не видно, який саме каталог реально обрано
+    # автоматичним discovery (bravo.ini) чи легасі-евристикою (BRAVOEXCH).
+    if ([bool]$componentSettings.Archive.MODEL) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$bravoDiscoveryResult.MODEL_SOURCE)) {
+            Write-Log "Джерело MODEL: $($bravoDiscoveryResult.MODEL_SOURCE) ($($bravoDiscoveryResult.Reasons.MODEL))" -NoTimestamp
+        } else {
+            Write-Log "Джерело MODEL не визначено: $($bravoDiscoveryResult.Reasons.MODEL)" -Level "ERROR" -NoTimestamp
+        }
+    }
+    if ([bool]$componentSettings.Archive.BLOG) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$bravoDiscoveryResult.BLOG_SOURCE)) {
+            Write-Log "Джерело BLOG: $($bravoDiscoveryResult.BLOG_SOURCE) ($($bravoDiscoveryResult.Reasons.BLOG))" -NoTimestamp
+        } else {
+            Write-Log "Джерело BLOG не визначено: $($bravoDiscoveryResult.Reasons.BLOG)" -Level "ERROR" -NoTimestamp
+        }
+    }
     if ([bool]$componentSettings.Archive.BRAVOEXCH) {
         if (-not [string]::IsNullOrWhiteSpace([string]$bravoExchSourceDirectory)) {
             Write-Log "Джерело BRAVOEXCH: $bravoExchSourceDirectory (вибрано автоматично)" -NoTimestamp
@@ -3469,11 +3656,19 @@ function Main {
             Write-Log "Джерело BRAVOEXCH не знайдено: жоден із каталогів не існує або не містить файлів: $($bravoExchSourceCandidates -join '; ')" -Level "ERROR" -NoTimestamp
         }
     }
-    Write-Log "Локальна синхронiзацiя BAZA: $(if ($bazaLocalSyncEnabled) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
+    Write-Log "Локальна синхронiзацiя BAZA APP: $(if ($bazaAppLocalSyncEnabled) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
+    if ($bazaAppLocalSyncEnabled) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$bazaAppPaths.Source)) {
+            Write-Log "Джерело BAZA APP: $($bazaAppPaths.Source) ($($bravoDiscoveryResult.Reasons.BAZA_APP))" -NoTimestamp
+        } else {
+            Write-Log "Джерело BAZA APP не визначено: $($bravoDiscoveryResult.Reasons.BAZA_APP)" -Level "ERROR" -NoTimestamp
+        }
+    }
     Write-Log "Завантаження архiвiв на SFTP: $(if ($sftpArchiveUploadEnabled) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
-    Write-Log "Синхронiзацiя BAZA на SFTP: $(if ($bazaSFTPSyncEnabled) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
+    Write-Log "Синхронiзацiя BAZA APP на SFTP: $(if ($bazaAppSFTPSyncEnabled) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
     Write-Log "Синхронiзацiя BAZA WWW на SFTP: $(if ($bazaWWWSFTPSyncEnabled) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
-    if ($bazaWWWSFTPSyncEnabled) {
+    Write-Log "Локальна синхронiзацiя BAZA WWW: $(if ($bazaWWWLocalSyncEnabled) {'УВIМКНЕНО'} else {'ВИМКНЕНО'})" -NoTimestamp
+    if ($bazaWWWSFTPSyncEnabled -or $bazaWWWLocalSyncEnabled) {
         if ($bazaWWWDetection.Success) {
             Write-Log (
                 "Джерело BAZA WWW: $($bazaWWWPaths.Source); " +
@@ -3631,22 +3826,23 @@ function Main {
         }
     }
 
-    $bazaSourceAvailable = $true
-    $bazaDestinationAvailable = $true
-    if ($bazaLocalSyncEnabled -or $bazaSFTPSyncEnabled) {
-        $bazaSourceAvailable = Test-PathWithLog `
-            -Path $bazaPaths.Source `
-            -Description "Каталог BAZA" `
+    $bazaAppSourceAvailable = $true
+    $bazaAppDestinationAvailable = $true
+    if ($bazaAppLocalSyncEnabled -or $bazaAppSFTPSyncEnabled) {
+        $bazaAppSourceAvailable = Test-PathWithLog `
+            -Path $bazaAppPaths.Source `
+            -Description "Каталог BAZA APP" `
             -CreateIfMissing $false
     }
-    if ($bazaLocalSyncEnabled) {
-        $bazaDestinationAvailable = Test-PathWithLog `
-            -Path $bazaPaths.Destination `
-            -Description "Каталог архiву BAZA" `
+    if ($bazaAppLocalSyncEnabled) {
+        $bazaAppDestinationAvailable = Test-PathWithLog `
+            -Path $bazaAppPaths.Destination `
+            -Description "Каталог архiву BAZA APP" `
             -CreateIfMissing $true
     }
     $bazaWWWSourceAvailable = $true
-    if ($bazaWWWSFTPSyncEnabled) {
+    $bazaWWWDestinationAvailable = $true
+    if ($bazaWWWSFTPSyncEnabled -or $bazaWWWLocalSyncEnabled) {
         if ($bazaWWWDetection.Success -and
             -not [string]::IsNullOrWhiteSpace([string]$bazaWWWPaths.Source)) {
             $bazaWWWSourceAvailable = Test-PathWithLog `
@@ -3658,13 +3854,20 @@ function Main {
             $bazaWWWSourceAvailable = $false
         }
     }
+    if ($bazaWWWLocalSyncEnabled) {
+        $bazaWWWDestinationAvailable = Test-PathWithLog `
+            -Path $bazaWWWPaths.Destination `
+            -Description "Каталог архiву BAZA WWW" `
+            -CreateIfMissing $true
+    }
 
     $allPathsExist = (
         $basePathsAvailable -and
         $readyArchives.Count -eq $enabledArchives.Count -and
-        $bazaSourceAvailable -and
-        $bazaDestinationAvailable -and
-        $bazaWWWSourceAvailable
+        $bazaAppSourceAvailable -and
+        $bazaAppDestinationAvailable -and
+        $bazaWWWSourceAvailable -and
+        $bazaWWWDestinationAvailable
     )
     Show-PathCheckSummary -CheckedPaths $requiredPaths -AllPathsExist $allPathsExist
     Write-BRAVOArchiveStep `
@@ -3672,24 +3875,44 @@ function Main {
         -Status $(if ($allPathsExist) { 'OK' } else { 'ERROR' }) `
         -Details $(if ($allPathsExist) { '' } else { 'Частина шляхів недоступна; деталі у журналі.' })
 
-    # Синхронізація BAZA
-    if ($bazaLocalSyncEnabled -and $bazaSourceAvailable -and $bazaDestinationAvailable) {
-        Show-ScriptProgress -Status "Локальна синхронiзацiя BAZA" -PercentComplete 20
+    # Синхронізація BAZA APP
+    if ($bazaAppLocalSyncEnabled -and $bazaAppSourceAvailable -and $bazaAppDestinationAvailable) {
+        Show-ScriptProgress -Status "Локальна синхронiзацiя BAZA APP" -PercentComplete 20
         Write-Log "==="
-        Write-Log "=== СИНХРОНIЗАЦIЯ BAZA ==="
-        $syncSuccess = Sync-Folders -SourcePath $bazaPaths.Source -DestinationPath $bazaPaths.Destination
+        Write-Log "=== СИНХРОНIЗАЦIЯ BAZA APP ==="
+        $syncSuccess = Sync-Folders -SourcePath $bazaAppPaths.Source -DestinationPath $bazaAppPaths.Destination
 
         if ($syncSuccess) {
-            Write-Log "Синхронiзацiя BAZA успiшна" -Level "SUCCESS"
+            Write-Log "Синхронiзацiя BAZA APP успiшна" -Level "SUCCESS"
         } else {
-            Write-Log "Помилка синхронiзацiї BAZA - архiвацiя може бути неповною" -Level "WARNING"
+            Write-Log "Помилка синхронiзацiї BAZA APP - архiвацiя може бути неповною" -Level "WARNING"
             $operationFailed = $true
         }
-    } elseif ($bazaLocalSyncEnabled) {
-        Write-Log "Локальну синхронiзацiю BAZA пропущено через помилку шляху" -Level "ERROR"
+    } elseif ($bazaAppLocalSyncEnabled) {
+        Write-Log "Локальну синхронiзацiю BAZA APP пропущено через помилку шляху" -Level "ERROR"
         $operationFailed = $true
     } else {
-        Write-Log "Локальну синхронiзацiю BAZA вимкнено в конфiгурацiї" -Level "INFO"
+        Write-Log "Локальну синхронiзацiю BAZA APP вимкнено в конфiгурацiї" -Level "INFO"
+    }
+
+    # Синхронізація BAZA WWW (локальна копія)
+    if ($bazaWWWLocalSyncEnabled -and $bazaWWWSourceAvailable -and $bazaWWWDestinationAvailable) {
+        Show-ScriptProgress -Status "Локальна синхронiзацiя BAZA WWW" -PercentComplete 20
+        Write-Log "==="
+        Write-Log "=== СИНХРОНIЗАЦIЯ BAZA WWW ==="
+        $syncSuccess = Sync-Folders -SourcePath $bazaWWWPaths.Source -DestinationPath $bazaWWWPaths.Destination
+
+        if ($syncSuccess) {
+            Write-Log "Синхронiзацiя BAZA WWW успiшна" -Level "SUCCESS"
+        } else {
+            Write-Log "Помилка синхронiзацiї BAZA WWW - архiвацiя може бути неповною" -Level "WARNING"
+            $operationFailed = $true
+        }
+    } elseif ($bazaWWWLocalSyncEnabled) {
+        Write-Log "Локальну синхронiзацiю BAZA WWW пропущено через помилку шляху" -Level "ERROR"
+        $operationFailed = $true
+    } else {
+        Write-Log "Локальну синхронiзацiю BAZA WWW вимкнено в конфiгурацiї" -Level "INFO"
     }
     
     # Створення архівів
@@ -3887,6 +4110,24 @@ function Main {
             Write-Log "Помилка пiдключення до SFTP - пропускаємо передачу" -Level "ERROR"
             $operationFailed = $true
         } else {
+            $requiredSFTPDirectories = @()
+            if ($sftpArchiveUploadEnabled) {
+                $requiredSFTPDirectories += @(
+                    $enabledArchives | ForEach-Object { [string]$sftpDirectories[$_.Type] }
+                )
+            }
+            if ($bazaAppSFTPSyncEnabled) {
+                $requiredSFTPDirectories += [string]$sftpDirectories.BAZA
+            }
+            if ($bazaWWWSFTPSyncEnabled) {
+                $requiredSFTPDirectories += [string]$sftpDirectories.BAZAWWW
+            }
+            Initialize-BRAVOSFTPRemoteDirectories `
+                -WinSCPPath $winSCPPath `
+                -RepositorySFTPUrl $sftpUrl `
+                -HostKey $sftpHostKey `
+                -RemoteDirectories $requiredSFTPDirectories
+
             if ($sftpArchiveUploadEnabled) {
                 $uploadSuccess = 0
                 $uploadQueue = @()
@@ -3953,20 +4194,20 @@ function Main {
                 Write-Log "Завантаження архiвiв на SFTP вимкнено в конфiгурацiї" -Level "INFO"
             }
 
-            if ($bazaSFTPSyncEnabled -and $bazaSourceAvailable) {
-                Show-ScriptProgress -Status "Синхронiзацiя BAZA на SFTP" -PercentComplete 90
+            if ($bazaAppSFTPSyncEnabled -and $bazaAppSourceAvailable) {
+                Show-ScriptProgress -Status "Синхронiзацiя BAZA APP на SFTP" -PercentComplete 90
                 Write-Log "==="
-                Write-Log "=== СИНХРОНIЗАЦIЯ BAZA НА SFTP ==="
-                $bazaSFTPSync = Sync-FolderToSFTP -WinSCPPath $winSCPPath -RepositorySFTPUrl $sftpUrl -HostKey $sftpHostKey -LocalDirectory $bazaPaths.Source -RemoteDirectory $sftpDirectories.BAZA
-                if (-not $bazaSFTPSync) {
-                    Write-Log "Каталог BAZA не вдалося синхронiзувати з SFTP" -Level "WARNING"
+                Write-Log "=== СИНХРОНIЗАЦIЯ BAZA APP НА SFTP ==="
+                $bazaAppSFTPSync = Sync-FolderToSFTP -WinSCPPath $winSCPPath -RepositorySFTPUrl $sftpUrl -HostKey $sftpHostKey -LocalDirectory $bazaAppPaths.Source -RemoteDirectory $sftpDirectories.BAZA
+                if (-not $bazaAppSFTPSync) {
+                    Write-Log "Каталог BAZA APP не вдалося синхронiзувати з SFTP" -Level "WARNING"
                     $operationFailed = $true
                 }
-            } elseif ($bazaSFTPSyncEnabled) {
-                Write-Log "Синхронiзацiю BAZA на SFTP пропущено через помилку локального шляху" -Level "ERROR"
+            } elseif ($bazaAppSFTPSyncEnabled) {
+                Write-Log "Синхронiзацiю BAZA APP на SFTP пропущено через помилку локального шляху" -Level "ERROR"
                 $operationFailed = $true
             } else {
-                Write-Log "Синхронiзацiю BAZA на SFTP вимкнено в конфiгурацiї" -Level "INFO"
+                Write-Log "Синхронiзацiю BAZA APP на SFTP вимкнено в конфiгурацiї" -Level "INFO"
             }
 
             if ($bazaWWWSFTPSyncEnabled -and $bazaWWWSourceAvailable) {
