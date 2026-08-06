@@ -83,6 +83,41 @@
   `Console/EntrypointsForwardNoPauseToRuntime`,
   `Scheduler/EveryTaskTypeGetsNoPauseUnconditionally`.
 
+- **Discovery: уточнене джерело істини для служби BRAVO — за прямою
+  вказівкою користувача.** Три виправлення:
+
+  1. **Ідентифікація служби BRAVO** — тепер Service name ТА Display name
+     одночасно (`"BRAVO"` і `"BRAVO Service"`), а не будь-яке з них
+     окремо. Сторонній сервіс із випадково схожим ім'ям більше не
+     проходить як BRAVO.
+
+  2. **`bravo.ini` шукається в системному каталозі Windows**
+     (`%SystemRoot%\SysWOW64` на 64-бітній ОС, `\System32` на 32-бітній),
+     а не поруч із `bravo.exe`, як вважалось раніше. Причина —
+     WOW64 File System Redirector: BRAVO 32-бітний, і коли він пише в
+     "System32", 64-бітна Windows прозоро перенаправляє це в SysWOW64;
+     64-бітний PowerShell (типово для запланованих завдань), звертаючись
+     до "System32" напряму, бачить каталог без редиректу — і файлу там
+     просто немає. Підтверджено буквально: на машині розробки він
+     справді лежить у `SysWOW64`, і початкова версія тестів це
+     випадково довела, підхопивши реальний файл замість фікстури.
+     Старий шлях (поруч із `bravo.exe`) лишився вторинним fallback.
+
+  3. **`ARCHIV_ROOT`** — каталог збереження бекапів тепер визначається як
+     підкаталог `ARCHIV` усередині шляху встановлення служби BRAVO, а не
+     LIMSRoot-відносний шлях. `BRAVO.config` використовує це значення як
+     дефолт `pathSettings.BackupRoot`, лише якщо адміністратор не змінив
+     `BackupRoot` вручну — override ніколи не перезаписується мовчки,
+     той самий принцип, що й для решти discovery-полів.
+
+  Закрито тестами `Discovery/BravoServiceRequiresNameAndDisplayNameMatch`,
+  `Discovery/SystemDirectoryIsPrimaryBravoIniSource`,
+  `Discovery/Win32UsesSystem32NotSysWOW64`,
+  `Discovery/FallsBackNextToExecutableWhenSystemIniMissing`,
+  `Discovery/ArchivRootDerivedFromBravoRoot`,
+  `Discovery/ArchivRootOverrideWins`,
+  `Discovery/ConfigUsesStrictBravoIdentityAndArchivRoot`.
+
 ## 4.4.2 — 2026-08-05
 
 Виправлення за результатами першого тестового розгортання на реальному

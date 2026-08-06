@@ -3329,15 +3329,23 @@ try {
         [IO.File]::WriteAllLines($fakeBravoIniPath, $discoveryTestIniContent)
 
         $syntheticServices = @(
-            [pscustomobject]@{ Name = "BRAVO"; DisplayName = "BRAVO"; State = "Running"; StartMode = "Auto"; PathName = ('"{0}"' -f $fakeBravoExePath) },
+            [pscustomobject]@{ Name = "BRAVO"; DisplayName = "BRAVO Service"; State = "Running"; StartMode = "Auto"; PathName = ('"{0}"' -f $fakeBravoExePath) },
             [pscustomobject]@{ Name = "Apache2.4"; DisplayName = "Apache2.4"; State = "Running"; StartMode = "Auto"; PathName = ('"{0}"' -f $fakeHttpdPath) }
         )
 
+        # -SystemRoot тут навмисно вказує на неіснуючий каталог: без цього
+        # тест підхоплював би РЕАЛЬНИЙ %SystemRoot%\SysWOW64\bravo.ini
+        # поточної машини, якщо він там є (саме так і сталось під час
+        # розробки цієї перевірки — на машині розробника він справді
+        # лежить там), і тест ставав недетермінованим — залежав від
+        # оточення, а не лише від синтетичних фікстур.
+        $noSuchSystemRoot = Join-Path $discoveryTestRoot "NoSuchSystemRoot"
         $autoDiscovery = Resolve-BRAVOInstallationDiscovery `
             -LimsRoot $discoveryTestRoot `
             -BravoServiceName "BRAVO" `
             -WebServiceCandidates @("Apache2.4") `
-            -Services $syntheticServices
+            -Services $syntheticServices `
+            -SystemRoot $noSuchSystemRoot
 
         Test-BRAVOCondition `
             -Condition (
@@ -3348,16 +3356,18 @@ try {
                 $autoDiscovery.BRAVOEXCH_SOURCE -eq (Join-Path $discoveryTestRoot "bravoexch") -and
                 $autoDiscovery.BAZA_APP -eq (Join-Path $discoveryTestRoot "BAZA") -and
                 $autoDiscovery.BAZA_WWW -eq (Join-Path $discoveryTestRoot "webroot\www\BAZA") -and
-                $autoDiscovery.MODEL_PROJECT_FILE -eq (Join-Path $discoveryTestRoot "Model\lims")
+                $autoDiscovery.MODEL_PROJECT_FILE -eq (Join-Path $discoveryTestRoot "Model\lims") -and
+                $autoDiscovery.ARCHIV_ROOT -eq (Join-Path $discoveryTestRoot "ARCHIV")
             ) `
             -Name "Discovery/ResolvesFromServiceAndIniWithoutOverride" `
-            -Failure "Resolve-BRAVOInstallationDiscovery має обчислювати BRAVO_ROOT/WEB_ROOT/MODEL_SOURCE/BLOG_SOURCE/BRAVOEXCH_SOURCE/BAZA_APP/BAZA_WWW із синтетичної служби й bravo.ini без жодного override"
+            -Failure "Resolve-BRAVOInstallationDiscovery має обчислювати BRAVO_ROOT/WEB_ROOT/MODEL_SOURCE/BLOG_SOURCE/BRAVOEXCH_SOURCE/BAZA_APP/BAZA_WWW/ARCHIV_ROOT із синтетичної служби й bravo.ini без жодного override"
 
         $overriddenDiscovery = Resolve-BRAVOInstallationDiscovery `
             -LimsRoot $discoveryTestRoot `
             -BravoServiceName "BRAVO" `
             -WebServiceCandidates @("Apache2.4") `
             -Services $syntheticServices `
+            -SystemRoot $noSuchSystemRoot `
             -DiscoverySettings @{ Sources = @{ MODEL = "C:\Explicit\Override\Model" } }
         Test-BRAVOCondition `
             -Condition (
@@ -3372,7 +3382,8 @@ try {
             -LimsRoot $discoveryTestRoot `
             -BravoServiceName "BRAVO_NOT_INSTALLED" `
             -WebServiceCandidates @("Apache2.4") `
-            -Services @()
+            -Services @() `
+            -SystemRoot $noSuchSystemRoot
         Test-BRAVOCondition `
             -Condition (
                 $noServiceDiscovery.BRAVO_ROOT -eq $discoveryTestRoot -and
@@ -3382,6 +3393,120 @@ try {
             ) `
             -Name "Discovery/LegacyFallbackWhenNoServiceFound" `
             -Failure "без встановленої служби BRAVO/Apache Resolve-BRAVOInstallationDiscovery має fallback-ити на чинну LIMSRoot-відносну поведінку (Model/BLOG у корені), а не повертати порожні значення"
+
+        # Джерело істини — Service name ТА Display name одночасно.
+        # Сторонній сервіс із Name="BRAVO", але іншим Display name (типова
+        # підстава для помилкового спрацювання) не повинен визнаватись
+        # службою BRAVO.
+        $wrongDisplayNameServices = @(
+            [pscustomobject]@{ Name = "BRAVO"; DisplayName = "Якийсь Інший Сервіс"; State = "Running"; StartMode = "Auto"; PathName = ('"{0}"' -f $fakeBravoExePath) }
+        )
+        $wrongDisplayNameDiscovery = Resolve-BRAVOInstallationDiscovery `
+            -LimsRoot $discoveryTestRoot `
+            -BravoServiceName "BRAVO" `
+            -BravoDisplayName "BRAVO Service" `
+            -Services $wrongDisplayNameServices `
+            -SystemRoot $noSuchSystemRoot
+        Test-BRAVOCondition `
+            -Condition (
+                $wrongDisplayNameDiscovery.BRAVO_ROOT -eq $discoveryTestRoot -and
+                $wrongDisplayNameDiscovery.Reasons.BravoRoot.Contains("legacy fallback")
+            ) `
+            -Name "Discovery/BravoServiceRequiresNameAndDisplayNameMatch" `
+            -Failure "служба з Name='BRAVO', але іншим Display name не повинна визнаватись службою BRAVO — Resolve-BRAVOInstallationDiscovery має fallback-ити на LIMSRoot, а не використовувати її ExecutablePath"
+
+        # bravo.ini — джерело істини системний каталог Windows, НЕ каталог
+        # bravo.exe. -SystemRoot/-Is64BitOperatingSystem — ін'єкція для
+        # детермінованості: реальний %SystemRoot% цієї машини не повинен
+        # впливати на результат тесту. SysWOW64 і System32 фікстури містять
+        # РІЗНИЙ MODEL=, щоб однозначно довести, який саме каталог обрано —
+        # а не лише що "якийсь" bravo.ini знайдено.
+        $fakeSystemRoot = Join-Path $discoveryTestRoot "FakeWindows"
+        $fakeSysWow64Dir = Join-Path $fakeSystemRoot "SysWOW64"
+        $fakeSystem32Dir = Join-Path $fakeSystemRoot "System32"
+        [void][IO.Directory]::CreateDirectory($fakeSysWow64Dir)
+        [void][IO.Directory]::CreateDirectory($fakeSystem32Dir)
+        $systemBravoIniPath = Join-Path $fakeSysWow64Dir "bravo.ini"
+        [IO.File]::WriteAllLines($systemBravoIniPath, @(
+            '[model]',
+            ("MODEL={0}" -f (Join-Path $discoveryTestRoot "SysWOW64Model\lims"))
+        ))
+        $system32BravoIniPath = Join-Path $fakeSystem32Dir "bravo.ini"
+        [IO.File]::WriteAllLines($system32BravoIniPath, @(
+            '[model]',
+            ("MODEL={0}" -f (Join-Path $discoveryTestRoot "System32Model\lims"))
+        ))
+
+        $systemIniDiscoveryX64 = Resolve-BRAVOInstallationDiscovery `
+            -LimsRoot $discoveryTestRoot `
+            -BravoServiceName "BRAVO" `
+            -BravoDisplayName "BRAVO Service" `
+            -Services $syntheticServices `
+            -SystemRoot $fakeSystemRoot `
+            -Is64BitOperatingSystem $true
+        Test-BRAVOCondition `
+            -Condition (
+                $systemIniDiscoveryX64.BravoIniPath -eq $systemBravoIniPath -and
+                $systemIniDiscoveryX64.MODEL_SOURCE -eq (Join-Path $discoveryTestRoot "SysWOW64Model") -and
+                $systemIniDiscoveryX64.Reasons.BravoIniPath.Contains("системному каталозі")
+            ) `
+            -Name "Discovery/SystemDirectoryIsPrimaryBravoIniSource" `
+            -Failure "на 64-бітній ОС bravo.ini у %SystemRoot%\SysWOW64 має мати пріоритет над файлом поруч з bravo.exe — так само, як він насправді лежить на реальних інсталяціях"
+
+        $systemIniDiscoveryX86 = Resolve-BRAVOInstallationDiscovery `
+            -LimsRoot $discoveryTestRoot `
+            -BravoServiceName "BRAVO" `
+            -BravoDisplayName "BRAVO Service" `
+            -Services $syntheticServices `
+            -SystemRoot $fakeSystemRoot `
+            -Is64BitOperatingSystem $false
+        Test-BRAVOCondition `
+            -Condition (
+                $systemIniDiscoveryX86.BravoIniPath -eq $system32BravoIniPath -and
+                $systemIniDiscoveryX86.MODEL_SOURCE -eq (Join-Path $discoveryTestRoot "System32Model")
+            ) `
+            -Name "Discovery/Win32UsesSystem32NotSysWOW64" `
+            -Failure "на 32-бітній ОС немає шару перенаправлення WOW64 — bravo.ini має шукатись у System32, а не SysWOW64"
+
+        # Каталог доступний лише в SysWOW64 фікстури — якщо системного
+        # bravo.ini немає взагалі (ні System32, ні SysWOW64), має
+        # спрацювати старий fallback поруч з bravo.exe.
+        $noSystemIniDiscovery = Resolve-BRAVOInstallationDiscovery `
+            -LimsRoot $discoveryTestRoot `
+            -BravoServiceName "BRAVO" `
+            -BravoDisplayName "BRAVO Service" `
+            -Services $syntheticServices `
+            -SystemRoot (Join-Path $discoveryTestRoot "NoSuchWindowsDir") `
+            -Is64BitOperatingSystem $true
+        Test-BRAVOCondition `
+            -Condition (
+                $noSystemIniDiscovery.BravoIniPath -eq $fakeBravoIniPath -and
+                $noSystemIniDiscovery.Reasons.BravoIniPath.Contains("не знайдено в системному каталозі") -and
+                $noSystemIniDiscovery.Reasons.BravoIniPath.Contains("поруч з bravo.exe")
+            ) `
+            -Name "Discovery/FallsBackNextToExecutableWhenSystemIniMissing" `
+            -Failure "якщо bravo.ini немає в системному каталозі, Resolve-BRAVOInstallationDiscovery має fallback-ити на файл поруч з bravo.exe (зворотна сумісність)"
+
+        # ARCHIV_ROOT: підкаталог "ARCHIV" усередині BRAVO_ROOT, і той самий
+        # override-механізм, що й решта Sources-полів.
+        Test-BRAVOCondition `
+            -Condition ($autoDiscovery.ARCHIV_ROOT -eq (Join-Path $discoveryTestRoot "ARCHIV")) `
+            -Name "Discovery/ArchivRootDerivedFromBravoRoot" `
+            -Failure "ARCHIV_ROOT має обчислюватись як підкаталог 'ARCHIV' усередині BRAVO_ROOT — каталогу встановлення служби BRAVO"
+        $archivRootOverrideDiscovery = Resolve-BRAVOInstallationDiscovery `
+            -LimsRoot $discoveryTestRoot `
+            -BravoServiceName "BRAVO" `
+            -BravoDisplayName "BRAVO Service" `
+            -Services $syntheticServices `
+            -SystemRoot $noSuchSystemRoot `
+            -DiscoverySettings @{ Sources = @{ ARCHIV_ROOT = "D:\Explicit\Backups" } }
+        Test-BRAVOCondition `
+            -Condition (
+                $archivRootOverrideDiscovery.ARCHIV_ROOT -eq "D:\Explicit\Backups" -and
+                [bool]$archivRootOverrideDiscovery.Overrides["ARCHIV_ROOT"]
+            ) `
+            -Name "Discovery/ArchivRootOverrideWins" `
+            -Failure "явний discoverySettings.Sources.ARCHIV_ROOT override має перемагати над автоматично обчисленим підкаталогом BRAVO_ROOT"
 
         $missingSourceResult = [pscustomobject]@{
             MODEL_SOURCE = Join-Path $discoveryTestRoot "__DOES_NOT_EXIST__"
@@ -3409,13 +3534,15 @@ try {
         $ambiguousExePathB = Join-Path $discoveryTestRoot "bravo_instance_b.exe"
         [IO.File]::WriteAllText($ambiguousExePathB, "stub")
         $ambiguousBravoServices = @(
-            [pscustomobject]@{ Name = "BRAVO"; DisplayName = "BRAVO"; State = "Running"; StartMode = "Auto"; PathName = ('"{0}"' -f $ambiguousExePathA) },
-            [pscustomobject]@{ Name = "BRAVO"; DisplayName = "BRAVO"; State = "Running"; StartMode = "Auto"; PathName = ('"{0}"' -f $ambiguousExePathB) }
+            [pscustomobject]@{ Name = "BRAVO"; DisplayName = "BRAVO Service"; State = "Running"; StartMode = "Auto"; PathName = ('"{0}"' -f $ambiguousExePathA) },
+            [pscustomobject]@{ Name = "BRAVO"; DisplayName = "BRAVO Service"; State = "Running"; StartMode = "Auto"; PathName = ('"{0}"' -f $ambiguousExePathB) }
         )
         $ambiguousDiscovery = Resolve-BRAVOInstallationDiscovery `
             -LimsRoot $discoveryTestRoot `
             -BravoServiceName "BRAVO" `
-            -Services $ambiguousBravoServices
+            -BravoDisplayName "BRAVO Service" `
+            -Services $ambiguousBravoServices `
+            -SystemRoot $noSuchSystemRoot
         Test-BRAVOCondition `
             -Condition (
                 [bool]$ambiguousDiscovery.Ambiguous["BravoRoot"] -and
@@ -3455,6 +3582,7 @@ try {
             BRAVOEXCH_SOURCE = $autoDiscovery.BRAVOEXCH_SOURCE
             BAZA_APP = $autoDiscovery.BAZA_APP
             BAZA_WWW = $autoDiscovery.BAZA_WWW
+            ARCHIV_ROOT = $autoDiscovery.ARCHIV_ROOT
         }
         $driftResult = @(Compare-BRAVODiscoveryBaseline -DiscoveryResult $driftedDiscovery -BaselinePath $baselineTestPath)
         $noBaselineYetResult = @(Compare-BRAVODiscoveryBaseline -DiscoveryResult $autoDiscovery -BaselinePath (Join-Path $discoveryTestRoot "__NO_SUCH_BASELINE__.json"))
@@ -3500,6 +3628,21 @@ try {
         ) `
         -Name "Discovery/WiredIntoConfigLoaderAndSetup" `
         -Failure "BRAVO_CONFIG_LOADER.ps1 має імпортувати BRAVO.Discovery, BRAVO.config має викликати Resolve-BRAVOInstallationDiscovery для sourcePaths, а BRAVO_SETUP.ps1 -ValidateOnly має показувати й перевіряти discovery-результат і дрейф відносно baseline"
+
+    # Джерело істини для служби BRAVO (Service name ТА Display name) і для
+    # каталогу збереження бекапів ARCHIV (підкаталог у шляху встановлення
+    # служби BRAVO, не LIMSRoot-відносний) — обидва мають бути прокинуті
+    # з BRAVO.config у Resolve-BRAVOInstallationDiscovery, а не лишатись
+    # лише в модулі.
+    Test-BRAVOCondition `
+        -Condition (
+            $bravoConfigTextForDiscovery.Contains('BravoDisplayName = "BRAVO Service"') -and
+            [regex]::IsMatch($bravoConfigTextForDiscovery, '-BravoDisplayName\s+\(\[string\]\$maintenanceSettings\.Services\.BravoDisplayName\)') -and
+            $bravoConfigTextForDiscovery.Contains('$bravoDiscoveryResult.ARCHIV_ROOT') -and
+            [regex]::IsMatch($bravoConfigTextForDiscovery, '\$pathSettings\.BackupRoot\s+-eq\s+\$defaultArchiveRoot')
+        ) `
+        -Name "Discovery/ConfigUsesStrictBravoIdentityAndArchivRoot" `
+        -Failure "BRAVO.config має передавати -BravoDisplayName='BRAVO Service' у Resolve-BRAVOInstallationDiscovery і використовувати ARCHIV_ROOT як дефолт pathSettings.BackupRoot, лише якщо адміністратор не змінив його вручну"
 
     # AUD-004 (аудит P0.4): restore drill. Читабельний і навіть SHA512/7za-
     # перевірений архів не доводить відновлюваність — Invoke-BRAVOSevenZipExtraction

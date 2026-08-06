@@ -210,6 +210,46 @@ function Get-BRAVOIniValue {
     return $null
 }
 
+function Get-BRAVOSystemBravoIniPath {
+    # bravo.ini не лежить поруч із bravo.exe — служба BRAVO пише його в
+    # системний каталог Windows. Джерело істини (підтверджено на реальних
+    # інсталяціях): %SystemRoot%\SysWOW64\bravo.ini на 64-бітній Windows,
+    # %SystemRoot%\System32\bravo.ini на 32-бітній.
+    #
+    # Причина розбіжності — WOW64 File System Redirector: BRAVO 32-бітний
+    # процес, і коли він звертається до "System32", 64-бітна Windows
+    # прозоро для нього перенаправляє звернення в SysWOW64. Якщо PowerShell
+    # тут запущено як 64-бітний процес (типово для запланованих завдань),
+    # він бачить СПРАВЖНІй System32 без редиректу — і bravo.ini там просто
+    # немає, бо служба писала його в SysWOW64. На 32-бітній Windows шару
+    # редиректора не існує взагалі, тому System32 — це вже правильний шлях.
+    #
+    # -Is64BitOperatingSystem/-SystemRoot дозволяють self-test підставити
+    # синтетичне значення замість [Environment]::Is64BitOperatingSystem/
+    # $env:SystemRoot — той самий injectable-патерн, що й -Services.
+    [CmdletBinding()]
+    param(
+        [string]$SystemRoot,
+        [Nullable[bool]]$Is64BitOperatingSystem
+    )
+
+    $resolvedSystemRoot = if (-not [string]::IsNullOrWhiteSpace($SystemRoot)) {
+        $SystemRoot
+    } else {
+        $env:SystemRoot
+    }
+    if ([string]::IsNullOrWhiteSpace($resolvedSystemRoot)) {
+        return $null
+    }
+    $resolvedIs64Bit = if ($null -ne $Is64BitOperatingSystem) {
+        [bool]$Is64BitOperatingSystem
+    } else {
+        [Environment]::Is64BitOperatingSystem
+    }
+    $systemSubDirectory = if ($resolvedIs64Bit) { 'SysWOW64' } else { 'System32' }
+    return Join-Path $resolvedSystemRoot "$systemSubDirectory\bravo.ini"
+}
+
 function Resolve-BRAVOInstallationDiscovery {
     # Пріоритетний ланцюг (аудит/ТЗ CLAUDE_CODE_TZ_ARCHIV_LIMS_MONOLITH.md):
     # 1. CLI-параметри runtime-скриптів — не реалізовано в цій ітерації.
@@ -229,9 +269,15 @@ function Resolve-BRAVOInstallationDiscovery {
         [Parameter(Mandatory = $true)][string]$LimsRoot,
         [hashtable]$DiscoverySettings,
         [string]$BravoServiceName = "BRAVO",
+        # Джерело істини для ідентифікації служби BRAVO — Service name
+        # ТА Display name одночасно, а не будь-яке з них окремо: сторонній
+        # сервіс із випадково схожим ім'ям не повинен пройти як BRAVO.
+        [string]$BravoDisplayName = "BRAVO Service",
         [string[]]$WebServiceCandidates = @(),
         [string]$ExchangeApiServiceName,
-        [object[]]$Services
+        [object[]]$Services,
+        [string]$SystemRoot,
+        [Nullable[bool]]$Is64BitOperatingSystem
     )
 
     $reasons = @{}
@@ -261,9 +307,19 @@ function Resolve-BRAVOInstallationDiscovery {
         $null
     }
 
-    $bravoServices = Find-BRAVOServiceByCandidates `
-        -ServiceCandidates @($BravoServiceName) `
+    # Пошук веде за обома іменами (ширша сітка — Name АБО DisplayName
+    # дорівнює будь-якому кандидату), але службою BRAVO визнається лише
+    # та, що пройшла СТРОГУ перевірку нижче: Name -eq BravoServiceName
+    # І DisplayName -eq BravoDisplayName одночасно. Джерело істини.
+    $bravoServiceSearchCandidates = @(
+        $BravoServiceName, $BravoDisplayName
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+    $bravoServicesFound = Find-BRAVOServiceByCandidates `
+        -ServiceCandidates $bravoServiceSearchCandidates `
         -Services $Services
+    $bravoServices = @($bravoServicesFound | Where-Object {
+        $_.Name -ieq $BravoServiceName -and $_.DisplayName -ieq $BravoDisplayName
+    })
     $bravoServiceMatch = $bravoServices | Select-Object -First 1
     # AUD-007 (аудит P1.1): кілька служб BRAVO з РІЗНИМИ виконуваними
     # файлами — ознака stale/дублюючої інсталяції. Обираємо перший
@@ -294,20 +350,31 @@ function Resolve-BRAVOInstallationDiscovery {
     }
     $reasons["BravoRoot"] = $bravoRootReason
 
+    # Джерело істини — системний каталог Windows (Get-BRAVOSystemBravoIniPath),
+    # НЕ каталог встановлення bravo.exe: bravo.ini туди не пишеться.
+    # Шлях поруч із bravo.exe лишається лише вторинним fallback — на
+    # випадок нетипової інсталяції, де файл справді лежить там.
+    $systemBravoIniPath = Get-BRAVOSystemBravoIniPath -SystemRoot $SystemRoot -Is64BitOperatingSystem $Is64BitOperatingSystem
     $bravoIniPath = $null
     $bravoIniReason = $null
     if (-not [string]::IsNullOrWhiteSpace($bravoIniPathOverride)) {
         $bravoIniPath = $bravoIniPathOverride
         $overrides["BravoIniPath"] = $true
         $bravoIniReason = "явний override discoverySettings.BravoIniPath"
+    } elseif (-not [string]::IsNullOrWhiteSpace($systemBravoIniPath) -and
+        (Test-Path -LiteralPath $systemBravoIniPath -PathType Leaf)) {
+        $bravoIniPath = $systemBravoIniPath
+        $bravoIniReason = "знайдено в системному каталозі Windows: $systemBravoIniPath"
     } elseif (-not [string]::IsNullOrWhiteSpace($bravoRoot)) {
         $candidateIniPath = Join-Path $bravoRoot "bravo.ini"
         if (Test-Path -LiteralPath $candidateIniPath -PathType Leaf) {
             $bravoIniPath = $candidateIniPath
-            $bravoIniReason = "знайдено поруч з bravo.exe: $candidateIniPath"
+            $bravoIniReason = "не знайдено в системному каталозі ($systemBravoIniPath); знайдено поруч з bravo.exe: $candidateIniPath"
         } else {
-            $bravoIniReason = "bravo.ini не знайдено за шляхом $candidateIniPath"
+            $bravoIniReason = "bravo.ini не знайдено ні в системному каталозі ($systemBravoIniPath), ні поруч з bravo.exe ($candidateIniPath)"
         }
+    } else {
+        $bravoIniReason = "bravo.ini не знайдено в системному каталозі ($systemBravoIniPath), а BRAVO_ROOT невідомий"
     }
     $reasons["BravoIniPath"] = $bravoIniReason
 
@@ -373,6 +440,23 @@ function Resolve-BRAVOInstallationDiscovery {
         -FieldName "BAZA_APP" -IniSection "__none__" -IniKey "__none__" `
         -DeriveFromIniValue $null `
         -LegacyFallbackPath (Join-Path $bravoRoot "BAZA")
+
+    # --- ARCHIV_ROOT: каталог збереження бекапів ---
+    # Джерело істини: каталог "ARCHIV" усередині шляху встановлення служби
+    # BRAVO (той самий каталог, де лежить bravo.exe), а не LIMSRoot-
+    # відносний шлях, яким користувались до Discovery. BRAVO.config
+    # використовує це значення як дефолт pathSettings.BackupRoot, лише
+    # якщо адміністратор не змінив BackupRoot вручну.
+    $archivRootResolved = Resolve-BRAVOSourceField `
+        -FieldName "ARCHIV_ROOT" -IniSection "__none__" -IniKey "__none__" `
+        -DeriveFromIniValue $null `
+        -LegacyFallbackPath $(
+            if (-not [string]::IsNullOrWhiteSpace($bravoRoot)) {
+                Join-Path $bravoRoot "ARCHIV"
+            } else {
+                $null
+            }
+        )
 
     # --- WEB_ROOT / BAZA_WWW через Apache-службу ---
     $webRootOverride = if ($normalizedDiscoverySettings.Contains("WebRoot")) {
@@ -453,6 +537,7 @@ function Resolve-BRAVOInstallationDiscovery {
         BRAVOEXCH_SOURCE = $bravoexchResolved.Value
         BAZA_APP = $bazaAppResolved.Value
         BAZA_WWW = $bazaWwwResolved.Value
+        ARCHIV_ROOT = $archivRootResolved.Value
         Services = $allServices
         Overrides = $overrides
         Ambiguous = @{
@@ -468,6 +553,7 @@ function Resolve-BRAVOInstallationDiscovery {
             BRAVOEXCH = $bravoexchResolved.Reason
             BAZA_APP = $bazaAppResolved.Reason
             BAZA_WWW = $bazaWwwResolved.Reason
+            ARCHIV_ROOT = $archivRootResolved.Reason
         }
     }
 }
@@ -570,7 +656,7 @@ function Test-BRAVODiscoveryResult {
 
 $script:BRAVODiscoveryBaselineFields = @(
     'BRAVO_ROOT', 'WEB_ROOT', 'MODEL_SOURCE', 'BLOG_SOURCE',
-    'BRAVOEXCH_SOURCE', 'BAZA_APP', 'BAZA_WWW'
+    'BRAVOEXCH_SOURCE', 'BAZA_APP', 'BAZA_WWW', 'ARCHIV_ROOT'
 )
 
 function Save-BRAVODiscoveryBaseline {
@@ -652,6 +738,7 @@ Export-ModuleMember -Function @(
     'Get-BRAVOServiceExecutablePath',
     'Find-BRAVOServiceByCandidates',
     'ConvertFrom-BRAVOIniFile',
+    'Get-BRAVOSystemBravoIniPath',
     'Resolve-BRAVOInstallationDiscovery',
     'Test-BRAVODiscoveryResult',
     'Save-BRAVODiscoveryBaseline',
