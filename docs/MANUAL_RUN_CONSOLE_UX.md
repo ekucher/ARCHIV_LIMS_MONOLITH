@@ -18,6 +18,8 @@
 - Підсумковий блок не дублюється для кожного архіву.
 - Для всіх локальних архівів показуються component name, розмір і повний шлях.
 - Повний шлях архіву виводиться окремим рядком під component, щоб не залежати від ширини старих Windows console hosts.
+- Канонічний формат backup artifact BRAVO — **тільки `.mdz`**. `.7z` не використовується як зовнішнє розширення backup-файлу, навіть якщо 7-Zip використовується як внутрішній engine архівації.
+- Це правило `.mdz` однаково діє для локальних artifacts, SFTP/SMB copies, restore verification, manifests, telemetry та операторського console output.
 - При невдалому створенні конкретного архіву показується `ERROR` та коротке пояснення `Архів не створено`.
 - `Створено архівів: X з Y` показує кількість фактично створених локальних архівів відносно запланованих.
 - `Загальний розмір` — сума розмірів лише фактично створених локальних архівів.
@@ -138,13 +140,13 @@ BRAVO exit code та native tool exit code не змішуються.
 Архіви:
 
   MODEL       3.82 GB
-    D:\LIMS\ARCHIV\MODEL\MODEL_20260807_133004.7z
+    D:\LIMS\ARCHIV\MODEL\MODEL_20260807_133004.mdz
 
   BLOG         412 MB
-    D:\LIMS\ARCHIV\BLOG\BLOG_20260807_133004.7z
+    D:\LIMS\ARCHIV\BLOG\BLOG_20260807_133004.mdz
 
   BRAVOEXCH      43 MB
-    D:\LIMS\ARCHIV\BRAVOEXCH\BRAVOEXCH_20260807_133004.7z
+    D:\LIMS\ARCHIV\BRAVOEXCH\BRAVOEXCH_20260807_133004.mdz
 
 ------------------------------------------------------------
 
@@ -190,10 +192,10 @@ BRAVO exit code та native tool exit code не змішуються.
 Архіви:
 
   MODEL       3.82 GB
-    D:\LIMS\ARCHIV\MODEL\MODEL_20260807_133004.7z
+    D:\LIMS\ARCHIV\MODEL\MODEL_20260807_133004.mdz
 
   BLOG         412 MB
-    D:\LIMS\ARCHIV\BLOG\BLOG_20260807_133004.7z
+    D:\LIMS\ARCHIV\BLOG\BLOG_20260807_133004.mdz
 
   BRAVOEXCH    ERROR
     Архів не створено
@@ -239,13 +241,13 @@ BRAVO exit code та native tool exit code не змішуються.
 Архіви:
 
   MODEL       3.82 GB
-    D:\LIMS\ARCHIV\MODEL\MODEL_20260807_133004.7z
+    D:\LIMS\ARCHIV\MODEL\MODEL_20260807_133004.mdz
 
   BLOG         412 MB
-    D:\LIMS\ARCHIV\BLOG\BLOG_20260807_133004.7z
+    D:\LIMS\ARCHIV\BLOG\BLOG_20260807_133004.mdz
 
   BRAVOEXCH      43 MB
-    D:\LIMS\ARCHIV\BRAVOEXCH\BRAVOEXCH_20260807_133004.7z
+    D:\LIMS\ARCHIV\BRAVOEXCH\BRAVOEXCH_20260807_133004.mdz
 
 ------------------------------------------------------------
 
@@ -270,7 +272,7 @@ BRAVO exit code та native tool exit code не змішуються.
 
 `Загальний розмір` — сумарний фізичний розмір створених archive artifacts із human-readable автоматичним масштабуванням `KB/MB/GB/TB`.
 
-`Архіви` — список усіх запланованих archive components у стабільному порядку. Успішний component показує розмір і повний шлях окремим рядком; невдалий component показує `ERROR` і коротке пояснення без вигаданого шляху.
+`Архіви` — список усіх запланованих archive components у стабільному порядку. Успішний component показує розмір і повний шлях окремим рядком; невдалий component показує `ERROR` і коротке пояснення без вигаданого шляху. Успішний backup artifact завжди має розширення `.mdz`.
 
 ## Колір
 
@@ -314,6 +316,7 @@ Telemetry status є інформаційним підблоком і не змі
 - [ ] `Створено архівів: X з Y` обчислюється з фактичних artifacts.
 - [ ] `Загальний розмір` обчислюється з фактичних artifacts.
 - [ ] Список `Архіви` містить усі заплановані archive components і повні шляхи успішних artifacts.
+- [ ] Кожний успішний backup artifact має канонічне розширення `.mdz`; `.7z` як зовнішній backup filename заборонений.
 - [ ] Повний шлях archive artifact виводиться окремим рядком під component.
 - [ ] Часткова помилка не приховує успішно створені artifacts.
 - [ ] Console `Код завершення` збігається з process exit code.
