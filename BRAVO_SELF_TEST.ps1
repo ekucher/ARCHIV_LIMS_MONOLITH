@@ -40,6 +40,43 @@ $script:failures = New-Object System.Collections.ArrayList
 $script:passCount = 0
 $script:selfTestConfigRoot = $null
 
+# SELFTEST-SAFETY-0 v1.4: одна ізоляційна сесія VersionState на весь
+# прогін самотесту. Root обирає ЦЕЙ батьківський харнес рівно один раз
+# (RUNNER_TEMP у CI, інакше TEMP); контракт кортежу з трьох змінних
+# валідовує Resolve-BRAVOSelfTestIsolationContext у runtime guard.
+# Env-кортеж експортується ЛИШЕ навколо fixture-запусків справжніх
+# entrypoints (Enter/Exit нижче) — in-proc VersionState-тести самі керують
+# власними StatePath і не мають бачити сесійний контекст.
+$script:selfTestIsolationSessionId = [guid]::NewGuid().ToString('D')
+$selfTestIsolationTempBase = if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() }
+$script:selfTestIsolationRoot = Join-Path $selfTestIsolationTempBase ("BRAVO_SELFTEST_$($script:selfTestIsolationSessionId)")
+$script:selfTestIsolationStatePath = Join-Path $script:selfTestIsolationRoot 'State\BRAVO_VERSION_STATE.json'
+
+function Enter-BRAVOSelfTestIsolationScope {
+    $previousValues = @{
+        'BRAVO_SELFTEST_SESSION_ID' = [Environment]::GetEnvironmentVariable('BRAVO_SELFTEST_SESSION_ID')
+        'BRAVO_SELFTEST_ROOT' = [Environment]::GetEnvironmentVariable('BRAVO_SELFTEST_ROOT')
+        'BRAVO_SELFTEST_VERSION_STATE_PATH' = [Environment]::GetEnvironmentVariable('BRAVO_SELFTEST_VERSION_STATE_PATH')
+    }
+    if (-not [System.IO.Directory]::Exists($script:selfTestIsolationRoot)) {
+        [void][System.IO.Directory]::CreateDirectory($script:selfTestIsolationRoot)
+    }
+    $env:BRAVO_SELFTEST_SESSION_ID = $script:selfTestIsolationSessionId
+    $env:BRAVO_SELFTEST_ROOT = $script:selfTestIsolationRoot
+    $env:BRAVO_SELFTEST_VERSION_STATE_PATH = $script:selfTestIsolationStatePath
+    return $previousValues
+}
+
+function Exit-BRAVOSelfTestIsolationScope {
+    param([Parameter(Mandatory = $true)][hashtable]$PreviousValues)
+    foreach ($isolationVariableName in $PreviousValues.Keys) {
+        [Environment]::SetEnvironmentVariable($isolationVariableName, $PreviousValues[$isolationVariableName])
+    }
+    if ([System.IO.Directory]::Exists($script:selfTestIsolationRoot)) {
+        Remove-Item -LiteralPath $script:selfTestIsolationRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # Ownership-реєстр динамічних runtime-модулів, створених
 # New-BRAVOSelfTestRuntimeModule (P0 hotfix: session-contamination —
 # Get-Service/Start-Service/Stop-Service/... шаблон, що затінює production
@@ -1471,6 +1508,197 @@ $broken = Invoke-SuspensionScenario -LogPath (Join-Path $TestRoot 'broken.log') 
     } finally {
         if (Test-Path -LiteralPath $legacyInvalidStateRoot) {
             Remove-Item -LiteralPath $legacyInvalidStateRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    # Ізоляція сховища VersionState (SELFTEST-SAFETY-0 v1.4): валідний
+    # кортеж BRAVO_SELFTEST_* (SESSION_ID GUID + ROOT з basename
+    # BRAVO_SELFTEST_<GUID> + STATE_PATH рівно <ROOT>\State\
+    # BRAVO_VERSION_STATE.json) переспрямовує ЛИШЕ місце зберігання стану;
+    # частковий/некоректний кортеж — fail closed БЕЗ відкату до
+    # production-шляху. Потрібен, бо fixture-діти тестів запускають
+    # справжні entrypoints із захардкоженим machine-global StatePath
+    # (real-server acceptance 2026-09-05).
+    $isolationCaseRoot = Join-Path ([IO.Path]::GetTempPath()) ("BRAVO_VERSION_STATE_{0}" -f [guid]::NewGuid().ToString("N"))
+    $isolationPreviousTuple = @{
+        'BRAVO_SELFTEST_SESSION_ID' = [Environment]::GetEnvironmentVariable('BRAVO_SELFTEST_SESSION_ID')
+        'BRAVO_SELFTEST_ROOT' = [Environment]::GetEnvironmentVariable('BRAVO_SELFTEST_ROOT')
+        'BRAVO_SELFTEST_VERSION_STATE_PATH' = [Environment]::GetEnvironmentVariable('BRAVO_SELFTEST_VERSION_STATE_PATH')
+    }
+    function Set-BRAVOIsolationTupleForTest {
+        param([string]$SessionId, [string]$SessionRoot, [string]$SessionStatePath)
+        [Environment]::SetEnvironmentVariable('BRAVO_SELFTEST_SESSION_ID', $SessionId)
+        [Environment]::SetEnvironmentVariable('BRAVO_SELFTEST_ROOT', $SessionRoot)
+        [Environment]::SetEnvironmentVariable('BRAVO_SELFTEST_VERSION_STATE_PATH', $SessionStatePath)
+    }
+    try {
+        [void][IO.Directory]::CreateDirectory($isolationCaseRoot)
+        $isolationSessionGuid = [guid]::NewGuid().ToString('D')
+        $isolationValidRoot = Join-Path $isolationCaseRoot ("BRAVO_SELFTEST_$isolationSessionGuid")
+        [void][IO.Directory]::CreateDirectory($isolationValidRoot)
+        $isolationValidStatePath = Join-Path $isolationValidRoot 'State\BRAVO_VERSION_STATE.json'
+        $isolationPassedPath = Join-Path $isolationCaseRoot 'passed\BRAVO_VERSION_STATE.json'
+
+        # 1) Валідна сесія: створення + оновлення + робочий downgrade-блок
+        # за session-шляхом; файл за шляхом із параметра НЕ виникає.
+        Set-BRAVOIsolationTupleForTest $isolationSessionGuid $isolationValidRoot $isolationValidStatePath
+        $isolationFirstRun = Test-BRAVOVersionDowngrade `
+            -RuntimeRoot $root -StatePath $isolationPassedPath `
+            -VersionContent '{"packageVersion": "9.9.0-rc.1"}' `
+            -Mode Enforce -AllowDowngrade ''
+        $isolationSecondRun = Test-BRAVOVersionDowngrade `
+            -RuntimeRoot $root -StatePath $isolationPassedPath `
+            -VersionContent '{"packageVersion": "9.9.0-rc.2"}' `
+            -Mode Enforce -AllowDowngrade ''
+        $isolationDowngradeRun = Test-BRAVOVersionDowngrade `
+            -RuntimeRoot $root -StatePath $isolationPassedPath `
+            -VersionContent '{"packageVersion": "9.9.0-rc.1"}' `
+            -Mode Enforce -AllowDowngrade ''
+        $isolationParsed = $null
+        try {
+            $isolationParsed = [System.IO.File]::ReadAllText(
+                $isolationValidStatePath, [System.Text.Encoding]::UTF8
+            ) | ConvertFrom-Json
+        } catch {
+            $isolationParsed = $null
+        }
+        Test-BRAVOCondition `
+            -Condition (
+                $isolationFirstRun.StateUpdated -and
+                [string]$isolationFirstRun.StatePath -eq ([IO.Path]::GetFullPath($isolationValidStatePath)) -and
+                $isolationSecondRun.StateUpdated -and
+                (-not $isolationDowngradeRun.IsValid) -and $isolationDowngradeRun.ShouldBlock -and
+                (-not [System.IO.File]::Exists($isolationPassedPath)) -and
+                $null -ne $isolationParsed -and
+                [string]$isolationParsed.highestVersion -eq '9.9.0' -and
+                [string]$isolationParsed.highestVersionFull -eq '9.9.0-rc.2'
+            ) `
+            -Name "VersionState/SelfTestSessionRedirectsStorageOnly" `
+            -Failure "валідний кортеж BRAVO_SELFTEST_* має переспрямувати запис стану в session-шлях (створення + оновлення + робочий downgrade-блок), не створюючи файл за шляхом із параметра"
+
+        # 2) Без кортежу — канонічна поведінка: пишеться рівно шлях із
+        # параметра (production-дефолт незмінний).
+        Set-BRAVOIsolationTupleForTest $null $null $null
+        $isolationDefaultRun = Test-BRAVOVersionDowngrade `
+            -RuntimeRoot $root -StatePath $isolationPassedPath `
+            -VersionContent '{"packageVersion": "9.9.0-rc.1"}' `
+            -Mode Enforce -AllowDowngrade ''
+        Test-BRAVOCondition `
+            -Condition (
+                $isolationDefaultRun.StateUpdated -and
+                [System.IO.File]::Exists($isolationPassedPath) -and
+                [string]$isolationDefaultRun.StatePath -eq $isolationPassedPath
+            ) `
+            -Name "VersionState/NoTupleUsesCallerStatePath" `
+            -Failure "без кортежу BRAVO_SELFTEST_* стан мусить писатися рівно за шляхом із параметра StatePath — production-семантика не має дрейфувати"
+
+        # 3) Частковий/некоректний кортеж — fail closed: IsValid=false,
+        # ShouldBlock=true, StateUpdated=false, файл за шляхом із параметра
+        # НЕ виникає (жодного відкату до production). Junction-кейси
+        # створюють СПРАВЖНІ reparse point-и: рядкова валідація такого не
+        # ловить, а тест-контрольований junction не сміє завести запис у
+        # чужий каталог.
+        $isolationJunctionTarget = Join-Path $isolationCaseRoot 'junction-target'
+        [void][IO.Directory]::CreateDirectory($isolationJunctionTarget)
+        $isolationReparseRootGuid = [guid]::NewGuid().ToString('D')
+        $isolationReparseRoot = Join-Path $isolationCaseRoot ("BRAVO_SELFTEST_$isolationReparseRootGuid")
+        [void](New-Item -ItemType Junction -Path $isolationReparseRoot -Target $isolationJunctionTarget -ErrorAction Stop)
+        $isolationReparseStateGuid = [guid]::NewGuid().ToString('D')
+        $isolationReparseStateRoot = Join-Path $isolationCaseRoot ("BRAVO_SELFTEST_$isolationReparseStateGuid")
+        [void][IO.Directory]::CreateDirectory($isolationReparseStateRoot)
+        [void](New-Item -ItemType Junction -Path (Join-Path $isolationReparseStateRoot 'State') -Target $isolationJunctionTarget -ErrorAction Stop)
+        $isolationOtherGuid = [guid]::NewGuid().ToString('D')
+        $isolationUncRoot = '\\localhost\c$' + $isolationValidRoot.Substring(2)
+        $isolationUncState = '\\localhost\c$' + $isolationValidStatePath.Substring(2)
+        $isolationInvalidCases = @(
+            @{ Name = 'partial-session-only'; Session = $isolationSessionGuid; Root = $null; State = $null },
+            @{ Name = 'partial-root-only'; Session = $null; Root = $isolationValidRoot; State = $null },
+            @{ Name = 'partial-state-only'; Session = $null; Root = $null; State = $isolationValidStatePath },
+            @{ Name = 'partial-no-state'; Session = $isolationSessionGuid; Root = $isolationValidRoot; State = $null },
+            @{ Name = 'invalid-guid'; Session = 'not-a-guid'; Root = $isolationValidRoot; State = $isolationValidStatePath },
+            @{ Name = 'guid-mismatch'; Session = $isolationOtherGuid; Root = $isolationValidRoot; State = $isolationValidStatePath },
+            @{ Name = 'relative-root'; Session = $isolationSessionGuid; Root = ("BRAVO_SELFTEST_$isolationSessionGuid"); State = $isolationValidStatePath },
+            @{ Name = 'relative-state'; Session = $isolationSessionGuid; Root = $isolationValidRoot; State = 'State\BRAVO_VERSION_STATE.json' },
+            @{ Name = 'state-outside-root'; Session = $isolationSessionGuid; Root = $isolationValidRoot; State = (Join-Path $isolationCaseRoot 'elsewhere\State\BRAVO_VERSION_STATE.json') },
+            @{ Name = 'wrong-filename'; Session = $isolationSessionGuid; Root = $isolationValidRoot; State = (Join-Path $isolationValidRoot 'State\OTHER.json') },
+            @{ Name = 'traversal-escape'; Session = $isolationSessionGuid; Root = $isolationValidRoot; State = (Join-Path $isolationValidRoot 'State\..\..\State\BRAVO_VERSION_STATE.json') },
+            @{ Name = 'sibling-prefix'; Session = $isolationSessionGuid; Root = ($isolationValidRoot + '-evil'); State = ($isolationValidRoot + '-evil\State\BRAVO_VERSION_STATE.json') },
+            @{ Name = 'unc-root'; Session = $isolationSessionGuid; Root = $isolationUncRoot; State = $isolationUncState },
+            @{ Name = 'reparse-root'; Session = $isolationReparseRootGuid; Root = $isolationReparseRoot; State = (Join-Path $isolationReparseRoot 'State\BRAVO_VERSION_STATE.json') },
+            @{ Name = 'reparse-state'; Session = $isolationReparseStateGuid; Root = $isolationReparseStateRoot; State = (Join-Path $isolationReparseStateRoot 'State\BRAVO_VERSION_STATE.json') }
+        )
+        $isolationInvalidFailures = @()
+        foreach ($isolationInvalidCase in $isolationInvalidCases) {
+            $isolationInvalidPassedPath = Join-Path $isolationCaseRoot ("invalid-{0}\BRAVO_VERSION_STATE.json" -f $isolationInvalidCase.Name)
+            Set-BRAVOIsolationTupleForTest $isolationInvalidCase.Session $isolationInvalidCase.Root $isolationInvalidCase.State
+            $isolationInvalidRun = Test-BRAVOVersionDowngrade `
+                -RuntimeRoot $root -StatePath $isolationInvalidPassedPath `
+                -VersionContent '{"packageVersion": "9.9.0-rc.1"}' `
+                -Mode Enforce -AllowDowngrade ''
+            $isolationInvalidOk = (
+                (-not $isolationInvalidRun.IsValid) -and
+                $isolationInvalidRun.ShouldBlock -and
+                (-not $isolationInvalidRun.StateUpdated) -and
+                (-not [System.IO.File]::Exists($isolationInvalidPassedPath)) -and
+                [string]$isolationInvalidRun.Message -like 'Invalid BRAVO SelfTest isolation context:*'
+            )
+            if (-not $isolationInvalidOk) {
+                $isolationInvalidFailures += ("{0} (IsValid={1}; ShouldBlock={2}; StateUpdated={3})" -f `
+                    $isolationInvalidCase.Name, $isolationInvalidRun.IsValid,
+                    $isolationInvalidRun.ShouldBlock, $isolationInvalidRun.StateUpdated)
+            }
+        }
+        Test-BRAVOCondition `
+            -Condition ($isolationInvalidFailures.Count -eq 0) `
+            -Name "VersionState/InvalidSelfTestContextFailsClosed" `
+            -Failure "частковий/некоректний кортеж BRAVO_SELFTEST_* мусить давати IsValid=false + ShouldBlock=true + StateUpdated=false без відкату до шляху з параметра; провалені кейси: $($isolationInvalidFailures -join '; ')"
+
+        # 4) Успадкування ланцюжком процесів: дочірній powershell.exe і
+        # внучатий процес успадковують кортеж і пишуть ізольовано, хоча
+        # параметром передано інший шлях — саме так ізоляція досягає
+        # реальних entrypoints у fixture-дітях.
+        Set-BRAVOIsolationTupleForTest $isolationSessionGuid $isolationValidRoot $isolationValidStatePath
+        $isolationChildScript = Join-Path $isolationCaseRoot 'child-probe.ps1'
+        [IO.File]::WriteAllText($isolationChildScript, @'
+param([string]$GuardPath, [string]$RuntimeRoot, [string]$PassedPath, [string]$SpawnNested, [string]$RcCounter)
+$ErrorActionPreference = 'Stop'
+$t = $null; $e = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($GuardPath, [ref]$t, [ref]$e)
+foreach ($fn in 'Resolve-BRAVOSelfTestIsolationContext','ConvertTo-BRAVOComparableVersion','Compare-BRAVOComparableVersion','Test-BRAVOVersionDowngrade') {
+    . ([scriptblock]::Create(($ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $fn }, $true)).Extent.Text))
+}
+if ($SpawnNested -eq '1') {
+    & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+        -File $PSCommandPath -GuardPath $GuardPath -RuntimeRoot $RuntimeRoot -PassedPath $PassedPath -SpawnNested '0' -RcCounter $RcCounter
+    exit $LASTEXITCODE
+}
+$r = Test-BRAVOVersionDowngrade -RuntimeRoot $RuntimeRoot `
+    -StatePath $PassedPath `
+    -VersionContent ('{"packageVersion": "9.9.1-rc.' + $RcCounter + '"}') `
+    -Mode Enforce -AllowDowngrade ''
+if ($r.StateUpdated -and -not [IO.File]::Exists($PassedPath)) { exit 0 } else { exit 7 }
+'@, (New-Object System.Text.UTF8Encoding($true)))
+        $isolationChildPassedPath = Join-Path $isolationCaseRoot 'child-passed\BRAVO_VERSION_STATE.json'
+        $null = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+            -File $isolationChildScript -GuardPath (Join-Path $root 'BRAVO_RUNTIME_GUARD.ps1') `
+            -RuntimeRoot $root -PassedPath $isolationChildPassedPath -SpawnNested '0' -RcCounter '1' 2>&1
+        $isolationChildExit = $LASTEXITCODE
+        # Внучатий процес пише ВИЩИЙ rc-лічильник: StateUpdated=true вимагає
+        # реального підняття стану, рівна версія не перезаписується.
+        $null = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+            -File $isolationChildScript -GuardPath (Join-Path $root 'BRAVO_RUNTIME_GUARD.ps1') `
+            -RuntimeRoot $root -PassedPath $isolationChildPassedPath -SpawnNested '1' -RcCounter '2' 2>&1
+        $isolationNestedExit = $LASTEXITCODE
+        Test-BRAVOCondition `
+            -Condition ($isolationChildExit -eq 0 -and $isolationNestedExit -eq 0) `
+            -Name "VersionState/SelfTestTupleSurvivesChildProcessChain" `
+            -Failure "кортеж BRAVO_SELFTEST_* мусить успадковуватися дочірнім (exit=$isolationChildExit) і внучатим (exit=$isolationNestedExit) powershell.exe: справжні guard-функції пишуть за session-шлях, а не за переданий параметром"
+    } finally {
+        foreach ($isolationRestoreName in $isolationPreviousTuple.Keys) {
+            [Environment]::SetEnvironmentVariable($isolationRestoreName, $isolationPreviousTuple[$isolationRestoreName])
+        }
+        if (Test-Path -LiteralPath $isolationCaseRoot) {
+            Remove-Item -LiteralPath $isolationCaseRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 
@@ -8582,6 +8810,12 @@ $broken = Invoke-SuspensionScenario -LogPath (Join-Path $TestRoot 'broken.log') 
     # поведінка полягає саме в тому, щоб до них не дійти.
     $failClosedRoot = Join-Path ([IO.Path]::GetTempPath()) ("BRAVO_GUARD_FAILCLOSED_{0}" -f [guid]::NewGuid().ToString('N'))
     $failClosedResults = @()
+    # Ізоляція VersionState (SELFTEST-SAFETY-0 v1.4): діти нижче — справжні
+    # entrypoints. Сьогодні вони зупиняються кодом 33 ДО перевірки версії,
+    # але цей тест не має права залежати від порядку етапів guard-а: якщо
+    # порядок колись зміниться, без переспрямування дитина писала б у
+    # machine-global %ProgramData%\BRAVO\State\BRAVO_VERSION_STATE.json.
+    $failClosedIsolationPrevious = Enter-BRAVOSelfTestIsolationScope
     try {
         [void][IO.Directory]::CreateDirectory($failClosedRoot)
         [IO.File]::WriteAllText(
@@ -8617,6 +8851,7 @@ $broken = Invoke-SuspensionScenario -LogPath (Join-Path $TestRoot 'broken.log') 
             }
         }
     } finally {
+        Exit-BRAVOSelfTestIsolationScope -PreviousValues $failClosedIsolationPrevious
         Remove-Item -LiteralPath $failClosedRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
     $wrongExitCodes = @(
@@ -13675,6 +13910,10 @@ function Get-BRAVOMaintenanceSummaryResult {
     # сусідній ASCII-текст у тому самому рядку. Змінюємо/відновлюємо лише
     # локально для цього виклику, без побічного впливу на решту self-test.
     $localOnlyPreviousOutputEncoding = [Console]::OutputEncoding
+    # Ізоляція VersionState (v1.4): дочірній BRAVO_DRY_RUN читає (з
+    # -NoWrite) machine-global BRAVO_VERSION_STATE.json — сесійний scope
+    # робить рядок "Версія" детермінованим і незалежним від стану хоста.
+    $localOnlyIsolationPrevious = Enter-BRAVOSelfTestIsolationScope
     try {
         [Console]::OutputEncoding = [Text.Encoding]::UTF8
         $localOnlyDryRunOutput = [string](
@@ -13684,6 +13923,7 @@ function Get-BRAVOMaintenanceSummaryResult {
         )
     } finally {
         [Console]::OutputEncoding = $localOnlyPreviousOutputEncoding
+        Exit-BRAVOSelfTestIsolationScope -PreviousValues $localOnlyIsolationPrevious
     }
     Test-BRAVOCondition `
         -Condition (

@@ -592,6 +592,137 @@ function Compare-BRAVOComparableVersion {
     return 0
 }
 
+# Внутрішній regression-test isolation seam (SELFTEST-SAFETY-0 v1.4).
+# НЕ security/authorization boundary і НЕ production-налаштування: клас
+# загрози "env-обхід" не новий (рівноцінний існуючому аварійному вентилю
+# BRAVO_ALLOW_DOWNGRADE=1). Контракт: рівно два валідні режими —
+#   None     : жодної з трьох BRAVO_SELFTEST_* змінних немає -> канонічна
+#              production-поведінка (StatePath викликача авторитетний);
+#   Isolated : УСІ ТРИ присутні й узгоджені -> сховище стану
+#              переспрямовується в sandbox самотесту, валідація версій
+#              виконується без змін.
+# Будь-яка часткова/некоректна комбінація -> Invalid (fail closed у
+# Test-BRAVOVersionDowngrade, без відкату до production-шляху). Вимоги:
+# SESSION_ID — GUID; ROOT — абсолютний локальний шлях (не UNC) з basename
+# рівно BRAVO_SELFTEST_<GUID>; STATE_PATH — рівно <ROOT>\State\
+# BRAVO_VERSION_STATE.json (канонізація GetFullPath, порівняння
+# case-insensitive — traversal/sibling-трюки відсікаються рівністю, не
+# StartsWith); ROOT і <ROOT>\State, якщо існують, не сміють бути
+# reparse-point/junction (тест-контрольований junction не має права
+# завести запис у справжній production-каталог).
+function Resolve-BRAVOSelfTestIsolationContext {
+    [CmdletBinding()]
+    param()
+
+    $sessionIdRaw = [System.Environment]::GetEnvironmentVariable('BRAVO_SELFTEST_SESSION_ID')
+    $rootRaw = [System.Environment]::GetEnvironmentVariable('BRAVO_SELFTEST_ROOT')
+    $statePathRaw = [System.Environment]::GetEnvironmentVariable('BRAVO_SELFTEST_VERSION_STATE_PATH')
+
+    $context = New-Object PSObject -Property @{
+        Mode = 'None'
+        Reason = $null
+        SessionId = $null
+        Root = $null
+        StatePath = $null
+    }
+
+    $sessionPresent = -not [string]::IsNullOrWhiteSpace($sessionIdRaw)
+    $rootPresent = -not [string]::IsNullOrWhiteSpace($rootRaw)
+    $statePresent = -not [string]::IsNullOrWhiteSpace($statePathRaw)
+
+    if (-not $sessionPresent -and -not $rootPresent -and -not $statePresent) {
+        return $context
+    }
+
+    $context.Mode = 'Invalid'
+
+    if (-not ($sessionPresent -and $rootPresent -and $statePresent)) {
+        $missing = @()
+        if (-not $sessionPresent) { $missing += 'BRAVO_SELFTEST_SESSION_ID' }
+        if (-not $rootPresent) { $missing += 'BRAVO_SELFTEST_ROOT' }
+        if (-not $statePresent) { $missing += 'BRAVO_SELFTEST_VERSION_STATE_PATH' }
+        $context.Reason = "неповний контекст (відсутні: $($missing -join ', '))"
+        return $context
+    }
+
+    $sessionGuid = [guid]::Empty
+    if (-not [guid]::TryParse($sessionIdRaw.Trim(), [ref]$sessionGuid)) {
+        $context.Reason = "BRAVO_SELFTEST_SESSION_ID не є GUID"
+        return $context
+    }
+
+    $rootText = $rootRaw.Trim()
+    $stateText = $statePathRaw.Trim()
+
+    # UNC відсікається до канонізації: мережевий sandbox самотесту не
+    # передбачений цією фазою.
+    if ($rootText.StartsWith('\\') -or $stateText.StartsWith('\\')) {
+        $context.Reason = "UNC-шлях не підтримується для self-test sandbox"
+        return $context
+    }
+    if (-not [System.IO.Path]::IsPathRooted($rootText) -or
+        $rootText -notmatch '^[A-Za-z]:\\') {
+        $context.Reason = "BRAVO_SELFTEST_ROOT не є абсолютним локальним шляхом"
+        return $context
+    }
+    if (-not [System.IO.Path]::IsPathRooted($stateText) -or
+        $stateText -notmatch '^[A-Za-z]:\\') {
+        $context.Reason = "BRAVO_SELFTEST_VERSION_STATE_PATH не є абсолютним локальним шляхом"
+        return $context
+    }
+
+    $rootFull = $null
+    $stateFull = $null
+    try {
+        $rootFull = [System.IO.Path]::GetFullPath($rootText).TrimEnd('\')
+        $stateFull = [System.IO.Path]::GetFullPath($stateText)
+    } catch {
+        $context.Reason = "шлях контексту не канонізується: $($_.Exception.Message)"
+        return $context
+    }
+
+    $expectedBasename = 'BRAVO_SELFTEST_' + $sessionGuid.ToString('D')
+    $actualBasename = [System.IO.Path]::GetFileName($rootFull)
+    if (-not [string]::Equals($actualBasename, $expectedBasename,
+            [System.StringComparison]::OrdinalIgnoreCase)) {
+        $context.Reason = "basename ROOT ('$actualBasename') не відповідає сесії ('$expectedBasename')"
+        return $context
+    }
+
+    $expectedStatePath = [System.IO.Path]::GetFullPath(
+        (Join-Path (Join-Path $rootFull 'State') 'BRAVO_VERSION_STATE.json'))
+    if (-not [string]::Equals($stateFull, $expectedStatePath,
+            [System.StringComparison]::OrdinalIgnoreCase)) {
+        $context.Reason = "STATE_PATH не є рівно <ROOT>\State\BRAVO_VERSION_STATE.json"
+        return $context
+    }
+
+    # Reparse/junction: рядкова валідація не ловить перенаправлення
+    # файлової системи. Неіснуючі каталоги легітимні (guard сам створює
+    # State при першому записі).
+    foreach ($guardedDirectory in @($rootFull, (Join-Path $rootFull 'State'))) {
+        try {
+            if ([System.IO.Directory]::Exists($guardedDirectory)) {
+                $directoryAttributes = [System.IO.File]::GetAttributes($guardedDirectory)
+                if (($directoryAttributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    $context.Reason = "'$guardedDirectory' є reparse point/junction"
+                    return $context
+                }
+            }
+        } catch {
+            $context.Reason = "не вдалося перевірити атрибути '$guardedDirectory': $($_.Exception.Message)"
+            return $context
+        }
+    }
+
+    $context.Mode = 'Isolated'
+    $context.Reason = $null
+    $context.SessionId = $sessionGuid.ToString('D')
+    $context.Root = $rootFull
+    $context.StatePath = $expectedStatePath
+    return $context
+}
+
 function Test-BRAVOVersionDowngrade {
     [CmdletBinding()]
     param(
@@ -623,6 +754,23 @@ function Test-BRAVOVersionDowngrade {
 
     if (-not $PSBoundParameters.ContainsKey('AllowDowngrade')) {
         $AllowDowngrade = [System.Environment]::GetEnvironmentVariable('BRAVO_ALLOW_DOWNGRADE')
+    }
+
+    # Тест-ізоляція СХОВИЩА стану (SELFTEST-SAFETY-0 v1.4): валідний
+    # self-test-контекст переспрямовує лише місце зберігання
+    # BRAVO_VERSION_STATE.json; частковий/некоректний контекст — fail
+    # closed БЕЗ жодного звертання до production-шляху. Перевірка
+    # виконується ДО будь-якого читання/запису стану за $StatePath.
+    $selfTestContext = Resolve-BRAVOSelfTestIsolationContext
+    if ($selfTestContext.Mode -eq 'Invalid') {
+        $result.IsValid = $false
+        $result.ShouldBlock = $true
+        $result.Message = "Invalid BRAVO SelfTest isolation context: $($selfTestContext.Reason)"
+        return $result
+    }
+    if ($selfTestContext.Mode -eq 'Isolated') {
+        $StatePath = $selfTestContext.StatePath
+        $result.StatePath = $StatePath
     }
 
     $versionRaw = $null

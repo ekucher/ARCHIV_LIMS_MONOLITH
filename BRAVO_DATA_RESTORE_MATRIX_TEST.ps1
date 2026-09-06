@@ -63,6 +63,30 @@ Write-Host "Fixture root: $fixtureRoot"
 $realLockPath = Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'BRAVO\Locks\BRAVO_OPERATION.lock'
 $realLockTimestampBefore = if (Test-Path -LiteralPath $realLockPath -PathType Leaf) { (Get-Item -LiteralPath $realLockPath).LastWriteTimeUtc } else { $null }
 
+# Ізоляція VersionState (SELFTEST-SAFETY-0 v1.4): fixture-діти нижче —
+# справжні BRAVO_ARCHIV.ps1/BRAVO_DATA_RESTORE.ps1, чий runtime guard
+# передає захардкожений machine-global шлях %ProgramData%\BRAVO\State\
+# BRAVO_VERSION_STATE.json. Після SemVer-фіксу (#135) prerelease-версії
+# ПИШУТЬ стан, тож без переспрямування тестовий прогін піднімав би
+# production high-water mark і на сервері з установленим toolkit блокував
+# би старіший production runtime як "відкат". Сесійний контекст (усі ТРИ
+# змінні, контракт Resolve-BRAVOSelfTestIsolationContext) успадковується
+# всіма дочірніми процесами матриці; guard застосовує його лише як місце
+# зберігання — валідація версій виконується повністю. Root сесії обирає
+# ЦЕЙ батьківський харнес рівно один раз (RUNNER_TEMP у CI, інакше TEMP).
+$selfTestSessionId = [guid]::NewGuid().ToString('D')
+$selfTestTempBase = if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() }
+$selfTestSessionRoot = Join-Path $selfTestTempBase ("BRAVO_SELFTEST_$selfTestSessionId")
+[void](New-Item -ItemType Directory -Path $selfTestSessionRoot -Force -ErrorAction Stop)
+$selfTestPreviousEnvironment = @{
+    'BRAVO_SELFTEST_SESSION_ID' = [Environment]::GetEnvironmentVariable('BRAVO_SELFTEST_SESSION_ID')
+    'BRAVO_SELFTEST_ROOT' = [Environment]::GetEnvironmentVariable('BRAVO_SELFTEST_ROOT')
+    'BRAVO_SELFTEST_VERSION_STATE_PATH' = [Environment]::GetEnvironmentVariable('BRAVO_SELFTEST_VERSION_STATE_PATH')
+}
+$env:BRAVO_SELFTEST_SESSION_ID = $selfTestSessionId
+$env:BRAVO_SELFTEST_ROOT = $selfTestSessionRoot
+$env:BRAVO_SELFTEST_VERSION_STATE_PATH = Join-Path $selfTestSessionRoot 'State\BRAVO_VERSION_STATE.json'
+
 $aggregateExitCode = 1
 try {
     $fixtureConfig = New-BRAVODataRestoreMatrixFixtureConfig -RepoRoot $PSScriptRoot -FixtureRoot $fixtureRoot -MinimumFreeSpaceGB 1
@@ -178,13 +202,25 @@ try {
         $aggregateExitCode = 1
     }
 } finally {
+    # Відновлення process-env (не machine-wide): зовнішні значення
+    # BRAVO_SELFTEST_*, якщо вони були, повертаються як є; відсутні —
+    # лишаються відсутніми.
+    foreach ($selfTestVariableName in $selfTestPreviousEnvironment.Keys) {
+        [Environment]::SetEnvironmentVariable($selfTestVariableName, $selfTestPreviousEnvironment[$selfTestVariableName])
+    }
     if ($KeepFixture) {
         Write-Host "Fixture root збережено (-KeepFixture): $fixtureRoot"
+        Write-Host "SelfTest session root збережено (-KeepFixture): $selfTestSessionRoot"
     } else {
         try {
             Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction Stop
         } catch {
             Write-Host "УВАГА: не вдалося прибрати fixture root $fixtureRoot : $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+        try {
+            Remove-Item -LiteralPath $selfTestSessionRoot -Recurse -Force -ErrorAction Stop
+        } catch {
+            Write-Host "УВАГА: не вдалося прибрати session root $selfTestSessionRoot : $($_.Exception.Message)" -ForegroundColor Yellow
         }
     }
 }
