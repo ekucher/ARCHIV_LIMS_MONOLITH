@@ -8117,8 +8117,14 @@ function Invoke-BRAVOArchiveOwnLogUpload {
     # трактується як "вивантажити нічого" — WARNING, а не друга помилка,
     # що замаскувала б первинний fatal exception виклику.
     try {
-        if (-not (Get-Variable -Name componentSettings -Scope Script -ErrorAction SilentlyContinue) -or
-            -not (Get-Variable -Name storageEffective -Scope Script -ErrorAction SilentlyContinue)) {
+        # P1 (PR #136 review, r3943997859): Complete-BRAVOConfigurationLoad
+        # проєктує componentSettings/storageEffective виключно у $global:
+        # (як і всюди в цьому файлі — див. рядки 3600, 5983 тощо), ніколи
+        # у script-scope. Перевірка на -Scope Script завжди повертала
+        # $false, тож вивантаження власного логу було постійним no-op
+        # навіть при ArchiveLogUploadEnabled=$true.
+        if (-not (Get-Variable -Name componentSettings -Scope Global -ErrorAction SilentlyContinue) -or
+            -not (Get-Variable -Name storageEffective -Scope Global -ErrorAction SilentlyContinue)) {
             return
         }
         if (-not ([bool]$componentSettings.SFTP.ArchiveLogUploadEnabled -and

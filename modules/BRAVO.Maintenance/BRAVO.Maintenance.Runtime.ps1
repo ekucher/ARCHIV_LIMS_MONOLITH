@@ -4490,10 +4490,19 @@ function Test-BRAVOTraceGraceCompletionCurrent {
     # розбіжність (з'явився новий файл, розмір/час джерела змінився,
     # локальний архів перезаписано/зник) -> $false -> викликач повторює
     # повну верифікацію+передачу замість помилкового skip.
+    #
+    # P2 (PR #136 review, r3943997861): SidecarPath ТЕЖ входить в
+    # ідентичність, не лише .mdz. Без цього пошкоджений/видалений .sha512
+    # лишався б непоміченим — skip-шлях ніколи не викликає
+    # Update-BRAVOTraceDailyArchive (а отже й
+    # Test-BRAVOTraceArchiveSidecarCurrent-репарацію всередині нього), і
+    # після видалення сирих джерел та очищення grace-стану полагодити
+    # sidecar вже нізвідки.
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]$Entry,
         [Parameter(Mandatory = $true)][string]$ArchivePath,
+        [Parameter(Mandatory = $true)][string]$SidecarPath,
         [Parameter(Mandatory = $true)][array]$CurrentSources
     )
 
@@ -4502,6 +4511,7 @@ function Test-BRAVOTraceGraceCompletionCurrent {
         if ($null -eq $Entry.PSObject.Properties[$requiredProperty]) { return $false }
     }
     if (-not (Test-Path -LiteralPath $ArchivePath -PathType Leaf)) { return $false }
+    if (-not (Test-BRAVOTraceArchiveSidecarCurrent -ArchivePath $ArchivePath -SidecarPath $SidecarPath)) { return $false }
 
     $storedSources = @($Entry.sources)
     if (@($CurrentSources).Count -ne $storedSources.Count) { return $false }
@@ -4668,7 +4678,7 @@ function Invoke-BRAVOTraceArchiveMaintenance {
         $canSkipRepublish = $false
         $publishedNames = $null
         if ($graceFeatureActive -and $plan.NewFiles.Count -eq 0 -and $graceState.ContainsKey($group.DateKey)) {
-            if (Test-BRAVOTraceGraceCompletionCurrent -Entry $graceState[$group.DateKey] -ArchivePath $group.ArchivePath -CurrentSources $graceCurrentSnapshot) {
+            if (Test-BRAVOTraceGraceCompletionCurrent -Entry $graceState[$group.DateKey] -ArchivePath $group.ArchivePath -SidecarPath $group.SidecarPath -CurrentSources $graceCurrentSnapshot) {
                 $canSkipRepublish = $true
                 $publishedNames = @{}
                 foreach ($storedName in @($graceState[$group.DateKey].publishedNames)) {
@@ -9023,6 +9033,13 @@ function Invoke-BRAVOLegacySweep {
     }
     Write-Log "=== ПЕРВИННА ОЧИСТКА LEGACY-АРТЕФАКТІВ (одноразово) ===" -Level "INFO"
     $removed = 0
+    # P2 (PR #136 review, r3943997855): якщо будь-який кандидат не вдалося
+    # видалити (заблокований файл тощо), маркер НЕ пишемо — інакше цей
+    # об'єкт (напр. ARCHIV_LIMS_*.log поза звичайним retention-фільтром)
+    # лишався б назавжди, бо повторний sweep уже не відбудеться. Успішно
+    # видалені об'єкти при повторному прогоні просто не будуть знайдені
+    # знову (ідемпотентно) — повторний Remove-Item на них не знадобиться.
+    $sweepHadFailures = $false
     try {
         $legacyFiles = @(Get-BRAVOFiles -Path $LogDir | Where-Object {
             $_.Name -like 'script_log_*.txt' -or $_.Name -like 'ARCHIV_LIMS_*.log'
@@ -9033,6 +9050,7 @@ function Invoke-BRAVOLegacySweep {
                 $removed++
             } catch {
                 Write-Log "Legacy-очистка: не вдалося видалити $($f.Name): $($_.Exception.Message)" -Level "WARNING"
+                $sweepHadFailures = $true
             }
         }
         $legacyDateDirs = @(Get-BRAVODirectories -Path $TraceDir | Where-Object { $_.Name -match '^\d{4}-\d{2}-\d{2}$' })
@@ -9047,10 +9065,15 @@ function Invoke-BRAVOLegacySweep {
                 $removed++
             } catch {
                 Write-Log "Legacy-очистка: не вдалося видалити $($d.FullName): $($_.Exception.Message)" -Level "WARNING"
+                $sweepHadFailures = $true
             }
         }
-        Write-BRAVOLegacySweepState -Path $StateFilePath -SweptBy $SweptBy | Out-Null
-        Write-Log "Первинна очистка завершена: видалено $removed об'єкт(ів)." -Level "SUCCESS"
+        if ($sweepHadFailures) {
+            Write-Log "Первинна очистка завершена частково: видалено $removed об'єкт(ів), є невдалі видалення — маркер НЕ записано, повтор наступним прогоном." -Level "WARNING"
+        } else {
+            Write-BRAVOLegacySweepState -Path $StateFilePath -SweptBy $SweptBy | Out-Null
+            Write-Log "Первинна очистка завершена: видалено $removed об'єкт(ів)." -Level "SUCCESS"
+        }
     } catch {
         Write-Log "Первинна очистка legacy-артефактів не завершена: $($_.Exception.Message) — маркер НЕ записано, повтор наступним прогоном." -Level "WARNING"
     }

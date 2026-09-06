@@ -548,6 +548,28 @@ function Get-BRAVODirectories {
             (Test-Path -LiteralPath $taP7SkipFile)
         ) -Name 'TraceArchive/GraceCompletionSecondRunSkipsRepublishWhenUnchanged' -Failure "другий прогін без жодної зміни НЕ повинен викликати SFTP PutFiles знову; факт: uploaded=$($taP7SkipResult2.Uploaded) putCalls=$(@($taP7SkipSession2.State.PutFilesCalledFor).Count) errors=$($taP7SkipResult2.Errors)"
 
+        # --- A2 (P2, PR #136 review r3943997861): пошкоджений/видалений
+        # sidecar (.sha512) НЕ повинен трактуватись як "усе ще актуально" —
+        # Test-BRAVOTraceGraceCompletionCurrent мусить перевіряти й sidecar,
+        # інакше опублікований .mdz лишався б з "мертвим" .sha512 назавжди
+        # (skip-шлях ніколи не викликає Update-BRAVOTraceDailyArchive, який
+        # єдиний вміє полагодити sidecar через Test-BRAVOTraceArchiveSidecarCurrent).
+        $taP7SidecarArchive = Get-ChildItem -LiteralPath $taP7SkipDir -Filter '*.mdz' | Select-Object -First 1
+        [IO.File]::WriteAllText("$($taP7SidecarArchive.FullName).sha512", 'corrupted sidecar content')
+        $taP7SkipSession3 = New-BRAVOSelfTestFakeBazaSession
+        $taP7SkipResult3 = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace, $statePath)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $taP7SkipDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword $taP7SkipSession3 'trace' 7 $taP7SkipStatePath
+        Test-BRAVOCondition -Condition (
+            [int]$taP7SkipResult3.Uploaded -eq 1 -and
+            [int]$taP7SkipResult3.Errors -eq 0 -and
+            @($taP7SkipSession3.State.PutFilesCalledFor).Count -eq 2 -and
+            (Test-BRAVOTraceArchiveSidecarCurrent -ArchivePath $taP7SidecarArchive.FullName -SidecarPath "$($taP7SidecarArchive.FullName).sha512")
+        ) -Name 'TraceArchive/GraceCompletionCorruptedSidecarTriggersReprocessAndRepair' -Failure "пошкоджений sidecar має ЗАПУСТИТИ повторну обробку (і полагодити sidecar), а не помилковий skip; факт: uploaded=$($taP7SkipResult3.Uploaded) putCalls=$(@($taP7SkipSession3.State.PutFilesCalledFor).Count) errors=$($taP7SkipResult3.Errors)"
+
         # --- B: тампер stored-розміру в state -> reprocess (safe fallback), не помилковий skip.
         $taP7StaleDir = Join-Path $traceArchiveTestRoot "grace-completion-stale\Trace"
         [void](New-Item -ItemType Directory -Path $taP7StaleDir -Force)

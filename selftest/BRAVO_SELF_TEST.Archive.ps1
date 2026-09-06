@@ -142,16 +142,21 @@ function Invoke-BRAVOSelfTestArchiveOwnLogUploadScenario {
             SendReturnValue = $sendReturnValue
         }
         if ($defineConfig) {
-            $script:componentSettings = [pscustomobject]@{ SFTP = [pscustomobject]@{ ArchiveLogUploadEnabled = $enabled } }
-            $script:storageEffective = [pscustomobject]@{ SFTP = [pscustomobject]@{ Enabled = $sftpEnabled } }
+            # P1 (PR #136 review, r3943997859): у реальному прогоні
+            # Complete-BRAVOConfigurationLoad проєктує componentSettings/
+            # storageEffective ЛИШЕ у $global: (ніколи у script-scope) —
+            # фікстура повинна відтворювати саме це, інакше тест мовчки
+            # перевіряв код, якого немає в production.
+            $global:componentSettings = [pscustomobject]@{ SFTP = [pscustomobject]@{ ArchiveLogUploadEnabled = $enabled } }
+            $global:storageEffective = [pscustomobject]@{ SFTP = [pscustomobject]@{ Enabled = $sftpEnabled } }
             $script:sftpUrl = 'sftp://selftest@127.0.0.1/'
             $script:sftpHostKey = 'ssh-rsa 2048 aa:bb:cc'
             $script:winSCPPath = 'C:\Windows\System32\cmd.exe'
             $script:sftpDirectories = [pscustomobject]@{ ArchivLog = 'logs/archiv' }
             $script:logFile = $logFilePath
         } else {
-            Remove-Variable -Name componentSettings -Scope Script -ErrorAction SilentlyContinue
-            Remove-Variable -Name storageEffective -Scope Script -ErrorAction SilentlyContinue
+            Remove-Variable -Name componentSettings -Scope Global -ErrorAction SilentlyContinue
+            Remove-Variable -Name storageEffective -Scope Global -ErrorAction SilentlyContinue
         }
         $script:processExitCodeBefore = 42
         $script:processExitCode = 42
