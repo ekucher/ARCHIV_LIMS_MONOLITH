@@ -840,3 +840,53 @@ foreach ($probeCaseName in @($probeCases.Keys | Sort-Object)) {
         }
     }
 }
+
+# ===== Regression: SYSTEM worker без VersionState self-test relay =====
+# Review PR #137: BRAVO_CREDENTIALS_SETUP.ps1 не підключає
+# BRAVO_RUNTIME_GUARD.ps1, не викликає Test-BRAVOVersionDowngrade і не
+# читає/пише BRAVO_VERSION_STATE.json — цей SYSTEM worker не є
+# VersionState-consumer-ом, тож переносити крізь USER -> SYSTEM тут
+# ізолювати нема чого. Раніше доданий одноразовий launcher
+# (selftest-launcher.ps1), що відтворював BRAVO_SELFTEST_SESSION_ID /
+# BRAVO_SELFTEST_ROOT / BRAVO_SELFTEST_VERSION_STATE_PATH у Scheduled
+# Task, підтверджено видалено разом із дефектом (повторна PowerShell-
+# інтерполяція вже сформованого $arguments у згенерованому launcher-ps1
+# ламала шляхи із символом $ або зворотною скісною лапкою). Scheduled
+# Task мусить завжди запускати рівно історичну пряму команду з
+# незмінними -ConfigPath (за наміром)/-ProtectedPayloadPath/-ResultPath.
+$noRelayCredentialsText = [IO.File]::ReadAllText(
+    (Join-Path $root 'BRAVO_CREDENTIALS_SETUP.ps1'), [Text.Encoding]::UTF8
+)
+$noRelayInvokeAsSystemMatch = [regex]::Match(
+    $noRelayCredentialsText, '(?s)function Invoke-AsSystem \{.*?\r?\n\}\r?\n'
+)
+$noRelayInvokeAsSystemBody = if ($noRelayInvokeAsSystemMatch.Success) {
+    $noRelayInvokeAsSystemMatch.Value
+} else {
+    ''
+}
+Test-BRAVOCondition `
+    -Condition (
+        $noRelayInvokeAsSystemMatch.Success -and
+        -not $noRelayCredentialsText.Contains('selftest-launcher') -and
+        -not $noRelayInvokeAsSystemBody.Contains('BRAVO_SELFTEST_SESSION_ID') -and
+        -not $noRelayInvokeAsSystemBody.Contains('BRAVO_SELFTEST_ROOT') -and
+        -not $noRelayInvokeAsSystemBody.Contains('BRAVO_SELFTEST_VERSION_STATE_PATH') -and
+        $noRelayInvokeAsSystemBody.Contains('$taskAction.Path = $powerShellPath') -and
+        $noRelayInvokeAsSystemBody.Contains('$taskAction.Arguments = $arguments') -and
+        $noRelayInvokeAsSystemBody.Contains(
+            '"-File `"$PSCommandPath`"$workerConfigArgumentText " +'
+        ) -and
+        $noRelayInvokeAsSystemBody.Contains('-ProtectedPayloadPath `"$payloadPath`" -ResultPath `"$workerResultPath`""') -and
+        $noRelayInvokeAsSystemBody.Contains('$workerConfigArgumentText = if ($ConfigPathWasExplicit)')
+    ) `
+    -Name 'Credentials/NoVersionStateSelfTestRelay' `
+    -Failure (
+        'Invoke-AsSystem у BRAVO_CREDENTIALS_SETUP.ps1 не має містити ' +
+        'BRAVO_SELFTEST_* self-test relay і файл selftest-launcher.ps1 ' +
+        '(видалено після review PR #137: цей SYSTEM worker не підключає ' +
+        'BRAVO_RUNTIME_GUARD.ps1 і не є VersionState-consumer-ом) — ' +
+        'Scheduled Task мусить завжди запускати рівно історичну пряму ' +
+        'команду -File BRAVO_CREDENTIALS_SETUP.ps1 зі збереженими ' +
+        '-ConfigPath (за наміром) / -ProtectedPayloadPath / -ResultPath'
+    )

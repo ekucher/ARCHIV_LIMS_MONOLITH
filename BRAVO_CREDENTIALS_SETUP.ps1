@@ -52,18 +52,6 @@ $null = Start-BRAVOHelperLog `
     -ConfigPath $ConfigPath `
     -QuietConsole:$protectedWorkerMode
 
-# SELFTEST-SAFETY-0 v1.4: видима діагностика self-test-ізоляції в
-# helper-лозі — доказ, що кортеж пережив межу процесів (зокрема
-# USER -> SYSTEM worker через Task Scheduler). У production кортеж
-# відсутній і рядок не друкується. Значення не інтерпретуються тут —
-# валідація належить runtime guard (fail closed при кривому кортежі).
-if (-not [string]::IsNullOrWhiteSpace($env:BRAVO_SELFTEST_SESSION_ID) -or
-    -not [string]::IsNullOrWhiteSpace($env:BRAVO_SELFTEST_ROOT) -or
-    -not [string]::IsNullOrWhiteSpace($env:BRAVO_SELFTEST_VERSION_STATE_PATH)) {
-    Write-Host ("VersionState: ISOLATED (self-test); Session: {0}; Path: {1}" -f `
-        $env:BRAVO_SELFTEST_SESSION_ID, $env:BRAVO_SELFTEST_VERSION_STATE_PATH)
-}
-
 # Лише для нового неінтерактивного заголовка/РЕЗУЛЬТАТ нижче — інтерактивне
 # меню (Show-BRAVOCredentialMenu) лишається на власному Clear-Host-банері,
 # не мігрується (докладніше — коментар біля використання).
@@ -1223,11 +1211,6 @@ function Invoke-AsSystem {
 
     $payloadPath = Join-Path $workingDirectory "payload.json"
     $workerResultPath = Join-Path $workingDirectory "result.json"
-    # Заповнюється лише в self-test-гілці нижче; у списку прибирання
-    # фігурує завжди (Test-Path відсіє відсутній файл) — фінальний
-    # Remove-Item каталогу навмисно НЕрекурсивний і вимагає порожнього
-    # workingDirectory.
-    $selfTestLauncherPath = Join-Path $workingDirectory "selftest-launcher.ps1"
     $taskName = "BRAVO_CREDENTIAL_SETUP_$operationId"
     $taskService = New-Object -ComObject "Schedule.Service"
     $taskService.Connect()
@@ -1266,43 +1249,6 @@ function Invoke-AsSystem {
         $arguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass " +
             "-File `"$PSCommandPath`"$workerConfigArgumentText " +
             "-ProtectedPayloadPath `"$payloadPath`" -ResultPath `"$workerResultPath`""
-
-        # SELFTEST-SAFETY-0 v1.4: Task Scheduler НЕ успадковує process-env
-        # батька, тож ізоляційний кортеж BRAVO_SELFTEST_* (внутрішній
-        # regression-test seam, не production-налаштування) інакше губився
-        # б на межі USER -> SYSTEM. Коли ВСІ ТРИ змінні присутні в
-        # батьківському процесі (тобто виконується self-test harness),
-        # worker запускається через одноразовий launcher у тому самому
-        # ACL-захищеному робочому каталозі: launcher відтворює кортеж і
-        # викликає ту саму worker-команду. У звичайному production-запуску
-        # (без кортежу) — рівно історична пряма команда, нуль змін.
-        # Валідність кортежу перевіряє САМ guard у дочірньому процесі
-        # (Resolve-BRAVOSelfTestIsolationContext, fail closed) — launcher
-        # значення не інтерпретує, лише переносить.
-        $selfTestTupleForWorker = @{
-            'BRAVO_SELFTEST_SESSION_ID' = [Environment]::GetEnvironmentVariable('BRAVO_SELFTEST_SESSION_ID')
-            'BRAVO_SELFTEST_ROOT' = [Environment]::GetEnvironmentVariable('BRAVO_SELFTEST_ROOT')
-            'BRAVO_SELFTEST_VERSION_STATE_PATH' = [Environment]::GetEnvironmentVariable('BRAVO_SELFTEST_VERSION_STATE_PATH')
-        }
-        $selfTestTupleComplete = $true
-        foreach ($selfTestTupleValue in $selfTestTupleForWorker.Values) {
-            if ([string]::IsNullOrWhiteSpace($selfTestTupleValue)) { $selfTestTupleComplete = $false }
-        }
-        if ($selfTestTupleComplete) {
-            $launcherLines = New-Object System.Collections.Generic.List[string]
-            foreach ($selfTestTupleName in @($selfTestTupleForWorker.Keys | Sort-Object)) {
-                $escapedTupleValue = $selfTestTupleForWorker[$selfTestTupleName].Replace("'", "''")
-                [void]$launcherLines.Add("`$env:$selfTestTupleName = '$escapedTupleValue'")
-            }
-            [void]$launcherLines.Add("& '$($powerShellPath.Replace("'", "''"))' $arguments")
-            [void]$launcherLines.Add('exit $LASTEXITCODE')
-            [IO.File]::WriteAllText(
-                $selfTestLauncherPath,
-                (($launcherLines -join "`r`n") + "`r`n"),
-                (New-Object Text.UTF8Encoding($true)))
-            $arguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass " +
-                "-File `"$selfTestLauncherPath`""
-        }
         $taskDefinition = $taskService.NewTask(0)
         $taskDefinition.RegistrationInfo.Description = "BRAVO temporary credential worker"
         $taskDefinition.Principal.UserId = "SYSTEM"
@@ -1348,7 +1294,7 @@ function Invoke-AsSystem {
         } catch {
             # Тимчасове завдання могло не встигнути зареєструватися.
         }
-        foreach ($temporaryFile in @($payloadPath, $workerResultPath, $selfTestLauncherPath)) {
+        foreach ($temporaryFile in @($payloadPath, $workerResultPath)) {
             if (Test-Path -LiteralPath $temporaryFile -PathType Leaf) {
                 Remove-Item -LiteralPath $temporaryFile -Force -ErrorAction SilentlyContinue
             }
