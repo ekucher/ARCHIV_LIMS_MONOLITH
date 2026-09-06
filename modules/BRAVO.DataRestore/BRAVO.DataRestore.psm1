@@ -7,6 +7,18 @@ function Invoke-BRAVODataRestoreEntrypoint {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][hashtable]$Parameters)
 
+    # Публічна межа module API (та сама компенсація, що в
+    # Invoke-BRAVOHealthCheck): зовнішній викликач, який передав явний
+    # непорожній ConfigPath, але не знає нового ключа наміру, зберігає
+    # explicit-семантику (fail-closed на відсутньому файлі). Root
+    # entrypoints завжди кладуть ConfigPathWasExplicit у splat самі.
+    if (-not $Parameters.ContainsKey('ConfigPathWasExplicit') -and
+        $Parameters.ContainsKey('ConfigPath') -and
+        -not [string]::IsNullOrWhiteSpace([string]$Parameters['ConfigPath'])) {
+        $Parameters = $Parameters.Clone()
+        $Parameters['ConfigPathWasExplicit'] = $true
+    }
+
     try {
         & $script:runtimePath @Parameters | Out-Host
         return [int]$LASTEXITCODE

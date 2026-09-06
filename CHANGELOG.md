@@ -2,6 +2,43 @@
 
 ## Не випущено (developer)
 
+- **Тест-ізоляція VersionState (SELFTEST-SAFETY-0 v1.4)** — сесійний
+  кортеж із трьох env-змінних `BRAVO_SELFTEST_SESSION_ID` (GUID) +
+  `BRAVO_SELFTEST_ROOT` (абсолютний локальний шлях з basename рівно
+  `BRAVO_SELFTEST_<GUID>`) + `BRAVO_SELFTEST_VERSION_STATE_PATH` (рівно
+  `<ROOT>\State\BRAVO_VERSION_STATE.json`) переспрямовує ЛИШЕ місце
+  зберігання стану (`Resolve-BRAVOSelfTestIsolationContext` +
+  `Test-BRAVOVersionDowngrade`); уся валідація версій/відкату виконується
+  без змін. Це внутрішній regression-test seam, не production-налаштування
+  і не security boundary. Рівно два валідні режими: без жодної змінної —
+  канонічна production-поведінка (machine-global
+  `%ProgramData%\BRAVO\State\`); повний валідний кортеж — ізольований
+  sandbox. Частковий або некоректний кортеж (не-GUID, невідповідний
+  basename, відносний шлях, traversal, sibling-префікс, UNC, reparse
+  point/junction на ROOT чи `State`) — fail closed (`IsValid=false`,
+  `ShouldBlock=true`) БЕЗ відкату до production-шляху; перевірка
+  виконується ДО будь-якого читання/запису стану. Причина: fixture-діти
+  `BRAVO_DATA_RESTORE_MATRIX_TEST.ps1` (справжні
+  `BRAVO_ARCHIV`/`BRAVO_DATA_RESTORE`) після SemVer-фіксу #135 писали
+  production high-water mark — на сервері з установленим toolkit це
+  блокувало б старіший production runtime як "відкат" (знахідка
+  real-server acceptance 2026-09-05). Matrix-test і self-test створюють
+  одну сесію на прогін (`RUNNER_TEMP`/TEMP) і виставляють кортеж навколо
+  fixture-запусків справжніх VersionState-consumer-ів (`BRAVO_ARCHIV`,
+  `BRAVO_DATA_RESTORE`, dry-run summary), process-env, відновлення у
+  `finally`. Ізоляція застосована лише там, де процес дійсно підключає
+  `BRAVO_RUNTIME_GUARD.ps1` і викликає `Test-BRAVOVersionDowngrade`.
+  Review-нотатка: перша версія цієї зміни додавала передачу кортежу
+  через USER → SYSTEM у `Invoke-AsSystem`
+  (`BRAVO_CREDENTIALS_SETUP.ps1`) — прибрано після review, бо цей SYSTEM
+  worker не підключає `BRAVO_RUNTIME_GUARD.ps1` і не читає/пише
+  `BRAVO_VERSION_STATE.json`, тож ізолювати там було нічого; сам
+  переданий механізм (одноразовий згенерований launcher-скрипт) також
+  містив дефект повторної PowerShell-інтерпретації вже сформованого
+  рядка аргументів, що ламало шляхи із символом `$` чи зворотною
+  скісною лапкою. `Invoke-AsSystem` знову використовує рівно історичну
+  пряму команду без жодного launcher-а.
+
 - **P0 Configuration Foundation (PR B/C)** — `BRAVO.config` став опційним
   primary override-шаром замість обов'язкового джерела конфігурації:
   precedence тепер `DEFAULT < BRAVO.config (опційно) < BRAVO.local.config`,

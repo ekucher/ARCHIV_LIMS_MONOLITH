@@ -50,6 +50,14 @@ function Wait-BRAVOEarlyManualExit {
 # BRAVO_RUNTIME_INTEGRITY_MODE=Warn — аварійний шлях відновлення,
 # задокументований у SECURITY.md.
 
+# P0 Configuration Foundation: свідомий намір оператора фіксується ТУТ —
+# на єдиній справжній межі виклику оператора — ДО auto-деривації нижче, і
+# передається в runtime явним параметром: після реасайну $ConfigPath на
+# effective-шлях жодна пізніша перевірка $PSBoundParameters відновити
+# намір уже не може.
+$configPathWasExplicit = $PSBoundParameters.ContainsKey('ConfigPath') -and
+    -not [string]::IsNullOrWhiteSpace($ConfigPath)
+
 # Effective ConfigPath визначається ОДИН раз, до будь-якої перевірки, і далі
 # використовується всюди: guard, завантажувач, дочірні скрипти.
 $effectiveConfigPath = if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
@@ -74,7 +82,8 @@ $ConfigPath = $effectiveConfigPath
 # (ARCHIV/HEALTH/MAINTENANCE) не мають параметрів із такими іменами, тому
 # колізія проявляється лише тут.
 $parameters = @{
-    ConfigPath = $ConfigPath; GenerationId = $GenerationId; Component = $Component
+    ConfigPath = $ConfigPath; ConfigPathWasExplicit = $configPathWasExplicit
+    GenerationId = $GenerationId; Component = $Component
     Mode = $Mode; TargetPath = $TargetPath; Source = $Source; StagingPath = $StagingPath
     ListGenerations = $ListGenerations; Force = $Force; SkipHealthCheck = $SkipHealthCheck
     TimeoutSeconds = $TimeoutSeconds

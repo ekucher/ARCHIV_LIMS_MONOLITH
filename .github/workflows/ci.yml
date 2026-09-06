@@ -11,8 +11,7 @@ name: CI
 on:
   push:
     branches: [master, developer]
-  pull_request:
-    branches: [master, developer]
+  pull_request: {}
   workflow_dispatch:
 
 # Check names are split by event on purpose (5.1.0 promotion incident,

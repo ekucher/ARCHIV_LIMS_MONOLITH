@@ -44,6 +44,14 @@ function Wait-BRAVOEarlyManualExit {
 # вектора атаки: хто може змінити змінні середовища запланованого
 # завдання, той уже має права підмінити й сам маніфест.
 
+# P0 Configuration Foundation: свідомий намір оператора фіксується ТУТ —
+# на єдиній справжній межі виклику оператора — ДО auto-деривації нижче, і
+# передається в runtime явним параметром: після реасайну $ConfigPath на
+# effective-шлях жодна пізніша перевірка $PSBoundParameters відновити
+# намір уже не може.
+$configPathWasExplicit = $PSBoundParameters.ContainsKey('ConfigPath') -and
+    -not [string]::IsNullOrWhiteSpace($ConfigPath)
+
 # Effective ConfigPath визначається ОДИН раз, до будь-якої перевірки, і далі
 # використовується всюди: guard, завантажувач, дочірні скрипти. Раніше
 # перемикачі безпеки перевірялись у "$PSScriptRoot\BRAVO.config" незалежно
@@ -150,7 +158,8 @@ try {
     exit 90
 }
 $parameters = @{
-    ConfigPath = $ConfigPath; SyncBAZA = $SyncBAZA; HealthCheckOnly = $HealthCheckOnly
+    ConfigPath = $ConfigPath; ConfigPathWasExplicit = $configPathWasExplicit
+    SyncBAZA = $SyncBAZA; HealthCheckOnly = $HealthCheckOnly
     ForceNotification = $ForceNotification; NotifyOnSuccess = $NotifyOnSuccess
     NoSlack = $NoSlack; SkipIfBackupTaskRunning = $SkipIfBackupTaskRunning
     NoPause = $NoPause; RuntimeRoot = $PSScriptRoot; EntryScriptPath = $PSCommandPath

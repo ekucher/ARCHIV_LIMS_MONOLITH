@@ -16,6 +16,7 @@ param (
     [ValidateSet("on", "off")]
     [string]$ArchiveAfterMaintenance,
     [string]$ConfigPath,
+    [bool]$ConfigPathWasExplicit = $false,
     [switch]$NoPause,
     [Parameter(Mandatory = $true)][string]$RuntimeRoot,
     [Parameter(Mandatory = $true)][string]$EntryScriptPath
@@ -68,11 +69,14 @@ Import-Module -Name $notificationHelpersPath -ErrorAction Stop
 # ніж вставляти виклик паузи перед кожним окремим exit.
 try {
 
-# P0 Configuration Foundation (PR C): свідомий намір оператора фіксується
-# ТУТ, на межі справжнього виклику скрипта, ДО підстановки auto-дефолту
-# нижче — і використовується як для UAC-relaunch (нижче), так і для
-# Import-BravoConfiguration (далі по файлу).
-$configPathWasExplicit = $PSBoundParameters.ContainsKey('ConfigPath') -and
+# P0 Configuration Foundation: справжня межа виклику оператора — root
+# entrypoint, і лише ВІН знає, чи -ConfigPath був реально переданий: сюди
+# ConfigPath завжди приходить уже резолвленим і непорожнім, тому
+# $PSBoundParameters тут відновити намір не може (acceptance-клас дефектів
+# CF-17/AUTO-intent). Намір приймається явним -ConfigPathWasExplicit;
+# додаткова перевірка порожнього шляху страхує від помилкового виклику з
+# прапорцем без шляху (та сама семантика, що в Import-BravoConfiguration).
+$configPathWasExplicit = $ConfigPathWasExplicit -and
     -not [string]::IsNullOrWhiteSpace($ConfigPath)
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $bravoScriptDirectory "BRAVO.config"
@@ -96,10 +100,9 @@ If (-not $isLocalSystem -and -not $currentPrincipal.IsInRole([Security.Principal
 	if ($PSBoundParameters.ContainsKey('ArchiveAfterMaintenance')) {
         $elevatedArguments += @("-ArchiveAfterMaintenance", $ArchiveAfterMaintenance)
     }
-    # AUTO -> не вбудовувати -ConfigPath у relaunch: elevated-процес сам
-    # повторить ту саму auto-derivation (RuntimeRoot\BRAVO.config). Так
-    # relaunch не перетворює auto-намір на explicit, і майбутня
-    # появу/зникнення auto-primary не вимагає узгодження тут.
+    # AUTO -> не вбудовувати -ConfigPath: elevated-процес сам повторить ту
+    # саму auto-derivation проти свого RuntimeRoot. EXPLICIT -> зберегти
+    # точний шлях (свідомий намір оператора не губиться при елевації).
     if ($configPathWasExplicit) {
         $elevatedArguments += @("-ConfigPath", "`"$ConfigPath`"")
     }
@@ -127,19 +130,14 @@ $script:maintenanceOperationLockPath = $null
 
 # ===== ЗАВАНТАЖЕННЯ НАЛАШТУВАНЬ =====
 # P0 Configuration Foundation: BRAVO.config став опційним основним
-# override-шаром — попередня жорстка "файл мусить існувати" перевірка
-# тут дублювала (і випереджала) те саме рішення, яке Import-Bravo
-# Configuration тепер приймає коректно сама (auto-derived відсутній
-# BRAVO.config -> canonical built-in defaults + BRAVO.local.config;
-# явно вказаний відсутній -ConfigPath -> як і раніше, помилка,
-# перехоплена нижче тим самим catch/exit 30). Один canonical guard
-# замість двох незалежних копій цього рішення.
-
+# override-шаром — попередня жорстка "файл мусить існувати" перевірка тут
+# дублювала (і випереджала) те саме рішення, яке Import-BravoConfiguration
+# приймає коректно сама: auto-derived відсутній BRAVO.config -> canonical
+# built-in defaults + BRAVO.local.config; явно вказаний відсутній
+# -ConfigPath -> як і раніше, помилка конфігурації (exit 30 через catch
+# нижче). GetFullPath замість Resolve-Path — нормалізація шляху без вимоги
+# існування файлу (той самий канон, що Archive/Health/DataRestore).
 try {
-    # Resolve-Path (а не лише GetFullPath) вимагав існування файла —
-    # несумісно з no-config-шляхом. GetFullPath нормалізує шлях без
-    # такої вимоги; існування файла (коли це справді потрібно) перевіряє
-    # сам Import-BravoConfiguration.
     $ConfigPath = [System.IO.Path]::GetFullPath($ConfigPath)
     $configRoot = Split-Path -Path $ConfigPath -Parent
     # Завантажувач і modules\ беруться з КОМПЛЕКТУ, а не з каталогу
@@ -9366,7 +9364,16 @@ if ($script:EnableArchiveAfterMaintenance) {
         if (Test-Path -LiteralPath $bravoArchivePath -PathType Leaf) {
             Write-Log -Message "Запуск скрипту BRAVO_ARCHIV.ps1..." -Level "INFO"
 
-            $archiveArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$bravoArchivePath`" -ConfigPath `"$ConfigPath`" -NoPause"
+            # AUTO-намір: -ConfigPath вбудовується лише за explicit (той
+            # самий гейт, що UAC-relaunch вище) — інакше дочірній Archive
+            # трактував би auto-derived відсутній шлях як explicit і
+            # завершувався configuration error замість власного AUTO.
+            $archiveConfigArgumentText = if ($configPathWasExplicit) {
+                " -ConfigPath `"$ConfigPath`""
+            } else {
+                ''
+            }
+            $archiveArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$bravoArchivePath`"$archiveConfigArgumentText -NoPause"
             $archivProcess = Start-Process -FilePath $schedulerSettings.PowerShellExecutable `
                 -ArgumentList $archiveArguments `
                 -Wait `

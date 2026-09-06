@@ -210,6 +210,23 @@ modules\*.psd1 ModuleVersion  = 4.5.0
 відповідає гілці. Повна версія пакета завжди береться з `VERSION.json`,
 а не з маніфестів модулів.
 
+З цього правила випливає **свідоме обмеження release contract BRAVO**:
+BRAVO використовує Semantic Versioning `X.Y.Z`, але через цільову
+платформу Windows PowerShell 5.1 базова частина `packageVersion` має
+бути представима типом `System.Version`, оскільки той самий `X.Y.Z`
+записується як `ModuleVersion` у `*.psd1`. Тобто кожен із
+MAJOR/MINOR/PATCH не перевищує `2147483647` (`Int32.MaxValue`).
+Синтаксично коректний, але непредставимий core (наприклад
+`2147483648.0.0`) — **непідтримувана** `packageVersion`: її відхиляє і
+`ci\Test-BRAVOReleasePolicy.ps1` (до порівняння `ModuleVersion`, однією
+root-cause помилкою), і runtime guard кожного entrypoint (fail-closed
+malformed-шлях захисту від відкату).
+
+Обмеження стосується лише MAJOR/MINOR/PATCH. Числовий
+prerelease-ідентифікатор `N` у `-dev.N` / `-rc.N` **не** обмежується
+розміром `Int32`: він валідується за SemVer і порівнюється як число
+довільної довжини.
+
 ---
 
 ## 4. Вимога різних версій у `developer` та `master`

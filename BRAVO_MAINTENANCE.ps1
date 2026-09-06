@@ -39,6 +39,14 @@ function Wait-BRAVOEarlyManualExit {
 # Аудит P2 — див. коментар у BRAVO_ARCHIV.ps1: цілісність комплекту
 # перевіряється до Import-Module самодостатнім guard-ом.
 
+# P0 Configuration Foundation: свідомий намір оператора фіксується ТУТ —
+# на єдиній справжній межі виклику оператора — ДО auto-деривації нижче, і
+# передається в runtime явним параметром: після реасайну $ConfigPath на
+# effective-шлях жодна пізніша перевірка $PSBoundParameters відновити
+# намір уже не може.
+$configPathWasExplicit = $PSBoundParameters.ContainsKey('ConfigPath') -and
+    -not [string]::IsNullOrWhiteSpace($ConfigPath)
+
 # Effective ConfigPath визначається ОДИН раз, до будь-якої перевірки, і далі
 # використовується всюди: guard, завантажувач, дочірні скрипти. Раніше
 # перемикачі безпеки перевірялись у "$PSScriptRoot\BRAVO.config" незалежно
@@ -144,6 +152,7 @@ $parameters = @{
     ForceRestore = $ForceRestore; RunMissedRestoreOnly = $RunMissedRestoreOnly
     DisableSizeCheck = $DisableSizeCheck; EnableAllSlack = $EnableAllSlack
     DisableAllSlack = $DisableAllSlack; ConfigPath = $ConfigPath
+    ConfigPathWasExplicit = $configPathWasExplicit
     NoPause = $NoPause
     RuntimeRoot = $PSScriptRoot; EntryScriptPath = $PSCommandPath
 }

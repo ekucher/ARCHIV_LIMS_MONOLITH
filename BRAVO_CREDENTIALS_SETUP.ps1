@@ -1188,6 +1188,13 @@ function Set-PrivateDirectoryAcl {
 function Invoke-AsSystem {
     param(
         [string]$ResolvedConfigPath,
+        # Намір оператора зі справжньої межі виклику скрипта: AUTO ->
+        # worker НЕ отримує -ConfigPath і сам виконує ту саму
+        # auto-derivation проти каталогу $PSCommandPath (той самий
+        # комплект); EXPLICIT -> точний шлях зберігається. Безумовний
+        # -ConfigPath перетворював легітимний AUTO no-config на
+        # explicit-missing і валив worker fail-closed (acceptance CF-17).
+        [bool]$ConfigPathWasExplicit = $false,
         [string]$Operation,
         [object[]]$Entries
     )
@@ -1234,8 +1241,13 @@ function Invoke-AsSystem {
         [IO.File]::WriteAllText($payloadPath, $payload, [Text.Encoding]::UTF8)
 
         $powerShellPath = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+        $workerConfigArgumentText = if ($ConfigPathWasExplicit) {
+            " -ConfigPath `"$ResolvedConfigPath`""
+        } else {
+            ""
+        }
         $arguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass " +
-            "-File `"$PSCommandPath`" -ConfigPath `"$ResolvedConfigPath`" " +
+            "-File `"$PSCommandPath`"$workerConfigArgumentText " +
             "-ProtectedPayloadPath `"$payloadPath`" -ResultPath `"$workerResultPath`""
         $taskDefinition = $taskService.NewTask(0)
         $taskDefinition.RegistrationInfo.Description = "BRAVO temporary credential worker"
@@ -1410,8 +1422,16 @@ try {
 
     if ($useSystemWorker -and -not (Test-IsAdministrator)) {
         $componentArguments = ($Component | ForEach-Object { "`"$_`"" }) -join " "
+        # AUTO -> elevated-процес сам повторює auto-derivation; EXPLICIT ->
+        # точний шлях оператора зберігається (acceptance CF-17, той самий
+        # контракт, що BRAVO_SETUP ConfigPathArgument).
+        $elevationConfigArgumentText = if ($configPathWasExplicit) {
+            "-ConfigPath `"$resolvedConfigPath`" "
+        } else {
+            ""
+        }
         $elevationArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" " +
-            "-ConfigPath `"$resolvedConfigPath`" -Action $Action -StoreFor $StoreFor " +
+            "$elevationConfigArgumentText-Action $Action -StoreFor $StoreFor " +
             "-Component $componentArguments"
         $process = Start-Process `
             -FilePath (Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe") `
@@ -1444,6 +1464,7 @@ try {
             $systemAvailability = @(
                 Invoke-AsSystem `
                     -ResolvedConfigPath $resolvedConfigPath `
+                    -ConfigPathWasExplicit $configPathWasExplicit `
                     -Operation "Test" `
                     -Entries (New-OperationEntries -Names $requestedComponents)
             )
@@ -1525,6 +1546,7 @@ try {
             $systemResults = @(
                 Invoke-AsSystem `
                     -ResolvedConfigPath $resolvedConfigPath `
+                    -ConfigPathWasExplicit $configPathWasExplicit `
                     -Operation $Action `
                     -Entries $systemEntries
             )
@@ -1550,7 +1572,7 @@ try {
         $operationResults = @($currentUserResults) + @($systemResults)
     } elseif ($useSystemWorker) {
         Write-Host "Сховище для облікового запису: NT AUTHORITY\SYSTEM"
-        $operationResults = @(Invoke-AsSystem -ResolvedConfigPath $resolvedConfigPath -Operation $Action -Entries $operationEntries)
+        $operationResults = @(Invoke-AsSystem -ResolvedConfigPath $resolvedConfigPath -ConfigPathWasExplicit $configPathWasExplicit -Operation $Action -Entries $operationEntries)
     } else {
         Write-Host "Сховище для облікового запису: $currentIdentity"
         $operationResults = @(

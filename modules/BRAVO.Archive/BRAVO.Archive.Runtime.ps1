@@ -10,6 +10,7 @@
 
 param(
     [string]$ConfigPath,
+    [bool]$ConfigPathWasExplicit = $false,
     [switch]$SyncBAZA,
     [switch]$HealthCheckOnly,
     [switch]$ForceNotification,
@@ -55,8 +56,14 @@ if ($HealthCheckOnly) {
         Write-Error "Не знайдено окремий health-скрипт: $healthScriptPath"
         exit 1
     }
-    & $healthScriptPath `
-        -ConfigPath $ConfigPath `
+    # AUTO -> дочірній BRAVO_HEALTH.ps1 сам виконує ту саму auto-derivation
+    # проти свого $PSScriptRoot (той самий комплект); EXPLICIT -> точний
+    # шлях оператора зберігається.
+    $healthForwardConfigArguments = @{}
+    if ($ConfigPathWasExplicit -and -not [string]::IsNullOrWhiteSpace($ConfigPath)) {
+        $healthForwardConfigArguments.ConfigPath = $ConfigPath
+    }
+    & $healthScriptPath @healthForwardConfigArguments `
         -ForceNotification:$ForceNotification `
         -NotifyOnSuccess:$NotifyOnSuccess `
         -NoSlack:$NoSlack `
@@ -64,11 +71,14 @@ if ($HealthCheckOnly) {
         -NoPause:$NoPause
     exit $LASTEXITCODE
 }
-# P0 Configuration Foundation (PR C): свідомий намір оператора фіксується
-# ТУТ, на межі справжнього виклику скрипта, ДО підстановки auto-дефолту
-# нижче — і передається в Import-BravoConfiguration явним параметром
-# (не вгадується там за збігом шляхів).
-$configPathWasExplicit = $PSBoundParameters.ContainsKey('ConfigPath') -and
+# P0 Configuration Foundation: справжня межа виклику оператора — root
+# entrypoint, і лише ВІН знає, чи -ConfigPath був реально переданий: сюди
+# ConfigPath завжди приходить уже резолвленим і непорожнім, тому
+# $PSBoundParameters тут відновити намір не може (acceptance-клас дефектів
+# CF-17/AUTO-intent). Намір приймається явним -ConfigPathWasExplicit;
+# додаткова перевірка порожнього шляху страхує від помилкового виклику з
+# прапорцем без шляху (та сама семантика, що в Import-BravoConfiguration).
+$configPathWasExplicit = $ConfigPathWasExplicit -and
     -not [string]::IsNullOrWhiteSpace($ConfigPath)
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $bravoScriptDirectory "BRAVO.config"
@@ -364,9 +374,17 @@ if ($credentialHelperLoaded -and -not $NoPause -and
                 # сам виконує повне завантаження BRAVO.config і перезаписав
                 # би глобальний стан (pathSettings, componentSettings тощо)
                 # цього процесу — ізоляція важливіша за швидкість запуску.
+                # AUTO-намір: -ConfigPath вбудовується лише за explicit
+                # (той самий гейт, що канал Archive->Health) — інакше
+                # helper трактував би auto-derived відсутній шлях як
+                # explicit і fail-closed ламав first-run налаштування.
+                $credentialsSetupConfigArguments = @()
+                if ($configPathWasExplicit -and -not [string]::IsNullOrWhiteSpace($ConfigPath)) {
+                    $credentialsSetupConfigArguments = @('-ConfigPath', $ConfigPath)
+                }
                 & powershell.exe -NoProfile -ExecutionPolicy Bypass `
                     -File $credentialsSetupPath `
-                    -ConfigPath $ConfigPath `
+                    @credentialsSetupConfigArguments `
                     -Action Ensure `
                     -Component Required `
                     -StoreFor CurrentUser
@@ -7696,6 +7714,7 @@ function Main {
         try {
                 $healthParameters = @{
                     ConfigPath = $configPath
+                    ConfigPathWasExplicit = $configPathWasExplicit
                 }
                 $backupNotificationMode = [string]$backupMonitoring.NotificationMode
                 if ([string]::IsNullOrWhiteSpace($backupNotificationMode)) {

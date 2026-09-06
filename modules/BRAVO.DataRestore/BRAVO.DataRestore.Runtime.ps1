@@ -28,6 +28,7 @@
 
 param (
     [string]$ConfigPath,
+    [bool]$ConfigPathWasExplicit = $false,
     [string]$GenerationId,
     [ValidateSet("MODEL", "BLOG", "BRAVOEXCH", "All")]
     [string]$Component = "All",
@@ -201,10 +202,14 @@ function ConvertTo-BRAVODataRestoreElevationArgument {
 # (той самий принцип, що BRAVO_MAINTENANCE).
 try {
 
-# P0 Configuration Foundation (PR C): свідомий намір оператора фіксується
-# ТУТ, на межі справжнього виклику скрипта, ДО підстановки auto-дефолту —
-# використовується і для UAC-relaunch нижче, і для Import-BravoConfiguration.
-$configPathWasExplicit = $PSBoundParameters.ContainsKey('ConfigPath') -and
+# P0 Configuration Foundation: справжня межа виклику оператора — root
+# entrypoint, і лише ВІН знає, чи -ConfigPath був реально переданий: сюди
+# ConfigPath завжди приходить уже резолвленим і непорожнім, тому
+# $PSBoundParameters тут відновити намір не може (acceptance-клас дефектів
+# CF-17/AUTO-intent). Намір приймається явним -ConfigPathWasExplicit;
+# додаткова перевірка порожнього шляху страхує від помилкового виклику з
+# прапорцем без шляху (та сама семантика, що в Import-BravoConfiguration).
+$configPathWasExplicit = $ConfigPathWasExplicit -and
     -not [string]::IsNullOrWhiteSpace($ConfigPath)
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $bravoScriptDirectory "BRAVO.config"
@@ -2776,7 +2781,16 @@ function Invoke-BRAVODataRestorePostHealth {
     }
     try {
         Write-DataRestoreLog -Message 'Запуск post-restore BRAVO_HEALTH...' -Level 'INFO'
-        $healthArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$healthScriptPath`" -ConfigPath `"$ConfigPath`" -NoPause"
+        # AUTO-намір: -ConfigPath вбудовується лише за explicit — інакше
+        # дочірній Health трактував би auto-derived відсутній шлях як
+        # explicit і кожен AUTO no-config restore давав би хибне
+        # Health-попередження замість реальної перевірки.
+        $healthConfigArgumentText = if ($configPathWasExplicit) {
+            " -ConfigPath `"$ConfigPath`""
+        } else {
+            ''
+        }
+        $healthArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$healthScriptPath`"$healthConfigArgumentText -NoPause"
         $healthProcess = Start-Process -FilePath $schedulerSettings.PowerShellExecutable `
             -ArgumentList $healthArguments `
             -Wait `

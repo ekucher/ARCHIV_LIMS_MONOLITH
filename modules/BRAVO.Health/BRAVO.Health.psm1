@@ -7,6 +7,18 @@ function Invoke-BRAVOHealthEntrypoint {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][hashtable]$Parameters)
 
+    # Публічна межа module API (та сама компенсація, що в
+    # Invoke-BRAVOHealthCheck): зовнішній викликач, який передав явний
+    # непорожній ConfigPath, але не знає нового ключа наміру, зберігає
+    # explicit-семантику (fail-closed на відсутньому файлі). Root
+    # entrypoints завжди кладуть ConfigPathWasExplicit у splat самі.
+    if (-not $Parameters.ContainsKey('ConfigPathWasExplicit') -and
+        $Parameters.ContainsKey('ConfigPath') -and
+        -not [string]::IsNullOrWhiteSpace([string]$Parameters['ConfigPath'])) {
+        $Parameters = $Parameters.Clone()
+        $Parameters['ConfigPathWasExplicit'] = $true
+    }
+
     try {
         & $script:runtimePath @Parameters | Out-Host
         return [int]$LASTEXITCODE
@@ -32,14 +44,29 @@ function Invoke-BRAVOHealthCheck {
         # щойно виконав BAZA sync у ЦЬОМУ прогоні, Health переоцінює вже
         # готовий результат замість повторної синхронізації. Ключі —
         # 'BAZA_APP'/'BAZA_WWW', значення — SyncResult з BRAVO.BazaSync.
-        [hashtable]$BazaSyncResults
+        [hashtable]$BazaSyncResults,
+        # Намір оператора з СПРАВЖНЬОЇ межі виклику (root entrypoint
+        # Archive) — прокидається в runtime без повторного вгадування.
+        # Якщо викликач НЕ передав прапорець, намір виводиться з ЙОГО
+        # власного виклику: це публічний module API, і програмний виклик
+        # із явним -ConfigPath зберігає explicit-семантику (fail-closed на
+        # відсутньому файлі) без знання про новий параметр — сумісність
+        # контракту. Archive передає прапорець явно (AUTO -> $false).
+        # Оголошений ОСТАННІМ: усі параметри, що існували до цього фіксу,
+        # зберігають свої позиції для legacy positional-викликів.
+        [bool]$ConfigPathWasExplicit = $false
     )
 
+    if (-not $PSBoundParameters.ContainsKey('ConfigPathWasExplicit')) {
+        $ConfigPathWasExplicit = $PSBoundParameters.ContainsKey('ConfigPath') -and
+            -not [string]::IsNullOrWhiteSpace($ConfigPath)
+    }
     if ([string]::IsNullOrWhiteSpace($EntryScriptPath)) {
         $EntryScriptPath = Join-Path $RuntimeRoot 'BRAVO_HEALTH.ps1'
     }
     $runtimeParameters = @{
         ConfigPath = $ConfigPath
+        ConfigPathWasExplicit = $ConfigPathWasExplicit
         ForceNotification = $ForceNotification
         NotifyOnSuccess = $NotifyOnSuccess
         NoSlack = $NoSlack

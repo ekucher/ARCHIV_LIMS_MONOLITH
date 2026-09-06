@@ -78,8 +78,14 @@ Write-Host "packageVersion: $packageVersion"
 Write-Host "releaseChannel: $releaseChannel"
 Write-Host ""
 
-$stablePattern = '^\d+\.\d+\.\d+$'
-$prereleasePattern = '^\d+\.\d+\.\d+-(dev|rc)\.\d+$'
+# Узгоджено з ConvertTo-BRAVOComparableVersion (BRAVO_RUNTIME_GUARD.ps1):
+# без leading zero і в core, і в prerelease-лічильнику. Інакше PR CI
+# схвалював би версію на кшталт 5.3.0-rc.01, яку Enforce-guard кожного
+# entrypoint відкидає як malformed (review PR #135, третя хвиля) — і
+# непрацездатний пакет ловився б лише на пізнішому tag-build.
+$strictNumberPattern = '(0|[1-9][0-9]*)'
+$stablePattern = "^$strictNumberPattern\.$strictNumberPattern\.$strictNumberPattern$"
+$prereleasePattern = "^$strictNumberPattern\.$strictNumberPattern\.$strictNumberPattern-(dev|rc)\.$strictNumberPattern$"
 
 if ($isStableBranch) {
     if ($packageVersion -notmatch $stablePattern) {
@@ -106,8 +112,18 @@ if ($isStableBranch) {
 # RELEASE_POLICY 3.4: ModuleVersion не приймає prerelease-суфікса
 # ([System.Version]), тому маніфести модулів несуть базову частину.
 $baseVersion = ($packageVersion -replace '-.*$', '')
+$parsedBaseVersion = $null
 if ($baseVersion -notmatch $stablePattern) {
     Add-BRAVOReleasePolicyFailure "packageVersion '$packageVersion' не має вигляду X.Y.Z[-suffix] — базову версію визначити неможливо."
+} elseif (-not [version]::TryParse($baseVersion, [ref]$parsedBaseVersion)) {
+    # Свідоме обмеження release contract BRAVO (RELEASE_POLICY.md):
+    # X.Y.Z записується як ModuleVersion у кожному *.psd1, а
+    # ModuleVersion на Windows PowerShell 5.1 — це [System.Version],
+    # тобто кожен компонент <= Int32.MaxValue (2147483647). Синтаксично
+    # коректний, але непредставимий core — invalid package version;
+    # ловимо його тут як root cause, а не пізніше як N однакових
+    # ModuleVersion-mismatch помилок чи відмову runtime guard.
+    Add-BRAVOReleasePolicyFailure "RELEASE_POLICY 3.4: базова версія '$baseVersion' (з packageVersion '$packageVersion') синтаксично X.Y.Z, але не представима типом System.Version (компонент понад 2147483647) — Windows PowerShell 5.1 не зможе використати її як ModuleVersion у *.psd1. Це непідтримувана packageVersion за release contract BRAVO."
 } else {
     $manifests = @(Get-ChildItem -LiteralPath (Join-Path $Root 'modules') -Recurse -Filter '*.psd1' -File)
     if ($manifests.Count -eq 0) {
