@@ -103,6 +103,10 @@
     # 'maintenanceSettings.Retention.CompressedLogDeletionEnabled' = $true
     # 'maintenanceSettings.Retention.CompressedLogDays' = 180
     # 'maintenanceSettings.Retention.FailedArchiveDays' = 30
+    # Grace-період локального зберігання ПОВНІСТЮ верифікованого (архів+
+    # SFTP+перевірка) сирого джерела Trace/exchangAPI понад LastWriteTime.
+    # 0 (типово) = видалення одразу, щойно безпечно (PR #136, log-lifecycle P5):
+    # 'maintenanceSettings.Retention.RawSourceGraceDays' = 0
 
     # --- Trace ---
     # Друге trace-джерело (TraceBIS.out): "" = AUTO; 'off' = вимкнено; шлях = явно.
@@ -140,6 +144,12 @@
     # 'componentSettings.Synchronization.BAZA_WWW_SFTP' = $true
     # 'componentSettings.Synchronization.BAZA_WWW_LOCAL' = $false
     # 'componentSettings.SFTP.ArchiveUpload' = $true
+    # Opt-in вивантаження ВЛАСНИХ операційних логів BRAVO наприкінці
+    # прогону (PR #136, log-lifecycle P1). $false (типово) — нова вихідна
+    # SFTP-поведінка не вмикається мовчки. Провал передачі — лише WARNING,
+    # ніколи не змінює результат прогону:
+    # 'componentSettings.SFTP.MaintenanceLogUploadEnabled' = $false
+    # 'componentSettings.SFTP.ArchiveLogUploadEnabled' = $false
     # 'componentSettings.SMB.ArchiveCopy' = $true
 
     # --- Глобальні вимикачі зовнішніх сховищ (5.2.2) ---
@@ -229,6 +239,11 @@
     # 'sftpDirectories.Manifest' = 'manifests'
     # 'sftpDirectories.TraceLogs' = 'logs/trace'
     # 'sftpDirectories.ExchangeApiLogs' = 'logs/exchangapi'
+    # Каталоги власних логів BRAVO (PR #136, log-lifecycle P1) — діють
+    # лише разом з componentSettings.SFTP.MaintenanceLogUploadEnabled/
+    # ArchiveLogUploadEnabled вище:
+    # 'sftpDirectories.MaintenanceLog' = 'logs/maintenance'
+    # 'sftpDirectories.ArchivLog' = 'logs/archiv'
 
     # =========================================================
     # HEALTH-МОНІТОРИНГ (backupMonitoring) — фаза 2

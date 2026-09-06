@@ -631,12 +631,19 @@ $broken = Invoke-SuspensionScenario -LogPath (Join-Path $TestRoot 'broken.log') 
     # effective-шар, а не сирий componentSettings — інакше глобально
     # вимкнений destination все одно вимагав би креденшелів чи виконував
     # мережеву TCP-пробу.
+    # R3-4 (PR #136, третє коло review): sftpEnabled/sftpConfigured тепер
+    # обчислюються через canonical Test-BRAVOSftpCredentialsRequired
+    # (враховує й own-log upload тумблери), а не через inline-вираз —
+    # умова тесту оновлена на новий call site, та сама властивість (master-
+    # switch AND, ArchiveUpload включено, SMB без прямого дочірнього
+    # обходу) перевіряється й далі.
     Test-BRAVOCondition `
         -Condition (
-            $dryRunScriptTextForSftp.Contains('$sftpEnabled = [bool]$storageEffective.SFTP.Enabled -and (') -and
-            $dryRunScriptTextForSftp.Contains('$sftpConfigured = [bool]$storageEffective.SFTP.Enabled -and (') -and
+            $dryRunScriptTextForSftp.Contains('$sftpEnabled = Test-BRAVOSftpCredentialsRequired') -and
+            $dryRunScriptTextForSftp.Contains('$sftpConfigured = Test-BRAVOSftpCredentialsRequired') -and
+            $dryRunScriptTextForSftp.Contains('-SftpEnabled (Test-SettingEnabled $storageEffective.SFTP.Enabled)') -and
+            $dryRunScriptTextForSftp.Contains('-ArchiveUploadEnabled (Test-SettingEnabled $storageEffective.SFTP.ArchiveUpload)') -and
             $dryRunScriptTextForSftp.Contains('$smbEnabled = Test-SettingEnabled $storageEffective.SMB.ArchiveCopy') -and
-            $dryRunScriptTextForSftp.Contains('(Test-SettingEnabled $storageEffective.SFTP.ArchiveUpload) -or') -and
             -not $dryRunScriptTextForSftp.Contains('Test-SettingEnabled $componentSettings.SMB.ArchiveCopy')
         ) `
         -Name "DryRun/StorageMasterSwitchGatesCredentialsAndNetworkProbes" `
@@ -3387,10 +3394,16 @@ if ($r.StateUpdated -and -not [IO.File]::Exists($PassedPath)) { exit 0 } else { 
     # креденшели обов'язковими). $bazaSyncEffective.ScheduledSftpSyncRequired
     # покриває APP+WWW разом; master-вимикач гейтить усе "Required"-обчислення,
     # explicit-меню лишається доступним завжди.
+    # R3-4 (PR #136, третє коло review): sftpRequired тепер обчислюється
+    # через canonical Test-BRAVOSftpCredentialsRequired (враховує й own-log
+    # upload тумблери), а не через inline-вираз — та сама властивість
+    # (master-switch, обидва напрямки BAZA, без прямого дочірнього обходу
+    # SMB) перевіряється й далі на новому call site.
     Test-BRAVOCondition `
         -Condition (
-            $credentialsSetupScriptText.Contains('$sftpRequired = [bool]$storageEffective.SFTP.Enabled -and (') -and
-            $credentialsSetupScriptText.Contains('[bool]$bazaSyncEffective.ScheduledSftpSyncRequired -or') -and
+            $credentialsSetupScriptText.Contains('$sftpRequired = Test-BRAVOSftpCredentialsRequired') -and
+            $credentialsSetupScriptText.Contains('-SftpEnabled ([bool]$storageEffective.SFTP.Enabled)') -and
+            $credentialsSetupScriptText.Contains('-ScheduledSftpSyncRequired ([bool]$bazaSyncEffective.ScheduledSftpSyncRequired)') -and
             $credentialsSetupScriptText.Contains('$smbRequired = [bool]$storageEffective.SMB.ArchiveCopy') -and
             -not $credentialsSetupScriptText.Contains('[bool]$componentSettings.Synchronization.BAZA_APP_SFTP -or')
         ) `
@@ -16627,6 +16640,8 @@ function Write-BRAVOLog {
     # Archive (P2-1/P2-5, PR #136 review): рекурсивне впорядкування SFTP-
     # каталогів перед mkdir і єдиний call site вивантаження власного логу.
     . (Join-Path $root 'selftest\BRAVO_SELF_TEST.Archive.ps1')
+    . (Join-Path $root 'selftest\BRAVO_SELF_TEST.SftpCredentialsRequired.ps1')
+    . (Join-Path $root 'selftest\BRAVO_SELF_TEST.MaintenanceOwnLog.ps1')
     . (Join-Path $root 'selftest\BRAVO_SELF_TEST.BazaSync.ps1')
     # TraceArchive ПІСЛЯ BazaSync: SFTP-сценарії добового Trace-архіву
     # використовують New-BRAVOSelfTestFakeBazaSession, визначену там.

@@ -76,6 +76,11 @@
         @{ Path = 'maintenanceSettings.Retention.CompressedLogDeletionEnabled'; Group = 'Maintenance'; Section = 'Retention'; Label = 'Видаляти стиснуті журнали'; Description = ''; Type = 'Boolean'; Phase = 1; Advanced = $false; ReadOnly = $false; Secret = $false; Order = 30 }
         @{ Path = 'maintenanceSettings.Retention.CompressedLogDays'; Group = 'Maintenance'; Section = 'Retention'; Label = 'Retention стиснутих журналів (дні)'; Description = ''; Type = 'Integer'; Phase = 1; Advanced = $false; ReadOnly = $false; Secret = $false; Order = 40 }
         @{ Path = 'maintenanceSettings.Retention.FailedArchiveDays'; Group = 'Maintenance'; Section = 'Retention'; Label = 'Retention невдалих архівів (дні)'; Description = ''; Type = 'Integer'; Phase = 1; Advanced = $false; ReadOnly = $false; Secret = $false; Order = 50 }
+        # PR #136 (log-lifecycle P5): 0 = точна попередня поведінка
+        # (видалення сирого джерела одразу після успішної архівації+SFTP);
+        # N>0 лишає верифіковане джерело локально ще N днів понад
+        # LastWriteTime, перш ніж видалити.
+        @{ Path = 'maintenanceSettings.Retention.RawSourceGraceDays'; Group = 'Maintenance'; Section = 'Retention'; Label = 'Grace-період сирих джерел (дні)'; Description = 'Скільки днів понад LastWriteTime лишати локально ПОВНІСТЮ верифіковане (архів+SFTP+перевірка) джерело Trace/exchangAPI перед видаленням. 0 (типово) — видалення одразу, щойно безпечно.'; Type = 'Integer'; Phase = 1; Advanced = $true; ReadOnly = $false; Secret = $false; Order = 60 }
 
         # ===== Maintenance / Trace =====
         @{ Path = 'maintenanceSettings.Trace.BISSourcePath'; Group = 'Maintenance'; Section = 'Trace'; Label = 'Друге trace-джерело (TraceBIS.out)'; Description = '"" = AUTO; ''off'' = вимкнено; шлях = явно.'; Type = 'Path'; Phase = 1; Advanced = $true; ReadOnly = $false; Secret = $false; Order = 10 }
@@ -116,6 +121,12 @@
         # Відсутній ключ (legacy-конфіг 5.2.1 і старіші) = $true.
         @{ Path = 'componentSettings.SFTP.Enabled'; Group = 'Components'; Section = 'SFTP'; Label = 'SFTP глобально увімкнено'; Description = 'Master-switch (5.2.2): $false вимикає ArchiveUpload, BAZA_APP_SFTP, BAZA_WWW_SFTP, Health SFTP-перевірки і SFTP-креденшели — без зміни їх raw-значень.'; Type = 'Boolean'; Phase = 1; Advanced = $false; ReadOnly = $false; Secret = $false; Order = 70 }
         @{ Path = 'componentSettings.SFTP.ArchiveUpload'; Group = 'Components'; Section = 'SFTP'; Label = 'Завантажувати архіви на SFTP'; Description = 'Raw-прапорець дитини; ефективне значення залежить від componentSettings.SFTP.Enabled (master, окремий документований override-шлях вище).'; Type = 'Boolean'; Phase = 1; Advanced = $false; ReadOnly = $false; Secret = $false; Order = 80 }
+        # PR #136 (log-lifecycle P1): opt-in вивантаження ВЛАСНИХ
+        # операційних логів BRAVO наприкінці прогону. $false (дефолт) —
+        # нова вихідна SFTP-поведінка не вмикається мовчки на існуючих
+        # розгортаннях. Провал передачі — завжди лише WARNING.
+        @{ Path = 'componentSettings.SFTP.MaintenanceLogUploadEnabled'; Group = 'Components'; Section = 'SFTP'; Label = 'Вивантажувати лог Maintenance на SFTP'; Description = 'Opt-in вивантаження власного логу прогону BRAVO_MAINTENANCE (+ знімок range_id_log.json) у sftpDirectories.MaintenanceLog. Провал передачі не впливає на результат прогону.'; Type = 'Boolean'; Phase = 1; Advanced = $true; ReadOnly = $false; Secret = $false; Order = 90 }
+        @{ Path = 'componentSettings.SFTP.ArchiveLogUploadEnabled'; Group = 'Components'; Section = 'SFTP'; Label = 'Вивантажувати лог Archive на SFTP'; Description = 'Opt-in вивантаження власного логу прогону BRAVO_ARCHIV у sftpDirectories.ArchivLog. Провал передачі не впливає на результат прогону.'; Type = 'Boolean'; Phase = 1; Advanced = $true; ReadOnly = $false; Secret = $false; Order = 100 }
         @{ Path = 'componentSettings.SMB.Enabled'; Group = 'Components'; Section = 'SMB'; Label = 'SMB глобально увімкнено'; Description = 'Master-switch (5.2.2): $false вимикає ArchiveCopy і SMB-креденшелі — без зміни raw-значення. Незалежний від SFTP.Enabled.'; Type = 'Boolean'; Phase = 1; Advanced = $false; ReadOnly = $false; Secret = $false; Order = 85 }
         @{ Path = 'componentSettings.SMB.ArchiveCopy'; Group = 'Components'; Section = 'SMB'; Label = 'Копіювати архіви на SMB'; Description = 'Raw-прапорець дитини; ефективне значення залежить від componentSettings.SMB.Enabled (master, окремий документований override-шлях вище).'; Type = 'Boolean'; Phase = 1; Advanced = $false; ReadOnly = $false; Secret = $false; Order = 90 }
 
@@ -157,6 +168,11 @@
         @{ Path = 'sftpDirectories.Manifest'; Group = 'Storage'; Section = 'SFTP'; Label = 'SFTP каталог: Manifest'; Description = ''; Type = 'String'; Phase = 2; Advanced = $true; ReadOnly = $false; Secret = $false; Order = 80 }
         @{ Path = 'sftpDirectories.TraceLogs'; Group = 'Storage'; Section = 'SFTP'; Label = 'SFTP каталог: TraceLogs'; Description = ''; Type = 'String'; Phase = 2; Advanced = $true; ReadOnly = $false; Secret = $false; Order = 90 }
         @{ Path = 'sftpDirectories.ExchangeApiLogs'; Group = 'Storage'; Section = 'SFTP'; Label = 'SFTP каталог: ExchangeApiLogs'; Description = 'Ключі BAZA/BAZAWWW не документовані для override — ефективна BAZA-конфігурація обчислюється до фази 2.'; Type = 'String'; Phase = 2; Advanced = $true; ReadOnly = $false; Secret = $false; Order = 100 }
+        # PR #136 (log-lifecycle P1): каталоги власних логів — діють лише
+        # разом з componentSettings.SFTP.MaintenanceLogUploadEnabled/
+        # ArchiveLogUploadEnabled (Components/SFTP вище).
+        @{ Path = 'sftpDirectories.MaintenanceLog'; Group = 'Storage'; Section = 'SFTP'; Label = 'SFTP каталог: MaintenanceLog'; Description = 'Власні логи BRAVO_MAINTENANCE (+ знімки range_id_log) — opt-in, діє лише при componentSettings.SFTP.MaintenanceLogUploadEnabled=true.'; Type = 'String'; Phase = 2; Advanced = $true; ReadOnly = $false; Secret = $false; Order = 110 }
+        @{ Path = 'sftpDirectories.ArchivLog'; Group = 'Storage'; Section = 'SFTP'; Label = 'SFTP каталог: ArchivLog'; Description = 'Власні логи BRAVO_ARCHIV — opt-in, діє лише при componentSettings.SFTP.ArchiveLogUploadEnabled=true.'; Type = 'String'; Phase = 2; Advanced = $true; ReadOnly = $false; Secret = $false; Order = 120 }
 
         # ===== Storage / SMB (smbSettings) — фаза 1 =====
         @{ Path = 'smbSettings.RootPath'; Group = 'Storage'; Section = 'SMB'; Label = 'Кореневий шлях SMB'; Description = 'UNC-шлях, напр. \\host\share\BRAVO.'; Type = 'UNCPath'; Phase = 1; Advanced = $false; ReadOnly = $false; Secret = $false; Order = 10 }

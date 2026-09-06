@@ -570,6 +570,54 @@ function Get-BRAVODirectories {
             (Test-BRAVOTraceArchiveSidecarCurrent -ArchivePath $taP7SidecarArchive.FullName -SidecarPath "$($taP7SidecarArchive.FullName).sha512")
         ) -Name 'TraceArchive/GraceCompletionCorruptedSidecarTriggersReprocessAndRepair' -Failure "пошкоджений sidecar має ЗАПУСТИТИ повторну обробку (і полагодити sidecar), а не помилковий skip; факт: uploaded=$($taP7SkipResult3.Uploaded) putCalls=$(@($taP7SkipSession3.State.PutFilesCalledFor).Count) errors=$($taP7SkipResult3.Errors)"
 
+        # --- A3 (R3-2, PR #136 третє коло review): зміна RemoteDirectory під
+        # час grace-вікна МАЄ інвалідувати skip, попри незмінний архів/
+        # джерело/sidecar — інакше запис "опубліковано" стосувався б уже
+        # неактуального призначення.
+        $taP7SkipSession4 = New-BRAVOSelfTestFakeBazaSession
+        $taP7SkipResult4 = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace, $statePath)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $taP7SkipDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword $taP7SkipSession4 'trace2' 7 $taP7SkipStatePath
+        Test-BRAVOCondition -Condition (
+            [int]$taP7SkipResult4.Uploaded -eq 1 -and
+            [int]$taP7SkipResult4.Errors -eq 0 -and
+            @($taP7SkipSession4.State.PutFilesCalledFor).Count -eq 2
+        ) -Name 'TraceArchive/GraceCompletionRemoteDirectoryChangeTriggersReprocess' -Failure "зміна RemoteDirectory ('trace'->'trace2') має ЗАПУСТИТИ повторну обробку, а не помилковий skip на старе призначення; факт: uploaded=$($taP7SkipResult4.Uploaded) putCalls=$(@($taP7SkipSession4.State.PutFilesCalledFor).Count) errors=$($taP7SkipResult4.Errors)"
+
+        # --- A4 (R3-2): зміна SFTP-акаунта (DestinationIdentity) під час
+        # grace-вікна МАЄ інвалідувати skip так само, як зміна каталогу.
+        $taP7SkipSession5 = New-BRAVOSelfTestFakeBazaSession
+        $taP7SkipResult5 = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace, $statePath, $destId)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -DestinationIdentity $destId -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $taP7SkipDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword $taP7SkipSession5 'trace2' 7 $taP7SkipStatePath 'newuser@newhost'
+        Test-BRAVOCondition -Condition (
+            [int]$taP7SkipResult5.Uploaded -eq 1 -and
+            [int]$taP7SkipResult5.Errors -eq 0 -and
+            @($taP7SkipSession5.State.PutFilesCalledFor).Count -eq 2
+        ) -Name 'TraceArchive/GraceCompletionSftpAccountChangeTriggersReprocess' -Failure "зміна SFTP-акаунта (DestinationIdentity) має ЗАПУСТИТИ повторну обробку, а не помилковий skip на старий акаунт; факт: uploaded=$($taP7SkipResult5.Uploaded) putCalls=$(@($taP7SkipSession5.State.PutFilesCalledFor).Count) errors=$($taP7SkipResult5.Errors)"
+
+        # --- A5 (R3-2): підтвердження round-trip — та сама (нова) пара
+        # RemoteDirectory/DestinationIdentity вдруге поспіль ЗНОВУ дає skip
+        # (нова ідентичність коректно персистується, а не завжди forces reprocess).
+        $taP7SkipSession6 = New-BRAVOSelfTestFakeBazaSession
+        $taP7SkipResult6 = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace, $statePath, $destId)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -DestinationIdentity $destId -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $taP7SkipDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword $taP7SkipSession6 'trace2' 7 $taP7SkipStatePath 'newuser@newhost'
+        Test-BRAVOCondition -Condition (
+            [int]$taP7SkipResult6.Uploaded -eq 0 -and
+            [int]$taP7SkipResult6.Errors -eq 0 -and
+            @($taP7SkipSession6.State.PutFilesCalledFor).Count -eq 0
+        ) -Name 'TraceArchive/GraceCompletionStableAfterDestinationChangeRecorded' -Failure "новий запис (trace2/newuser@newhost) має коректно персистуватись і давати skip на наступному незмінному прогоні; факт: uploaded=$($taP7SkipResult6.Uploaded) putCalls=$(@($taP7SkipSession6.State.PutFilesCalledFor).Count) errors=$($taP7SkipResult6.Errors)"
+
         # --- B: тампер stored-розміру в state -> reprocess (safe fallback), не помилковий skip.
         $taP7StaleDir = Join-Path $traceArchiveTestRoot "grace-completion-stale\Trace"
         [void](New-Item -ItemType Directory -Path $taP7StaleDir -Force)

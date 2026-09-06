@@ -139,6 +139,12 @@ $script:maintenanceOperationLockPath = $null
 # шляхах дуже раннього виходу, де точка встановлення нижче не досягається.
 $script:autoShutdownReachable = $false
 
+# R3-1 (PR #136, третє коло review): ідемпотентний прапорець
+# Invoke-BRAVOMaintenanceOwnLogUpload — ініціалізовано тут (а не лише в
+# точці встановлення) з тієї ж причини, що autoShutdownReachable вище:
+# читається під Set-StrictMode навіть на шляхах дуже раннього виходу.
+$script:maintenanceOwnLogUploadAttempted = $false
+
 # ===== ЗАВАНТАЖЕННЯ НАЛАШТУВАНЬ =====
 # P0 Configuration Foundation: BRAVO.config став опційним основним
 # override-шаром — попередня жорстка "файл мусить існувати" перевірка тут
@@ -4216,6 +4222,116 @@ function Send-BRAVOOwnLogFile {
     }
 }
 
+# ===== R3-1/R3-3 (PR #136, третє коло review): гарантований, ідемпотентний
+# epilogue вивантаження власного логу Maintenance =====
+function Invoke-BRAVOMaintenanceOwnLogUpload {
+    # Попередня реалізація викликалась РІВНО ОДИН РАЗ послідовним кодом
+    # безпосередньо ПЕРЕД AutoShutdown — тобто лише на "щасливому" шляху
+    # завершення. Кожен ранній `exit N` у цьому файлі (no-op recovery,
+    # provал preflight вільного місця, зайнятий lock, провал відновлення
+    # служб) обходив цей код повністю — саме на цих шляхах діагностичний
+    # лог найпотрібніший, і саме там він ніколи не вивантажувався.
+    #
+    # Функція тепер ідемпотентна ($script:maintenanceOwnLogUploadAttempted)
+    # і має ДВА call site:
+    #   1) той самий, що й раніше — ПЕРЕД AutoShutdown (зберігає вже
+    #      закритий P2-6 ordering: upload СТРОГО до shutdown на щасливому
+    #      шляху, інакше довелося б заново відкривати той тред);
+    #   2) у зовнішньому `finally`, що обгортає ввесь файл (рядок ~70) —
+    #      покриває будь-який ранній `exit` і необроблений виняток.
+    # Ідемпотентний прапорець гарантує "рівно один раз" незалежно від
+    # того, який з двох call site спрацював першим, і ніколи не вантажить
+    # лог удруге на щасливому шляху.
+    if ($script:maintenanceOwnLogUploadAttempted) { return }
+    $script:maintenanceOwnLogUploadAttempted = $true
+
+    try {
+        # P1-паралель (round-2 review, той самий баг колись був у Archive):
+        # Complete-BRAVOConfigurationLoad проєктує componentSettings/
+        # storageEffective ЛИШЕ у $global:, ніколи у script-scope. Крах ДО
+        # завантаження конфігурації (componentSettings ще не існує) —
+        # трактується як "вивантажити нічого", а не друга помилка.
+        if (-not (Get-Variable -Name componentSettings -Scope Global -ErrorAction SilentlyContinue) -or
+            -not (Get-Variable -Name storageEffective -Scope Global -ErrorAction SilentlyContinue)) {
+            return
+        }
+        if (-not ([bool]$componentSettings.SFTP.MaintenanceLogUploadEnabled -and
+                [bool]$storageEffective.SFTP.Enabled)) {
+            return
+        }
+        if (-not (Get-Variable -Name LOG_FILE -Scope Script -ErrorAction SilentlyContinue) -or
+            [string]::IsNullOrWhiteSpace([string]$LOG_FILE) -or
+            -not (Test-Path -LiteralPath $LOG_FILE -PathType Leaf)) {
+            return
+        }
+
+        $ownLogUploadSession = $null
+        $ownRangeIdLogSnapshotPath = $null
+        try {
+            $ownLogUploadSession = Connect-BRAVOOwnLogSftpSession
+            if ($null -ne $ownLogUploadSession) {
+                $ownLogRemoteDirectory = [string]$sftpDirectories.MaintenanceLog
+                Send-BRAVOOwnLogFile `
+                    -Session $ownLogUploadSession `
+                    -LocalLogPath $LOG_FILE `
+                    -RemoteDirectory $ownLogRemoteDirectory `
+                    -Logger $null
+
+                # R3-3 (round-3 review): range_id_log.json пише служба
+                # BRAVO КОНКУРЕНТНО з цим прогоном (toolkit його лише
+                # читає). Пряме читання живого шляху ДВІЧІ (розмір у
+                # Get-Item всередині Send-BRAVOTraceArchiveFile, потім
+                # вміст під час PutFiles) створювало TOCTOU-вікно: append
+                # між ними ламав перевірку розміру, а перезапис тієї самої
+                # довжини проходив перевірку, вивантаживши неузгоджений
+                # проміжний стан. Один локальний snapshot СТВОРЮЄТЬСЯ ПЕРШИМ,
+                # і розмір/hash/upload/verification відбуваються ЛИШЕ на
+                # ньому — живий шлях після цього моменту більше не
+                # читається. Знімок прибирається у внутрішньому finally
+                # незалежно від успіху/провалу.
+                $ownRangeIdLogPath = Get-BRAVOSystemRangeIdLogPath
+                if (-not [string]::IsNullOrWhiteSpace([string]$ownRangeIdLogPath) -and
+                    (Test-Path -LiteralPath $ownRangeIdLogPath -PathType Leaf)) {
+                    $ownRangeIdLogSnapshotPath = Join-Path ([System.IO.Path]::GetTempPath()) `
+                        ("BRAVO_range_id_log_snapshot_{0}.json" -f [guid]::NewGuid().ToString('N'))
+                    try {
+                        [System.IO.File]::Copy($ownRangeIdLogPath, $ownRangeIdLogSnapshotPath, $true)
+                        $ownRangeIdLogSnapshotHash = (Get-BRAVOFileHash -Path $ownRangeIdLogSnapshotPath -Algorithm SHA256).Hash
+                        Write-Log "Власний лог: знімок range_id_log.json створено ($ownRangeIdLogSnapshotPath, SHA256=$ownRangeIdLogSnapshotHash)" -Level "DEBUG"
+                        Send-BRAVOOwnLogFile `
+                            -Session $ownLogUploadSession `
+                            -LocalLogPath $ownRangeIdLogSnapshotPath `
+                            -RemoteDirectory $ownLogRemoteDirectory `
+                            -RemoteFileName ("range_id_log_{0}.json" -f $maintenanceLogRunId) `
+                            -Logger $null
+                    } catch {
+                        Write-Log "Власний лог: не вдалося створити знімок range_id_log.json: $($_.Exception.Message)" -Level "WARNING"
+                    }
+                }
+            }
+        } catch {
+            Write-Log "Власний лог: вивантаження на SFTP не вдалося: $($_.Exception.Message)" -Level "WARNING"
+        } finally {
+            if ($null -ne $ownLogUploadSession) {
+                try { $ownLogUploadSession.Dispose() } catch {
+                    # Best-effort закриття сесії — помилка Dispose тут уже ні
+                    # на що не впливає (лог передано або WARNING вже записано).
+                }
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$ownRangeIdLogSnapshotPath) -and
+                (Test-Path -LiteralPath $ownRangeIdLogSnapshotPath -PathType Leaf)) {
+                Remove-Item -LiteralPath $ownRangeIdLogSnapshotPath -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch {
+        try {
+            Write-Log "Власний лог: вивантаження на SFTP не вдалося: $($_.Exception.Message)" -Level "WARNING"
+        } catch {
+            # Найранніший крах: навіть Write-Log може бути недоступний.
+        }
+    }
+}
+
 # Одноразова (idempotent) автоміграція журнальних архівів на SFTP зі
 # старого плаского каталогу (типово trace/) у нову структуру logs/
 # (типово logs/trace/). Лише remote-move з верифікацією, БЕЗ видалень:
@@ -4498,20 +4614,43 @@ function Test-BRAVOTraceGraceCompletionCurrent {
     # Test-BRAVOTraceArchiveSidecarCurrent-репарацію всередині нього), і
     # після видалення сирих джерел та очищення grace-стану полагодити
     # sidecar вже нізвідки.
+    #
+    # R3-2 (PR #136, третє коло review): DestinationIdentity/RemoteDirectory
+    # ТЕЖ входять в ідентичність. Без цього зміна SFTP-акаунта чи
+    # sftpDirectories.TraceLogs/ExchangeApiLogs під час grace-вікна
+    # лишалась непоміченою — skip продовжувався на СТАРЕ (уже незмінне)
+    # призначення, а після завершення grace джерело видалялось, попри те
+    # що новий сервер його ніколи не отримував.
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]$Entry,
         [Parameter(Mandatory = $true)][string]$ArchivePath,
         [Parameter(Mandatory = $true)][string]$SidecarPath,
-        [Parameter(Mandatory = $true)][array]$CurrentSources
+        [Parameter(Mandatory = $true)][array]$CurrentSources,
+        [string]$DestinationIdentity = '',
+        [string]$RemoteDirectory = ''
     )
 
     if ($null -eq $Entry) { return $false }
-    foreach ($requiredProperty in @('archiveSize', 'archiveHash', 'publishedNames', 'sources', 'verifiedAtUtc')) {
+    foreach ($requiredProperty in @('archiveSize', 'archiveHash', 'publishedNames', 'sources', 'verifiedAtUtc',
+            'destinationIdentity', 'remoteDirectory', 'remoteFinalPath', 'remoteSize')) {
         if ($null -eq $Entry.PSObject.Properties[$requiredProperty]) { return $false }
     }
     if (-not (Test-Path -LiteralPath $ArchivePath -PathType Leaf)) { return $false }
     if (-not (Test-BRAVOTraceArchiveSidecarCurrent -ArchivePath $ArchivePath -SidecarPath $SidecarPath)) { return $false }
+
+    $currentNormalizedRemoteDirectory = ([string]$RemoteDirectory).Trim().Trim('/').Replace('\', '/')
+    if ([string]$Entry.destinationIdentity -ne [string]$DestinationIdentity -or
+        [string]$Entry.remoteDirectory -ne $currentNormalizedRemoteDirectory) {
+        return $false
+    }
+    # Той самий умовний формат, що Send-BRAVOTraceArchive/Send-
+    # BRAVOTraceArchiveFile нижче: порожній RemoteDirectory дає "/<файл>",
+    # а НЕ "//<файл>" — інакше цей запис ніколи б не збігся з реально
+    # опублікованим шляхом при порожньому/кореневому призначенні.
+    $expectedRemoteRoot = if ([string]::IsNullOrWhiteSpace($currentNormalizedRemoteDirectory)) { '' } else { "/$currentNormalizedRemoteDirectory" }
+    $expectedRemoteFinalPath = "$expectedRemoteRoot/$([System.IO.Path]::GetFileName($ArchivePath))"
+    if ([string]$Entry.remoteFinalPath -ne $expectedRemoteFinalPath) { return $false }
 
     $storedSources = @($Entry.sources)
     if (@($CurrentSources).Count -ne $storedSources.Count) { return $false }
@@ -4557,6 +4696,15 @@ function Invoke-BRAVOTraceArchiveMaintenance {
         [int]$IntegrityTimeoutSeconds = 43200,
         [AllowNull()]$Session,
         [string]$RemoteDirectory,
+        # R3-2 (PR #136, третє коло review): ідентичність SFTP-призначення
+        # (типово "логін@хост") цього $Session — записується у grace-
+        # completion state РАЗОМ із RemoteDirectory, щоб зміна акаунта чи
+        # каталогу під час grace-вікна інвалідувала skip, а не залишалась
+        # непоміченою. Порожньо (дефолт, як і раніше для викликів без цього
+        # параметра, напр. self-test) — grace-запис зберігає порожню
+        # ідентичність послідовно для першого й другого прогону, тож
+        # порівняння лишається коректним.
+        [string]$DestinationIdentity = '',
         # Той самий движок обслуговує і Trace (*.out, дата з timestamp-імені),
         # і exchangAPI (*.log з оригінальними іменами, дата з LastWriteTime).
         [string]$ComponentLabel = 'Trace',
@@ -4678,7 +4826,7 @@ function Invoke-BRAVOTraceArchiveMaintenance {
         $canSkipRepublish = $false
         $publishedNames = $null
         if ($graceFeatureActive -and $plan.NewFiles.Count -eq 0 -and $graceState.ContainsKey($group.DateKey)) {
-            if (Test-BRAVOTraceGraceCompletionCurrent -Entry $graceState[$group.DateKey] -ArchivePath $group.ArchivePath -SidecarPath $group.SidecarPath -CurrentSources $graceCurrentSnapshot) {
+            if (Test-BRAVOTraceGraceCompletionCurrent -Entry $graceState[$group.DateKey] -ArchivePath $group.ArchivePath -SidecarPath $group.SidecarPath -CurrentSources $graceCurrentSnapshot -DestinationIdentity $DestinationIdentity -RemoteDirectory $RemoteDirectory) {
                 $canSkipRepublish = $true
                 $publishedNames = @{}
                 foreach ($storedName in @($graceState[$group.DateKey].publishedNames)) {
@@ -4795,18 +4943,27 @@ function Invoke-BRAVOTraceArchiveMaintenance {
                 try {
                     $graceArchiveInfo = Get-Item -LiteralPath $group.ArchivePath -ErrorAction Stop
                     $graceArchiveHash = (Get-BRAVOFileHash -Path $group.ArchivePath -Algorithm SHA512).Hash
+                    # R3-2 (PR #136, третє коло review): повна ідентичність
+                    # SFTP-призначення записується РАЗОМ із архівом/джерелами
+                    # — Test-BRAVOTraceGraceCompletionCurrent звіряє все це
+                    # на наступному прогоні, перш ніж дозволити skip.
+                    $graceNormalizedRemoteDirectory = ([string]$RemoteDirectory).Trim().Trim('/').Replace('\', '/')
                     $graceState[$group.DateKey] = @{
-                        archiveSize    = [int64]$graceArchiveInfo.Length
-                        archiveHash    = [string]$graceArchiveHash
-                        publishedNames = @($publishedNames.Keys)
-                        sources        = @($graceRetainedThisGroup | ForEach-Object {
+                        archiveSize        = [int64]$graceArchiveInfo.Length
+                        archiveHash        = [string]$graceArchiveHash
+                        publishedNames     = @($publishedNames.Keys)
+                        sources            = @($graceRetainedThisGroup | ForEach-Object {
                             @{
                                 name             = $_.Name
                                 size             = [int64]$_.Length
                                 lastWriteTimeUtc = $_.LastWriteTimeUtc.ToString('o')
                             }
                         } | Sort-Object { $_.name })
-                        verifiedAtUtc  = (Get-Date).ToUniversalTime().ToString('o')
+                        verifiedAtUtc      = (Get-Date).ToUniversalTime().ToString('o')
+                        destinationIdentity = [string]$DestinationIdentity
+                        remoteDirectory    = $graceNormalizedRemoteDirectory
+                        remoteFinalPath    = [string]$send.RemoteArchivePath
+                        remoteSize         = [int64]$send.RemoteSize
                     }
                     $graceStateDirty = $true
                 } catch {
@@ -9220,6 +9377,20 @@ if (-not $BravoMaintenanceEnabled) {
                 -ConflictLevel 'WARNING')
         }
 
+        # R3-2 (PR #136, третє коло review): "призначення" для grace-
+        # completion state — той самий SFTP-акаунт/хост, що фактично
+        # відкрив $traceSftpSession вище (SFTP.Enabled=false або провал
+        # credential-читання лишають ці змінні невстановленими — тоді
+        # ідентичність порожня, і grace-стан просто ніколи не звірятиметься
+        # проти неї, бо без сесії реальної публікації й не станеться).
+        $traceDestinationIdentity = ''
+        if ((Get-Variable -Name 'traceSftpLogin' -ErrorAction SilentlyContinue) -and
+            (Get-Variable -Name 'traceResolvedSftpHost' -ErrorAction SilentlyContinue) -and
+            -not [string]::IsNullOrWhiteSpace([string]$traceSftpLogin) -and
+            -not [string]::IsNullOrWhiteSpace([string]$traceResolvedSftpHost)) {
+            $traceDestinationIdentity = "$traceSftpLogin@$traceResolvedSftpHost"
+        }
+
         $traceMaintenanceResult = Invoke-BRAVOTraceArchiveMaintenance `
             -TraceDirectory $TRACE_DIR `
             -SevenZipPath $ARC_PATH `
@@ -9229,6 +9400,7 @@ if (-not $BravoMaintenanceEnabled) {
             -IntegrityTimeoutSeconds $SevenZipIntegrityTestTimeoutSeconds `
             -Session $traceSftpSession `
             -RemoteDirectory $traceSftpRemoteDirectory `
+            -DestinationIdentity $traceDestinationIdentity `
             -RawSourceRetentionDays $RAW_SOURCE_GRACE_DAYS `
             -GraceCompletionStatePath (Get-BRAVOTraceGraceCompletionStatePath -ComponentLabel 'Trace') `
             -Logger $bravoLogRotationLogger
@@ -9251,6 +9423,7 @@ if (-not $BravoMaintenanceEnabled) {
                 -IntegrityTimeoutSeconds $SevenZipIntegrityTestTimeoutSeconds `
                 -Session $traceSftpSession `
                 -RemoteDirectory $exchangeApiSftpRemoteDirectory `
+                -DestinationIdentity $traceDestinationIdentity `
                 -ComponentLabel 'exchangAPI' `
                 -ArchiveNamePrefix 'exchangAPI' `
                 -BacklogGroupBy 'ByLastWriteTime' `
@@ -10072,45 +10245,12 @@ Write-BRAVOFinalSummaryFooter -LogFile $LOG_FILE
 # на SFTP — opt-in (componentSettings.SFTP.MaintenanceLogUploadEnabled,
 # дефолт $false). Розміщено ПІСЛЯ резолву $script:maintenanceRuntimeExitCode
 # і фінального підсумку: провал передачі структурно не може змінити
-# результат прогону (другорядний/телеметричний ефект). Trace-сесія на цей
-# момент давно закрита, тому відкривається окрема коротко-живуча сесія.
-if ([bool]$componentSettings.SFTP.MaintenanceLogUploadEnabled -and
-    [bool]$storageEffective.SFTP.Enabled) {
-    $ownLogUploadSession = $null
-    try {
-        $ownLogUploadSession = Connect-BRAVOOwnLogSftpSession
-        if ($null -ne $ownLogUploadSession) {
-            $ownLogRemoteDirectory = [string]$sftpDirectories.MaintenanceLog
-            Send-BRAVOOwnLogFile `
-                -Session $ownLogUploadSession `
-                -LocalLogPath $LOG_FILE `
-                -RemoteDirectory $ownLogRemoteDirectory `
-                -Logger $null
-            # range_id_log.json пише служба BRAVO (toolkit його лише читає) —
-            # строго read-only знімок; локальне ім'я константне, тому remote-
-            # ім'я суфіксується run-id, щоб прогони не перезаписували один
-            # одного. Відсутній файл — тихий no-op (Send-BRAVOOwnLogFile).
-            $ownRangeIdLogPath = Get-BRAVOSystemRangeIdLogPath
-            if (-not [string]::IsNullOrWhiteSpace([string]$ownRangeIdLogPath)) {
-                Send-BRAVOOwnLogFile `
-                    -Session $ownLogUploadSession `
-                    -LocalLogPath ([string]$ownRangeIdLogPath) `
-                    -RemoteDirectory $ownLogRemoteDirectory `
-                    -RemoteFileName ("range_id_log_{0}.json" -f $maintenanceLogRunId) `
-                    -Logger $null
-            }
-        }
-    } catch {
-        Write-Log "Власний лог: вивантаження на SFTP не вдалося: $($_.Exception.Message)" -Level "WARNING"
-    } finally {
-        if ($null -ne $ownLogUploadSession) {
-            try { $ownLogUploadSession.Dispose() } catch {
-                # Best-effort закриття сесії — помилка Dispose тут уже ні на
-                # що не впливає (лог передано або WARNING вже записано).
-            }
-        }
-    }
-}
+# результат прогону (другорядний/телеметричний ефект). Виклик тут —
+# call site №1 (щасливий шлях, ПЕРЕД AutoShutdown — P2-6 ordering);
+# call site №2 у зовнішньому `finally` покриває ранні exit/exception
+# (Invoke-BRAVOMaintenanceOwnLogUpload, R3-1); ідемпотентний прапорець
+# гарантує рівно одну спробу незалежно від того, який спрацював першим.
+Invoke-BRAVOMaintenanceOwnLogUpload
 
 # ===== ВИКЛИК ФУНКЦІЇ АВТОМАТИЧНОГО ВИМКНЕННЯ (P2-6: після SFTP-вивантаження) =====
 # Свідомо ПІСЛЯ Send-BRAVOOwnLogFile/Dispose вище — фактичний shutdown.exe
@@ -10174,5 +10314,14 @@ exit $script:maintenanceRuntimeExitCode
     # вище, включно з рідко відвідуваними (config не знайдено, lock
     # зайнятий, tool integrity) — саме там, де оператору найпотрібніше
     # встигнути прочитати повідомлення до закриття вікна.
+    #
+    # R3-1 (PR #136, третє коло review): call site №2 для
+    # Invoke-BRAVOMaintenanceOwnLogUpload — покриває будь-який ранній exit
+    # і необроблений виняток, які обходять call site №1 (перед
+    # AutoShutdown). Ідемпотентний прапорець гарантує, що на щасливому
+    # шляху тут не станеться повторної спроби. Виклик ДО Wait-
+    # BRAVOManualExit: оператор має побачити результат upload (або
+    # WARNING) у консолі до паузи, а не після.
+    Invoke-BRAVOMaintenanceOwnLogUpload
     Wait-BRAVOManualExit -NoPause:$NoPause
 }

@@ -103,6 +103,13 @@ if (Test-Path -LiteralPath $runtimeGuardPath -PathType Leaf) {
 # UI останнім) =====
 try {
     $configuratorModuleRoot = Join-Path $PSScriptRoot 'modules\BRAVO.Configurator'
+    # R3-4 (PR #136, третє коло review): BRAVO.Configurator.Credentials
+    # тепер викликає canonical Test-BRAVOSftpCredentialsRequired з
+    # BRAVO.Configuration.Derivation — Invoke-BRAVOConfiguratorEffectiveComputation
+    # обчислює Effective у ІЗОЛЬОВАНОМУ дочірньому процесі (там модуль
+    # завантажується окремо), тому тут, у сесії самого Configurator-а,
+    # потрібен явний імпорт для власного виклику.
+    Import-Module (Join-Path $PSScriptRoot 'modules\BRAVO.Configuration\BRAVO.Configuration.Derivation.psd1') -Force -ErrorAction Stop
     Import-Module (Join-Path $configuratorModuleRoot 'BRAVO.Configurator.Schema.psm1') -Force -ErrorAction Stop
     Import-Module (Join-Path $configuratorModuleRoot 'BRAVO.Configurator.Effective.psm1') -Force -ErrorAction Stop
     Import-Module (Join-Path $configuratorModuleRoot 'BRAVO.Configurator.Model.psm1') -Force -ErrorAction Stop
