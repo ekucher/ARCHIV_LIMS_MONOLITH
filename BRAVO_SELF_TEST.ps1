@@ -13171,9 +13171,14 @@ function Get-BRAVOMaintenanceSummaryResult {
         -Name "Maintenance/LogsStepBaselineIsTakenAfterRestore"
 
     # --- Cleanup: SKIPPED/OK/WARN-FAIL wiring у реальному джерелі.
+    # Вікно 1400 -> 2000: P2-2/P2-3 (PR #136 review) додав дві нові
+    # EnumerationWarnings/DeletionWarnings-гілки в $cleanupDetailParts
+    # ПЕРЕД цим call site, тож фіксований 1400-символьний lookback
+    # більше не дотягувався до SKIPPED/Get-BRAVOMaintenanceStepStatus
+    # вище.
     $cleanupResultCallIndex = $maintenanceScriptTextForManifestStorage.IndexOf("-Name 'Очистка старих даних/логів' ``", $planCleanupIndex)
     $cleanupResultCallWindow = if ($cleanupResultCallIndex -ge 0) {
-        $maintenanceScriptTextForManifestStorage.Substring([Math]::Max(0, $cleanupResultCallIndex - 1400), 1400)
+        $maintenanceScriptTextForManifestStorage.Substring([Math]::Max(0, $cleanupResultCallIndex - 2000), 2000)
     } else { '' }
     Test-BRAVOCondition `
         -Condition (
@@ -13238,13 +13243,16 @@ function Get-BRAVOMaintenanceSummaryResult {
     # --- AutoShutdown: SKIPPED/OK/FAIL wiring (Invoke-AutoShutdown реально
     # НЕ викликається в тесті — це системна команда shutdown; лише
     # структурна перевірка джерела, повернення значення й wiring).
-    $autoShutdownResultCallIndex = $maintenanceScriptTextForManifestStorage.IndexOf("`$script:currentMaintenanceOperation = 'Автоматичне вимкнення сервера'")
-    # dev.16 (review round 3): 2200, не 1400 — гілка $script:EnableAutoShutdown
-    # тепер містить 3-way Scheduled/Cancelled/Failed switch (AutoShutdown
-    # final-state rendering), і фіксоване вікно мусить сягати ELSE-гілки
-    # (SKIPPED 'вимкнено') нижче за течією тексту.
+    # P2-6 (PR #136 review): фактичний виклик Invoke-AutoShutdown перенесено
+    # в кінець скрипта (ПІСЛЯ best-effort вивантаження власних логів) —
+    # 60-секундний countdown більше не стартує до відкриття SFTP-сесії.
+    # Якір вікна тепер на відкладеному блоці, а не на ранньому маркері
+    # reachability (той самий рядок 'Автоматичне вимкнення сервера' тепер
+    # зустрічається двічі: маркер + відкладений виклик — беремо ОСТАННЄ
+    # входження).
+    $autoShutdownResultCallIndex = $maintenanceScriptTextForManifestStorage.LastIndexOf('ВИКЛИК ФУНКЦІЇ АВТОМАТИЧНОГО ВИМКНЕННЯ (P2-6')
     $autoShutdownResultCallWindow = if ($autoShutdownResultCallIndex -ge 0) {
-        $maintenanceScriptTextForManifestStorage.Substring($autoShutdownResultCallIndex, [Math]::Min(2200, $maintenanceScriptTextForManifestStorage.Length - $autoShutdownResultCallIndex))
+        $maintenanceScriptTextForManifestStorage.Substring($autoShutdownResultCallIndex, [Math]::Min(2600, $maintenanceScriptTextForManifestStorage.Length - $autoShutdownResultCallIndex))
     } else { '' }
     Test-BRAVOCondition `
         -Condition (
@@ -13354,14 +13362,20 @@ function Get-BRAVOMaintenanceSummaryResult {
         ) `
         -Name "Maintenance/PostOperationsRenderAfterEightOfEight" `
         -Failure "Cleanup -> Archive -> AutoShutdown мають рендеритись у цьому порядку, і всі — після [8/8] Контроль діапазонів ID"
+    # P2-6 (PR #136 review): фактичний виклик Invoke-AutoShutdown (60-
+    # секундний countdown) перенесено ПІСЛЯ best-effort вивантаження
+    # власних логів на SFTP, яке саме по собі відбувається ПІСЛЯ
+    # обчислення exit code і фінального summary/footer — інакше сервер
+    # міг вимкнутись посеред передачі логу. Порядок тепер: exit code ->
+    # фінальний summary -> (uploads) -> AutoShutdown, а не навпаки.
     Test-BRAVOCondition `
         -Condition (
-            $autoShutdownResultCallIndex -ge 0 -and
-            $maintenanceExitCodeCalcIndex -gt $autoShutdownResultCallIndex -and
-            $maintenanceSummaryHeaderOrderIndex -gt $maintenanceExitCodeCalcIndex
+            $maintenanceExitCodeCalcIndex -ge 0 -and
+            $maintenanceSummaryHeaderOrderIndex -gt $maintenanceExitCodeCalcIndex -and
+            $autoShutdownResultCallIndex -gt $maintenanceSummaryHeaderOrderIndex
         ) `
         -Name "Maintenance/PostOperationsPrecedeFinalSummary" `
-        -Failure "AutoShutdown має рендеритись ДО обчислення exit code, яке, своєю чергою, ДО Write-BRAVOFinalSummaryHeader"
+        -Failure "обчислення exit code має передувати Write-BRAVOFinalSummaryHeader, а фактичний відкладений виклик AutoShutdown (P2-6) — рендеритись ПІСЛЯ фінального summary (після best-effort log uploads, перед exit)"
 
     # --- Exact failure attribution: реальний $errorMsg у catch і
     # fallback-FAIL "рівно один раз" через прапорці *Reported.
@@ -16610,6 +16624,9 @@ function Write-BRAVOLog {
         -Name 'Archive/HashBusinessCallsRemainUnchanged' `
         -Failure "переміщення заголовка HASH не повинно було змінити бізнес-логіку хешування: New-SHA512Hash має викликатися рівно 1 раз (усередині Invoke-BRAVOComponentBackup), Get-BRAVOFileHash — рівно 4 рази; знайдено $($archiveNewSha512HashCallAsts.Count)/$($archiveGetFileHashCallAsts.Count)"
 
+    # Archive (P2-1/P2-5, PR #136 review): рекурсивне впорядкування SFTP-
+    # каталогів перед mkdir і єдиний call site вивантаження власного логу.
+    . (Join-Path $root 'selftest\BRAVO_SELF_TEST.Archive.ps1')
     . (Join-Path $root 'selftest\BRAVO_SELF_TEST.BazaSync.ps1')
     # TraceArchive ПІСЛЯ BazaSync: SFTP-сценарії добового Trace-архіву
     # використовують New-BRAVOSelfTestFakeBazaSession, визначену там.

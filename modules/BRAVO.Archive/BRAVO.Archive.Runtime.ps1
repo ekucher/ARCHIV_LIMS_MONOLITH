@@ -4594,6 +4594,43 @@ function Send-BAZAIncompatibleNameAlert {
     }
 }
 
+# Чиста (без побічних ефектів) функція: розгортає кожен запитаний
+# нормалізований шлях (напр. "/logs/archiv") у ВСІ його батьківські
+# сегменти ("/logs", "/logs/archiv"), дедуплікує та впорядковує за
+# глибиною (спершу коротші), потім за алфавітом — щоб /logs завжди йшов
+# у скрипті WinSCP раніше за /logs/archiv. WinSCP `mkdir` НЕ рекурсивний
+# (на відміну від `mkdir -p`): на чистому SFTP-акаунті без жодного з
+# батьківських сегментів "mkdir /logs/archiv" провалюється, бо /logs ще
+# не існує. "option batch continue" уже й так робить mkdir ідемпотентним
+# для сегментів, які існують — ця функція лише гарантує правильний
+# порядок (P2-1, PR #136 review).
+function Get-BRAVOSFTPOrderedDirectorySegments {
+    param([string[]]$Directories)
+
+    $segmentDirectories = New-Object System.Collections.Generic.List[string]
+    $seenSegments = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($directory in $Directories) {
+        if ([string]::IsNullOrWhiteSpace($directory)) { continue }
+        $parts = $directory.Trim('/') -split '/'
+        $accumulated = ''
+        foreach ($part in $parts) {
+            if ([string]::IsNullOrWhiteSpace($part)) { continue }
+            $accumulated = "$accumulated/$part"
+            if ($seenSegments.Add($accumulated)) {
+                [void]$segmentDirectories.Add($accumulated)
+            }
+        }
+    }
+    # .ToArray(), а не @($segmentDirectories) напряму — той самий PS 5.1
+    # гейт, що Get-BRAVOFileLockingProcesses/Get-BRAVOEmptyLogDateDirectories:
+    # @() напряму на System.Collections.Generic.List[T] кидає "Argument
+    # types do not match" (емпірично відтворено, версія 5.1.26100.9168).
+    # Тут безпечно, бо результат одразу проходить через Sort-Object
+    # (пайплайн), а НЕ обгортається в @() напряму навколо самого List[T].
+    return $segmentDirectories |
+        Sort-Object -Property @{ Expression = { ($_ -split '/').Count } }, @{ Expression = { $_ } }
+}
+
 function Initialize-BRAVOSFTPRemoteDirectories {
     # Створює відсутні кореневі каталоги на SFTP (model/blog/bravoexch/
     # baza_app/...) одним пакетним викликом WinSCP, перед тим як
@@ -4633,9 +4670,16 @@ function Initialize-BRAVOSFTPRemoteDirectories {
         return
     }
 
-    Write-BRAVOLog -Component 'SFTP' -Message "Перевiрка/створення потрiбних каталогiв на SFTP: $($normalizedDirectories -join ', ')"
+    # WinSCP `mkdir` НЕ рекурсивний (на відміну від `mkdir -p`) — розгортання
+    # у батьківські сегменти й впорядкування за глибиною винесене в окрему
+    # чисту функцію нижче (Get-BRAVOSFTPOrderedDirectorySegments), щоб її
+    # можна було детерміновано перевірити регресійним тестом без реального
+    # WinSCP/SFTP (P2-1, PR #136 review).
+    $orderedDirectories = @(Get-BRAVOSFTPOrderedDirectorySegments -Directories $normalizedDirectories)
 
-    $mkdirCommands = ($normalizedDirectories | ForEach-Object { "mkdir `"$_`"" }) -join [Environment]::NewLine
+    Write-BRAVOLog -Component 'SFTP' -Message "Перевiрка/створення потрiбних каталогiв на SFTP: $($orderedDirectories -join ', ')"
+
+    $mkdirCommands = ($orderedDirectories | ForEach-Object { "mkdir `"$_`"" }) -join [Environment]::NewLine
     $winscpCommand = @"
 option batch continue
 option confirm off
@@ -8051,42 +8095,65 @@ function Main {
         }
     }
     Write-BRAVOResultFooter -LogFile $script:logFile
+}
 
-    # Вивантаження ВЛАСНОГО повного логу прогону на SFTP — opt-in
-    # (componentSettings.SFTP.ArchiveLogUploadEnabled, дефолт $false).
-    # Свідомо ПІСЛЯ Write-BRAVOResultFooter, а не в $uploadQueue-циклі:
-    # Main() дописує лог після того циклу, і лише тут файл повний.
-    # Незалежний try/catch, результат НЕ додається у
-    # $transferResults.ArchiveUpload — провал передачі власного логу
-    # ніколи не переводить прогін у Failed і не змінює exit code
-    # (другорядний/телеметричний ефект).
-    if ([bool]$componentSettings.SFTP.ArchiveLogUploadEnabled -and
-        [bool]$storageEffective.SFTP.Enabled) {
+# Вивантаження ВЛАСНОГО повного логу прогону на SFTP — opt-in
+# (componentSettings.SFTP.ArchiveLogUploadEnabled, дефолт $false).
+# P2-5 (PR #136 review): раніше виклик існував лише в кінці Main() —
+# і фатальний крах, і контрольований ранній `return` із Main() (lock
+# busy, VSS orphan cleanup failure, ручна синхронізація, preflight
+# free-space failure) узагалі не вивантажували лог, хоча саме крах —
+# момент, коли він найпотрібніший для діагностики. Єдиний виклик тепер
+# у зовнішньому `finally` (див. нижче) — виконується РІВНО ОДИН РАЗ на
+# прогін для будь-якого шляху виходу з Main (успіх/ранній return/
+# необроблений виняток), після відповідного footer/summary. Результат
+# НІКОЛИ не змінює $script:processExitCode (другорядний/телеметричний
+# ефект).
+function Invoke-BRAVOArchiveOwnLogUpload {
+    # Увесь блок — в одному try/catch (а не лише сам transfer, як було
+    # раніше): якщо крах стався ДО завантаження конфігурації,
+    # componentSettings/storageEffective/sftpUrl тощо ще не існують, і
+    # звернення до них під Set-StrictMode кинуло б виняток. Тут це
+    # трактується як "вивантажити нічого" — WARNING, а не друга помилка,
+    # що замаскувала б первинний fatal exception виклику.
+    try {
+        if (-not (Get-Variable -Name componentSettings -Scope Script -ErrorAction SilentlyContinue) -or
+            -not (Get-Variable -Name storageEffective -Scope Script -ErrorAction SilentlyContinue)) {
+            return
+        }
+        if (-not ([bool]$componentSettings.SFTP.ArchiveLogUploadEnabled -and
+                [bool]$storageEffective.SFTP.Enabled)) {
+            return
+        }
+        if ([string]::IsNullOrWhiteSpace($sftpUrl) -or
+            [string]::IsNullOrWhiteSpace($sftpHostKey) -or
+            [string]::IsNullOrWhiteSpace($winSCPPath) -or
+            -not (Test-Path -LiteralPath $script:logFile -PathType Leaf)) {
+            Write-BRAVOLog -Component 'SFTP' -Message "Власний лог: SFTP-конфігурація неповна або лог відсутній — вивантаження пропущено" -Level "WARNING"
+            return
+        }
+        $ownLogRemoteDirectory = [string]$sftpDirectories.ArchivLog
+        Initialize-BRAVOSFTPRemoteDirectories `
+            -WinSCPPath $winSCPPath `
+            -RepositorySFTPUrl $sftpUrl `
+            -HostKey $sftpHostKey `
+            -RemoteDirectories @($ownLogRemoteDirectory)
+        $ownLogUploaded = Send-FileViaWinSCP `
+            -WinSCPPath $winSCPPath `
+            -RepositorySFTPUrl $sftpUrl `
+            -HostKey $sftpHostKey `
+            -LocalFilePath $script:logFile `
+            -RemoteDirectory $ownLogRemoteDirectory
+        if (-not $ownLogUploaded) {
+            Write-BRAVOLog -Component 'SFTP' -Message "Власний лог: передачу не завершено (деталі вище) — результат прогону не змінюється" -Level "WARNING"
+        }
+    } catch {
         try {
-            if ([string]::IsNullOrWhiteSpace($sftpUrl) -or
-                [string]::IsNullOrWhiteSpace($sftpHostKey) -or
-                [string]::IsNullOrWhiteSpace($winSCPPath) -or
-                -not (Test-Path -LiteralPath $script:logFile -PathType Leaf)) {
-                Write-BRAVOLog -Component 'SFTP' -Message "Власний лог: SFTP-конфігурація неповна або лог відсутній — вивантаження пропущено" -Level "WARNING"
-            } else {
-                $ownLogRemoteDirectory = [string]$sftpDirectories.ArchivLog
-                Initialize-BRAVOSFTPRemoteDirectories `
-                    -WinSCPPath $winSCPPath `
-                    -RepositorySFTPUrl $sftpUrl `
-                    -HostKey $sftpHostKey `
-                    -RemoteDirectories @($ownLogRemoteDirectory)
-                $ownLogUploaded = Send-FileViaWinSCP `
-                    -WinSCPPath $winSCPPath `
-                    -RepositorySFTPUrl $sftpUrl `
-                    -HostKey $sftpHostKey `
-                    -LocalFilePath $script:logFile `
-                    -RemoteDirectory $ownLogRemoteDirectory
-                if (-not $ownLogUploaded) {
-                    Write-BRAVOLog -Component 'SFTP' -Message "Власний лог: передачу не завершено (деталі вище) — результат прогону не змінюється" -Level "WARNING"
-                }
-            }
-        } catch {
             Write-BRAVOLog -Component 'SFTP' -Message "Власний лог: вивантаження не вдалося: $($_.Exception.Message)" -Level "WARNING"
+        } catch {
+            # Найранніший крах: навіть Write-BRAVOLog може бути недоступний.
+            # Мовчазний catch навмисний — телеметрія власного логу не
+            # повинна маскувати первинний fatal exception виклику.
         }
     }
 }
@@ -8150,6 +8217,19 @@ try {
     # НЕ re-throw: скрипт доходить до власного Exit $script:processExitCode
     # нижче (=90), тож .psm1-обгортка отримує той самий код через $LASTEXITCODE.
 } finally {
+    # P2-5 (PR #136 review): ЄДИНИЙ спільний call site для вивантаження
+    # власного логу — рівно тут, у finally, а НЕ в хвості Main()/catch.
+    # Main() має 5 контрольованих раннix return (lock busy, VSS orphan
+    # cleanup failure, ручна синхронізація OK/ERROR, preflight free-space
+    # failure) — кожен із них уже друкує власний footer/summary ПЕРЕД
+    # return, але сам return обходив би виклик, розташований у хвості
+    # Main() чи лише в catch. finally виконується для БУДЬ-ЯКОГО виходу з
+    # try (нормальне завершення Main, контрольований ранній return,
+    # необроблений виняток) — рівно один раз, після відповідного
+    # успішного/ERROR footer, ніколи не маскуючи $fatalErrorRecord і не
+    # змінюючи $script:processExitCode (функція сама best-effort/
+    # ізольована try/catch).
+    Invoke-BRAVOArchiveOwnLogUpload
     if ($script:archiveProcessLock) {
         $script:archiveProcessLock.Dispose()
         $script:archiveProcessLock = $null
