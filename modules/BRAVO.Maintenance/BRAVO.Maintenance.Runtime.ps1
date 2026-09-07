@@ -4673,6 +4673,64 @@ function Test-BRAVOTraceGraceCompletionCurrent {
     return $true
 }
 
+# ===== R4-3 (PR #136, четверте коло review): persisted local
+# completion-state НЕ Є достатньою гарантією для skip/видалення джерела —
+# сервер міг видалити/затерти remote-архів чи sidecar ПІСЛЯ публікації
+# (ручне втручання оператора, ротація на боці сховища, збій диска). Перед
+# тим, як довіряти кешованому "вже опубліковано" запису для (а) skip
+# повторного upload, або (б) видалення сирих джерел по завершенню grace,
+# виконується ЖИВА SFTP-перевірка: remote final path і sidecar існують, і
+# їхні розміри збігаються з очікуваними. SFTP/WinSCP не дає server-side
+# hash без повного завантаження файлу — розмір (Session.GetFileInfo) є
+# практичним компромісом; повне завантаження+хешування ЩОНОЧІ для
+# підтвердження вже опублікованого архіву суперечило б самій ідеї
+# grace-skip (уникнути зайвого мережевого навантаження). Host/port/login/
+# remoteDirectory вже гарантовано збігаються структурно: $Session
+# відкрито ТИМИ Ж змінними, що побудували DestinationIdentity/
+# RemoteDirectory, звірені Test-BRAVOTraceGraceCompletionCurrent раніше в
+# тому ж виклику — окрема повторна перевірка тут була б суто косметичною.
+function Test-BRAVOTraceRemoteArchivePublicationCurrent {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]$Session,
+        [Parameter(Mandatory = $true)]$Entry,
+        [Parameter(Mandatory = $true)][string]$SidecarPath,
+        [AllowNull()][scriptblock]$Logger
+    )
+
+    try {
+        $remoteFinalPath = [string]$Entry.remoteFinalPath
+        if ([string]::IsNullOrWhiteSpace($remoteFinalPath)) {
+            return [pscustomobject]@{ Current = $false; Reason = 'remoteFinalPath відсутній у стані' }
+        }
+        if (-not $Session.FileExists($remoteFinalPath)) {
+            return [pscustomobject]@{ Current = $false; Reason = "remote-архів $remoteFinalPath не знайдено" }
+        }
+        $remoteArchiveInfo = $Session.GetFileInfo($remoteFinalPath)
+        if ($null -eq $remoteArchiveInfo -or [int64]$remoteArchiveInfo.Length -ne [int64]$Entry.remoteSize) {
+            $actualLength = if ($null -ne $remoteArchiveInfo) { [int64]$remoteArchiveInfo.Length } else { 'н/д' }
+            return [pscustomobject]@{ Current = $false; Reason = "remote-архів $remoteFinalPath має інший розмір (очікувалось $([int64]$Entry.remoteSize), факт $actualLength)" }
+        }
+        # Той самий канонічний remoteRoot-формат, що Send-BRAVOTraceArchive/
+        # Test-BRAVOTraceGraceCompletionCurrent — обчислюється з persisted
+        # remoteDirectory, а не з $remoteFinalPath рядково, щоб уникнути
+        # розбіжностей у трактуванні розділювачів шляху.
+        $expectedRemoteRoot = if ([string]::IsNullOrWhiteSpace([string]$Entry.remoteDirectory)) { '' } else { "/$([string]$Entry.remoteDirectory)" }
+        $remoteSidecarPath = "$expectedRemoteRoot/$([System.IO.Path]::GetFileName($SidecarPath))"
+        if (-not $Session.FileExists($remoteSidecarPath)) {
+            return [pscustomobject]@{ Current = $false; Reason = "remote-sidecar $remoteSidecarPath не знайдено" }
+        }
+        $localSidecarInfo = Get-Item -LiteralPath $SidecarPath -ErrorAction Stop
+        $remoteSidecarInfo = $Session.GetFileInfo($remoteSidecarPath)
+        if ($null -eq $remoteSidecarInfo -or [int64]$remoteSidecarInfo.Length -ne [int64]$localSidecarInfo.Length) {
+            return [pscustomobject]@{ Current = $false; Reason = "remote-sidecar $remoteSidecarPath має інший розмір" }
+        }
+        return [pscustomobject]@{ Current = $true; Reason = $null }
+    } catch {
+        return [pscustomobject]@{ Current = $false; Reason = "SFTP-перевірка не вдалася: $($_.Exception.Message)" }
+    }
+}
+
 function Invoke-BRAVOTraceArchiveMaintenance {
     # Оркестратор фази «добовий Trace-архів»: backlog (усі дати,
     # oldest->newest) -> per-date план -> транзакційний update -> SFTP ->
@@ -4827,13 +4885,34 @@ function Invoke-BRAVOTraceArchiveMaintenance {
         $publishedNames = $null
         if ($graceFeatureActive -and $plan.NewFiles.Count -eq 0 -and $graceState.ContainsKey($group.DateKey)) {
             if (Test-BRAVOTraceGraceCompletionCurrent -Entry $graceState[$group.DateKey] -ArchivePath $group.ArchivePath -SidecarPath $group.SidecarPath -CurrentSources $graceCurrentSnapshot -DestinationIdentity $DestinationIdentity -RemoteDirectory $RemoteDirectory) {
-                $canSkipRepublish = $true
-                $publishedNames = @{}
-                foreach ($storedName in @($graceState[$group.DateKey].publishedNames)) {
-                    $publishedNames[[string]$storedName] = $true
+                # R4-3 (PR #136, четверте коло review): локальний запис
+                # "вже опубліковано" НЕ достатній сам по собі — жива
+                # SFTP-перевірка обов'язкова перед skip/видаленням джерел.
+                # Без активної сесії ЦЬОГО прогону підтвердити remote
+                # неможливо — fail-safe: НЕ пропускаємо (canSkipRepublish
+                # лишається false), нижче спрацює звичайний шлях повторної
+                # верифікації+передачі (або UploadsDeferred, якщо сесії
+                # взагалі немає — джерела в обох випадках НЕ видаляються
+                # цього прогону).
+                if ($null -ne $Session) {
+                    $remoteVerify = Test-BRAVOTraceRemoteArchivePublicationCurrent `
+                        -Session $Session -Entry $graceState[$group.DateKey] -SidecarPath $group.SidecarPath -Logger $Logger
+                    if ($remoteVerify.Current) {
+                        $canSkipRepublish = $true
+                        $publishedNames = @{}
+                        foreach ($storedName in @($graceState[$group.DateKey].publishedNames)) {
+                            $publishedNames[[string]$storedName] = $true
+                        }
+                        Write-BRAVOLogRotationMessage -Logger $Logger `
+                            -Message "${ComponentLabel}: дата $($group.DateKey) — архів і джерела не змінились з попередньої підтвердженої публікації, remote-архів+sidecar верифіковано наживо, повторна передача пропущена (grace)" -Level "INFO"
+                    } else {
+                        Write-BRAVOLogRotationMessage -Logger $Logger `
+                            -Message "${ComponentLabel}: дата $($group.DateKey) — кешований запис публікації НЕ підтверджено на remote ($($remoteVerify.Reason)) — виконується повторна верифікація+передача" -Level "WARNING"
+                    }
+                } else {
+                    Write-BRAVOLogRotationMessage -Logger $Logger `
+                        -Message "${ComponentLabel}: дата $($group.DateKey) — SFTP-сесія недоступна цього прогону, remote-публікацію не підтверджено, skip неможливий (fail-safe)" -Level "INFO"
                 }
-                Write-BRAVOLogRotationMessage -Logger $Logger `
-                    -Message "${ComponentLabel}: дата $($group.DateKey) — архів і джерела не змінились з попередньої підтвердженої публікації, повторна передача пропущена (grace)" -Level "INFO"
             }
         }
 
@@ -9082,10 +9161,32 @@ function Get-BRAVOLegacySweepStatePath {
     return Join-Path $programDataRoot 'BRAVO\State\BRAVO_LEGACY_SWEEP_STATE.json'
 }
 
+function Get-BRAVOCanonicalBackupRootIdentity {
+    # Канонічна ідентичність BackupRoot для прив'язки legacy-sweep
+    # маркера (R4-4, PR #136 review, 4-е коло): та сама лексична
+    # нормалізація (GetFullPath + TrimEnd + OrdinalIgnoreCase), що вже
+    # використовує Test-BRAVODataRestorePathEquals/-PathHasReparseAncestor
+    # у BRAVO.DataRestore — відрізняє РІЗНІ корені (root A vs root B) від
+    # того самого кореня, лише записаного в іншому лексичному форматі
+    # (кінцевий '\', регістр літери диска), без хибного повторного sweep
+    # при фактично незмінному корені.
+    param([Parameter(Mandatory = $true)][string]$BackupRoot)
+
+    if ([string]::IsNullOrWhiteSpace($BackupRoot)) {
+        throw 'BackupRoot не вказано для canonical-ідентичності legacy-sweep'
+    }
+    $fullPath = [System.IO.Path]::GetFullPath($BackupRoot).TrimEnd('\', '/')
+    return [pscustomobject]@{
+        Canonical = $fullPath.ToUpperInvariant()
+        FullPath  = $fullPath
+    }
+}
+
 function Write-BRAVOLegacySweepState {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$BackupRoot,
         [string]$SweptBy
     )
 
@@ -9093,8 +9194,11 @@ function Write-BRAVOLegacySweepState {
     if (-not [IO.Directory]::Exists($stateDirectory)) {
         [void][IO.Directory]::CreateDirectory($stateDirectory)
     }
+    $backupRootIdentity = Get-BRAVOCanonicalBackupRootIdentity -BackupRoot $BackupRoot
     $state = [ordered]@{
-        schemaVersion = 1
+        schemaVersion       = 2
+        canonicalBackupRoot = $backupRootIdentity.Canonical
+        backupRootFullPath  = $backupRootIdentity.FullPath
         sweptAt = (Get-Date).ToString('o')
         sweptBy = [string]$SweptBy
     }
@@ -9124,12 +9228,22 @@ function Write-BRAVOLegacySweepState {
 
 function Read-BRAVOLegacySweepState {
     # $null = маркера немає АБО він нечитабельний/пошкоджений/незнайомий
-    # schemaVersion. Fail-closed: у ВСІХ цих випадках виклик-сайт трактує
-    # це як "вже виметено" (пропустити sweep), НЕ як "повторити sweep" —
-    # sweep є одноразовою зручністю очищення диска, не data-integrity
-    # операцією; безпечніший режим відмови — не повторювати деструктивну
-    # дію при сумніві в стані, а не ризикувати повторним sweep-ом
-    # legacy-вмісту, який оператор міг навмисно відновити для інспекції.
+    # schemaVersion (включно з pre-R4-4 schemaVersion=1 маркером, який не
+    # містить canonicalBackupRoot). Fail-closed: у ВСІХ цих випадках
+    # виклик-сайт трактує це як "вже виметено" (пропустити sweep), НЕ як
+    # "повторити sweep" — sweep є одноразовою зручністю очищення диска, не
+    # data-integrity операцією; безпечніший режим відмови — не повторювати
+    # деструктивну дію при сумніві в стані, а не ризикувати повторним
+    # sweep-ом legacy-вмісту, який оператор міг навмисно відновити для
+    # інспекції.
+    #
+    # Порівняння canonicalBackupRoot із ПОТОЧНИМ BackupRoot навмисно НЕ
+    # виконується тут — це відповідальність Invoke-BRAVOLegacySweep
+    # (R4-4): валідний schemaVersion=2 стан для ІНШОГО кореня має
+    # трактуватись як "потрібен новий sweep", а не як "пошкоджений", тому
+    # ця функція повертає стан як є, а розрізнення "не для цього кореня"
+    # vs "справді нечитабельний" відбувається у виклик-сайту, де відомий
+    # актуальний BackupRoot.
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -9141,8 +9255,9 @@ function Read-BRAVOLegacySweepState {
         # schemaVersion (напр. "abc") кидав би на [int]-касті ПОЗА try —
         # помилковий record у консоль і повернення зіпсованого стану як
         # валідного (code-review 5c14a70, знахідка 1).
-        if ($null -eq $state.PSObject.Properties['schemaVersion'] -or [int]$state.schemaVersion -ne 1) { return $null }
+        if ($null -eq $state.PSObject.Properties['schemaVersion'] -or [int]$state.schemaVersion -ne 2) { return $null }
         if ($null -eq $state.PSObject.Properties['sweptAt'] -or [string]::IsNullOrWhiteSpace([string]$state.sweptAt)) { return $null }
+        if ($null -eq $state.PSObject.Properties['canonicalBackupRoot'] -or [string]::IsNullOrWhiteSpace([string]$state.canonicalBackupRoot)) { return $null }
     } catch {
         return $null
     }
@@ -9171,8 +9286,24 @@ function Invoke-BRAVOLegacySweep {
         [Parameter(Mandatory = $true)][string]$LogDir,
         [Parameter(Mandatory = $true)][string]$TraceDir,
         [Parameter(Mandatory = $true)][string]$StateFilePath,
+        [Parameter(Mandatory = $true)][string]$BackupRoot,
         [string]$SweptBy
     )
+
+    # Нульовий структурований результат за замовчуванням (R4-2, PR #136
+    # review, 4-е коло) — повертається З УСІХ гілок (early-return на
+    # "вже виметено"/"пошкоджений маркер" включно), щоб виклик-сайт міг
+    # покладатись на стабільну форму результату незалежно від шляху
+    # виконання.
+    $dateDirResult = [pscustomobject]@{
+        DiscoveredCandidates = 0
+        ConfirmedEmpty       = 0
+        Deleted              = 0
+        EnumerationWarnings  = 0
+        DeletionWarnings     = 0
+    }
+
+    $backupRootIdentity = Get-BRAVOCanonicalBackupRootIdentity -BackupRoot $BackupRoot
 
     # Розрізняємо "маркера ще не існувало" (безпечно замітати) від "файл
     # існує, але нечитабельний/пошкоджений" (fail-closed: пропустити, а НЕ
@@ -9181,12 +9312,19 @@ function Invoke-BRAVOLegacySweep {
     $stateFileExisted = [IO.File]::Exists($StateFilePath)
     $state = Read-BRAVOLegacySweepState -Path $StateFilePath
     if ($null -ne $state) {
-        Write-Log "Первинна очистка legacy-артефактів вже виконана $($state.sweptAt) — пропущено." -Level "DEBUG"
-        return
-    }
-    if ($stateFileExisted) {
+        # R4-4: валідний (schemaVersion=2) маркер для ІНШОГО BackupRoot —
+        # не "пошкоджений", а сигнал, що поточний корінь ще не виметено;
+        # sweep повторюється для нового кореня. Той самий корінь, лише
+        # записаний в іншому лексичному форматі (кінцевий '\', регістр
+        # диска), дає той самий canonicalBackupRoot і НЕ тригерить повтор.
+        if ([string]::Equals([string]$state.canonicalBackupRoot, $backupRootIdentity.Canonical, [StringComparison]::Ordinal)) {
+            Write-Log "Первинна очистка legacy-артефактів для BackupRoot $($backupRootIdentity.FullPath) вже виконана $($state.sweptAt) — пропущено." -Level "DEBUG"
+            return $dateDirResult
+        }
+        Write-Log "BackupRoot змінився з часу останнього legacy-sweep ($($state.backupRootFullPath) -> $($backupRootIdentity.FullPath)) — повторний sweep для нового кореня." -Level "INFO"
+    } elseif ($stateFileExisted) {
         Write-Log "Стан-маркер первинної очистки пошкоджений/нечитабельний — sweep пропущено (fail-closed). Для повторного запуску видаліть вручну: $StateFilePath" -Level "WARNING"
-        return
+        return $dateDirResult
     }
     Write-Log "=== ПЕРВИННА ОЧИСТКА LEGACY-АРТЕФАКТІВ (одноразово) ===" -Level "INFO"
     $removed = 0
@@ -9210,35 +9348,43 @@ function Invoke-BRAVOLegacySweep {
                 $sweepHadFailures = $true
             }
         }
-        $legacyDateDirs = @(Get-BRAVODirectories -Path $TraceDir | Where-Object { $_.Name -match '^\d{4}-\d{2}-\d{2}$' })
-        foreach ($d in $legacyDateDirs) {
-            $isEmpty = @((New-Object System.IO.DirectoryInfo($d.FullName)).EnumerateFileSystemInfos()).Count -eq 0
-            if (-not $isEmpty) {
-                Write-Log "Legacy-очистка: непорожній каталог-дата $($d.FullName) залишено для звичайної age-gated архівації." -Level "INFO"
-                continue
-            }
-            try {
-                (New-Object System.IO.DirectoryInfo($d.FullName)).Delete()
-                $removed++
-            } catch {
-                Write-Log "Legacy-очистка: не вдалося видалити $($d.FullName): $($_.Exception.Message)" -Level "WARNING"
-                $sweepHadFailures = $true
-            }
+        # R4-2 (PR #136 review, 4-е коло): каталоги-дати обробляються через
+        # КАНОНІЧНУ Get-BRAVOEmptyLogDateDirectories/
+        # Remove-BRAVOEmptyLogDateDirectories (той самий per-candidate
+        # try/catch навколо EnumerateFileSystemInfos(), що вже захищає
+        # звичайний P2 empty-date-dir cleanup нижче в основному потоці
+        # Maintenance) — замість другої паралельної копії того самого
+        # enumeration-захисту (єдина канонічна реалізація policy, а не
+        # copy/paste). Провал enumerate() для ОДНОГО candidate більше не
+        # зупиняє обробку решти й логується як WARNING з точним шляхом
+        # (EnumerationWarnings); жоден непідтверджено-порожній каталог не
+        # видаляється. EnumerationWarnings (не вдалося підтвердити
+        # порожнечу) НЕ блокує запис маркера — трактується так само, як
+        # свідомо залишений непорожній каталог-дата (нема що втрачати,
+        # просто лишається для звичайного age-gated шляху нижче); лише
+        # справжній провал ВИДАЛЕННЯ (DeletionWarnings) — як і раніше для
+        # файлів вище — блокує маркер і дає повторну спробу наступним
+        # прогоном.
+        $dateDirResult = Remove-BRAVOEmptyLogDateDirectories -Path $TraceDir -Label 'Legacy'
+        $removed += $dateDirResult.Deleted
+        if ($dateDirResult.DeletionWarnings -gt 0) {
+            $sweepHadFailures = $true
         }
         if ($sweepHadFailures) {
             Write-Log "Первинна очистка завершена частково: видалено $removed об'єкт(ів), є невдалі видалення — маркер НЕ записано, повтор наступним прогоном." -Level "WARNING"
         } else {
-            Write-BRAVOLegacySweepState -Path $StateFilePath -SweptBy $SweptBy | Out-Null
+            Write-BRAVOLegacySweepState -Path $StateFilePath -BackupRoot $BackupRoot -SweptBy $SweptBy | Out-Null
             Write-Log "Первинна очистка завершена: видалено $removed об'єкт(ів)." -Level "SUCCESS"
         }
     } catch {
         Write-Log "Первинна очистка legacy-артефактів не завершена: $($_.Exception.Message) — маркер НЕ записано, повтор наступним прогоном." -Level "WARNING"
     }
+    return $dateDirResult
 }
 
 if ($BravoMaintenanceEnabled) {
     Invoke-BRAVOLegacySweep -LogDir $LOG_DIR -TraceDir $TRACE_DIR `
-        -StateFilePath (Get-BRAVOLegacySweepStatePath) -SweptBy $script:ScriptVersion
+        -StateFilePath (Get-BRAVOLegacySweepStatePath) -BackupRoot $backupRootPath -SweptBy $script:ScriptVersion | Out-Null
 }
 
 # ===== TRACE: ДОБОВИЙ АРХІВ І SFTP =====
@@ -9383,12 +9529,18 @@ if (-not $BravoMaintenanceEnabled) {
         # credential-читання лишають ці змінні невстановленими — тоді
         # ідентичність порожня, і grace-стан просто ніколи не звірятиметься
         # проти неї, бо без сесії реальної публікації й не станеться).
+        # R4-1 (PR #136, четверте коло review): порт ТЕЖ входить в
+        # ідентичність — без цього зміна sftpPort при незмінному login@host
+        # лишалась непоміченою (той самий login/host здатен з'єднатися з
+        # ІНШИМ endpoint при зміні порту). $sftpPort — канонічна
+        # конфігураційна змінна, завжди визначена (дефолт 22), незалежно
+        # від того, чи вдалося відкрити сесію.
         $traceDestinationIdentity = ''
         if ((Get-Variable -Name 'traceSftpLogin' -ErrorAction SilentlyContinue) -and
             (Get-Variable -Name 'traceResolvedSftpHost' -ErrorAction SilentlyContinue) -and
             -not [string]::IsNullOrWhiteSpace([string]$traceSftpLogin) -and
             -not [string]::IsNullOrWhiteSpace([string]$traceResolvedSftpHost)) {
-            $traceDestinationIdentity = "$traceSftpLogin@$traceResolvedSftpHost"
+            $traceDestinationIdentity = "$traceSftpLogin@${traceResolvedSftpHost}:$([int]$sftpPort)"
         }
 
         $traceMaintenanceResult = Invoke-BRAVOTraceArchiveMaintenance `

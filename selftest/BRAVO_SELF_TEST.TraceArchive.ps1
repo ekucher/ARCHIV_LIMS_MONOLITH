@@ -94,7 +94,8 @@ function Get-BRAVODirectories {
             "Get-BRAVOTraceGraceCompletionStatePath",
             "Read-BRAVOTraceGraceCompletionState",
             "Write-BRAVOTraceGraceCompletionState",
-            "Test-BRAVOTraceGraceCompletionCurrent"
+            "Test-BRAVOTraceGraceCompletionCurrent",
+            "Test-BRAVOTraceRemoteArchivePublicationCurrent"
         )
 
     $traceArchive7za = Join-Path $root "Tools\7za.exe"
@@ -533,7 +534,12 @@ function Get-BRAVODirectories {
             (Test-Path -LiteralPath $taP7SkipStatePath)
         ) -Name 'TraceArchive/GraceCompletionFirstRunUploadsAndPersistsState' -Failure "перший прогін має реально вивантажити і створити completion-state; факт: uploaded=$($taP7SkipResult1.Uploaded) putCalls=$(@($taP7SkipSession1.State.PutFilesCalledFor).Count) stateExists=$(Test-Path -LiteralPath $taP7SkipStatePath)"
 
-        $taP7SkipSession2 = New-BRAVOSelfTestFakeBazaSession
+        # R4-3 (PR #136, четверте коло review): -SeedRemoteState симулює
+        # той самий реальний SFTP-сервер, до якого щоночі підключається
+        # НОВА WinSCP.Session — без цього жива remote-перевірка
+        # (Test-BRAVOTraceRemoteArchivePublicationCurrent) завжди хибно
+        # провалювалась би на "порожньому" фейковому сервері.
+        $taP7SkipSession2 = New-BRAVOSelfTestFakeBazaSession -SeedRemoteState $taP7SkipSession1.State
         $taP7SkipResult2 = & $traceArchiveModule {
             param($d, $z, $ap, $p, $s, $rd, $grace, $statePath)
             Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
@@ -556,7 +562,7 @@ function Get-BRAVODirectories {
         # єдиний вміє полагодити sidecar через Test-BRAVOTraceArchiveSidecarCurrent).
         $taP7SidecarArchive = Get-ChildItem -LiteralPath $taP7SkipDir -Filter '*.mdz' | Select-Object -First 1
         [IO.File]::WriteAllText("$($taP7SidecarArchive.FullName).sha512", 'corrupted sidecar content')
-        $taP7SkipSession3 = New-BRAVOSelfTestFakeBazaSession
+        $taP7SkipSession3 = New-BRAVOSelfTestFakeBazaSession -SeedRemoteState $taP7SkipSession2.State
         $taP7SkipResult3 = & $traceArchiveModule {
             param($d, $z, $ap, $p, $s, $rd, $grace, $statePath)
             Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
@@ -574,7 +580,7 @@ function Get-BRAVODirectories {
         # час grace-вікна МАЄ інвалідувати skip, попри незмінний архів/
         # джерело/sidecar — інакше запис "опубліковано" стосувався б уже
         # неактуального призначення.
-        $taP7SkipSession4 = New-BRAVOSelfTestFakeBazaSession
+        $taP7SkipSession4 = New-BRAVOSelfTestFakeBazaSession -SeedRemoteState $taP7SkipSession3.State
         $taP7SkipResult4 = & $traceArchiveModule {
             param($d, $z, $ap, $p, $s, $rd, $grace, $statePath)
             Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
@@ -589,7 +595,7 @@ function Get-BRAVODirectories {
 
         # --- A4 (R3-2): зміна SFTP-акаунта (DestinationIdentity) під час
         # grace-вікна МАЄ інвалідувати skip так само, як зміна каталогу.
-        $taP7SkipSession5 = New-BRAVOSelfTestFakeBazaSession
+        $taP7SkipSession5 = New-BRAVOSelfTestFakeBazaSession -SeedRemoteState $taP7SkipSession4.State
         $taP7SkipResult5 = & $traceArchiveModule {
             param($d, $z, $ap, $p, $s, $rd, $grace, $statePath, $destId)
             Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
@@ -605,7 +611,7 @@ function Get-BRAVODirectories {
         # --- A5 (R3-2): підтвердження round-trip — та сама (нова) пара
         # RemoteDirectory/DestinationIdentity вдруге поспіль ЗНОВУ дає skip
         # (нова ідентичність коректно персистується, а не завжди forces reprocess).
-        $taP7SkipSession6 = New-BRAVOSelfTestFakeBazaSession
+        $taP7SkipSession6 = New-BRAVOSelfTestFakeBazaSession -SeedRemoteState $taP7SkipSession5.State
         $taP7SkipResult6 = & $traceArchiveModule {
             param($d, $z, $ap, $p, $s, $rd, $grace, $statePath, $destId)
             Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
@@ -617,6 +623,191 @@ function Get-BRAVODirectories {
             [int]$taP7SkipResult6.Errors -eq 0 -and
             @($taP7SkipSession6.State.PutFilesCalledFor).Count -eq 0
         ) -Name 'TraceArchive/GraceCompletionStableAfterDestinationChangeRecorded' -Failure "новий запис (trace2/newuser@newhost) має коректно персистуватись і давати skip на наступному незмінному прогоні; факт: uploaded=$($taP7SkipResult6.Uploaded) putCalls=$(@($taP7SkipSession6.State.PutFilesCalledFor).Count) errors=$($taP7SkipResult6.Errors)"
+
+        # --- A6/A7/A8 (R4-1, PR #136 четверте коло review): гранулярні
+        # зміни ОДНОГО компонента ідентичності (порт/host/login) по черзі —
+        # кожна ОКРЕМО має інвалідувати skip, а не лише повна заміна рядка.
+        # Продовжуємо той самий ланцюг (baseline після A5 = 'newuser@newhost').
+        $taP7SkipSession7 = New-BRAVOSelfTestFakeBazaSession -SeedRemoteState $taP7SkipSession6.State
+        $taP7SkipResult7 = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace, $statePath, $destId)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -DestinationIdentity $destId -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $taP7SkipDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword $taP7SkipSession7 'trace2' 7 $taP7SkipStatePath 'newuser@newhost:2222'
+        Test-BRAVOCondition -Condition (
+            [int]$taP7SkipResult7.Uploaded -eq 1 -and
+            [int]$taP7SkipResult7.Errors -eq 0 -and
+            @($taP7SkipSession7.State.PutFilesCalledFor).Count -eq 2
+        ) -Name 'TraceArchive/GraceCompletionSftpPortChangeTriggersReprocess' -Failure "зміна SFTP-порту (newuser@newhost -> newuser@newhost:2222) має ЗАПУСТИТИ повторну обробку; факт: uploaded=$($taP7SkipResult7.Uploaded) putCalls=$(@($taP7SkipSession7.State.PutFilesCalledFor).Count) errors=$($taP7SkipResult7.Errors)"
+
+        $taP7SkipSession8 = New-BRAVOSelfTestFakeBazaSession -SeedRemoteState $taP7SkipSession7.State
+        $taP7SkipResult8 = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace, $statePath, $destId)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -DestinationIdentity $destId -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $taP7SkipDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword $taP7SkipSession8 'trace2' 7 $taP7SkipStatePath 'newuser@differenthost:2222'
+        Test-BRAVOCondition -Condition (
+            [int]$taP7SkipResult8.Uploaded -eq 1 -and
+            [int]$taP7SkipResult8.Errors -eq 0 -and
+            @($taP7SkipSession8.State.PutFilesCalledFor).Count -eq 2
+        ) -Name 'TraceArchive/GraceCompletionSftpHostChangeTriggersReprocess' -Failure "зміна SFTP-host (newhost -> differenthost, порт і login незмінні) має ЗАПУСТИТИ повторну обробку; факт: uploaded=$($taP7SkipResult8.Uploaded) putCalls=$(@($taP7SkipSession8.State.PutFilesCalledFor).Count) errors=$($taP7SkipResult8.Errors)"
+
+        $taP7SkipSession9 = New-BRAVOSelfTestFakeBazaSession -SeedRemoteState $taP7SkipSession8.State
+        $taP7SkipResult9 = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace, $statePath, $destId)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -DestinationIdentity $destId -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $taP7SkipDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword $taP7SkipSession9 'trace2' 7 $taP7SkipStatePath 'differentuser@differenthost:2222'
+        Test-BRAVOCondition -Condition (
+            [int]$taP7SkipResult9.Uploaded -eq 1 -and
+            [int]$taP7SkipResult9.Errors -eq 0 -and
+            @($taP7SkipSession9.State.PutFilesCalledFor).Count -eq 2
+        ) -Name 'TraceArchive/GraceCompletionSftpLoginChangeTriggersReprocess' -Failure "зміна SFTP-login (newuser -> differentuser, host і порт незмінні) має ЗАПУСТИТИ повторну обробку; факт: uploaded=$($taP7SkipResult9.Uploaded) putCalls=$(@($taP7SkipSession9.State.PutFilesCalledFor).Count) errors=$($taP7SkipResult9.Errors)"
+
+        # --- A9: незмінна (повна, з портом) ідентичність -> стабільний skip.
+        $taP7SkipSession10 = New-BRAVOSelfTestFakeBazaSession -SeedRemoteState $taP7SkipSession9.State
+        $taP7SkipResult10 = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace, $statePath, $destId)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -DestinationIdentity $destId -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $taP7SkipDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword $taP7SkipSession10 'trace2' 7 $taP7SkipStatePath 'differentuser@differenthost:2222'
+        Test-BRAVOCondition -Condition (
+            [int]$taP7SkipResult10.Uploaded -eq 0 -and
+            [int]$taP7SkipResult10.Errors -eq 0 -and
+            @($taP7SkipSession10.State.PutFilesCalledFor).Count -eq 0
+        ) -Name 'TraceArchive/GraceCompletionUnchangedFullIdentityStaysStable' -Failure "повністю незмінна ідентичність (host+port+login+directory) має ДАВАТИ skip; факт: uploaded=$($taP7SkipResult10.Uploaded) putCalls=$(@($taP7SkipSession10.State.PutFilesCalledFor).Count) errors=$($taP7SkipResult10.Errors)"
+
+        # ============================================================
+        # R4-3 (PR #136, четверте коло review): пряме unit-тестування
+        # Test-BRAVOTraceRemoteArchivePublicationCurrent — persisted
+        # local-стан САМ ПО СОБІ недостатній без живої SFTP-перевірки.
+        # ============================================================
+        $rvDir = Join-Path $traceArchiveTestRoot 'remote-verify'
+        [void](New-Item -ItemType Directory -Path $rvDir -Force)
+        $rvArchivePath = Join-Path $rvDir 'Trace_20260910.mdz'
+        $rvSidecarPath = "$rvArchivePath.sha512"
+        [IO.File]::WriteAllText($rvArchivePath, 'remote verify archive content')
+        [IO.File]::WriteAllText($rvSidecarPath, 'remote verify sidecar content')
+        $rvArchiveLength = (Get-Item -LiteralPath $rvArchivePath).Length
+        $rvSidecarLength = (Get-Item -LiteralPath $rvSidecarPath).Length
+        $rvEntry = @{
+            remoteDirectory = 'trace'
+            remoteFinalPath = "/trace/$([System.IO.Path]::GetFileName($rvArchivePath))"
+            remoteSize      = [int64]$rvArchiveLength
+        }
+
+        # (i) Remote-архів і sidecar існують з очікуваними розмірами -> Current=true.
+        $rvGoodSession = New-BRAVOSelfTestFakeBazaSession
+        $rvGoodSession.CreateDirectory('/trace')
+        [void]$rvGoodSession.PutFiles($rvArchivePath, $rvEntry.remoteFinalPath, $false, (New-Object WinSCP.TransferOptions))
+        [void]$rvGoodSession.PutFiles($rvSidecarPath, "/trace/$([System.IO.Path]::GetFileName($rvSidecarPath))", $false, (New-Object WinSCP.TransferOptions))
+        $rvGoodResult = & $traceArchiveModule {
+            param($s, $e, $sc)
+            Test-BRAVOTraceRemoteArchivePublicationCurrent -Session $s -Entry ([pscustomobject]$e) -SidecarPath $sc
+        } $rvGoodSession $rvEntry $rvSidecarPath
+        Test-BRAVOCondition -Condition ($rvGoodResult.Current -eq $true) `
+            -Name 'TraceArchive/RemoteVerifyValidArchiveAndSidecarAllowsSkip' `
+            -Failure "коректний remote-архів+sidecar мають давати Current=true; факт: Current=$($rvGoodResult.Current) Reason=$($rvGoodResult.Reason)"
+
+        # (ii) Remote-архів видалено -> Current=false, джерело НЕ видаляється.
+        $rvMissingSession = New-BRAVOSelfTestFakeBazaSession
+        $rvMissingResult = & $traceArchiveModule {
+            param($s, $e, $sc)
+            Test-BRAVOTraceRemoteArchivePublicationCurrent -Session $s -Entry ([pscustomobject]$e) -SidecarPath $sc
+        } $rvMissingSession $rvEntry $rvSidecarPath
+        Test-BRAVOCondition -Condition ($rvMissingResult.Current -eq $false -and -not [string]::IsNullOrWhiteSpace($rvMissingResult.Reason)) `
+            -Name 'TraceArchive/RemoteVerifyMissingArchiveBlocksSkip' `
+            -Failure "видалений remote-архів має давати Current=false з непорожньою причиною; факт: Current=$($rvMissingResult.Current) Reason=$($rvMissingResult.Reason)"
+
+        # (iii) Remote-архів має неправильний розмір -> Current=false.
+        $rvBadSizeSession = New-BRAVOSelfTestFakeBazaSession
+        $rvBadSizeSession.CreateDirectory('/trace')
+        [void]$rvBadSizeSession.PutFiles($rvArchivePath, $rvEntry.remoteFinalPath, $false, (New-Object WinSCP.TransferOptions))
+        $rvBadSizeSession.State.RemoteSizes[$rvEntry.remoteFinalPath] = [int64]1
+        [void]$rvBadSizeSession.PutFiles($rvSidecarPath, "/trace/$([System.IO.Path]::GetFileName($rvSidecarPath))", $false, (New-Object WinSCP.TransferOptions))
+        $rvBadSizeResult = & $traceArchiveModule {
+            param($s, $e, $sc)
+            Test-BRAVOTraceRemoteArchivePublicationCurrent -Session $s -Entry ([pscustomobject]$e) -SidecarPath $sc
+        } $rvBadSizeSession $rvEntry $rvSidecarPath
+        Test-BRAVOCondition -Condition ($rvBadSizeResult.Current -eq $false) `
+            -Name 'TraceArchive/RemoteVerifyWrongArchiveSizeBlocksSkip' `
+            -Failure "невірний розмір remote-архіву має давати Current=false; факт: Current=$($rvBadSizeResult.Current) Reason=$($rvBadSizeResult.Reason)"
+
+        # (iv) Remote-sidecar відсутній -> Current=false.
+        $rvNoSidecarSession = New-BRAVOSelfTestFakeBazaSession
+        $rvNoSidecarSession.CreateDirectory('/trace')
+        [void]$rvNoSidecarSession.PutFiles($rvArchivePath, $rvEntry.remoteFinalPath, $false, (New-Object WinSCP.TransferOptions))
+        $rvNoSidecarResult = & $traceArchiveModule {
+            param($s, $e, $sc)
+            Test-BRAVOTraceRemoteArchivePublicationCurrent -Session $s -Entry ([pscustomobject]$e) -SidecarPath $sc
+        } $rvNoSidecarSession $rvEntry $rvSidecarPath
+        Test-BRAVOCondition -Condition ($rvNoSidecarResult.Current -eq $false) `
+            -Name 'TraceArchive/RemoteVerifyMissingSidecarBlocksSkip' `
+            -Failure "відсутній remote-sidecar має давати Current=false; факт: Current=$($rvNoSidecarResult.Current) Reason=$($rvNoSidecarResult.Reason)"
+
+        # (v) Remote-sidecar має неправильний розмір -> Current=false.
+        $rvBadSidecarSizeSession = New-BRAVOSelfTestFakeBazaSession
+        $rvBadSidecarSizeSession.CreateDirectory('/trace')
+        [void]$rvBadSidecarSizeSession.PutFiles($rvArchivePath, $rvEntry.remoteFinalPath, $false, (New-Object WinSCP.TransferOptions))
+        [void]$rvBadSidecarSizeSession.PutFiles($rvSidecarPath, "/trace/$([System.IO.Path]::GetFileName($rvSidecarPath))", $false, (New-Object WinSCP.TransferOptions))
+        $rvBadSidecarSizeSession.State.RemoteSizes["/trace/$([System.IO.Path]::GetFileName($rvSidecarPath))"] = [int64]1
+        $rvBadSidecarSizeResult = & $traceArchiveModule {
+            param($s, $e, $sc)
+            Test-BRAVOTraceRemoteArchivePublicationCurrent -Session $s -Entry ([pscustomobject]$e) -SidecarPath $sc
+        } $rvBadSidecarSizeSession $rvEntry $rvSidecarPath
+        Test-BRAVOCondition -Condition ($rvBadSidecarSizeResult.Current -eq $false) `
+            -Name 'TraceArchive/RemoteVerifyWrongSidecarSizeBlocksSkip' `
+            -Failure "невірний розмір remote-sidecar має давати Current=false; факт: Current=$($rvBadSidecarSizeResult.Current) Reason=$($rvBadSidecarSizeResult.Reason)"
+
+        # (vi) SFTP-виклик кидає виняток (наприклад, обрив з'єднання) -> Current=false, без пробросу винятку назовні.
+        $rvThrowSession = New-Object psobject
+        $rvThrowSession | Add-Member -MemberType ScriptMethod -Name FileExists -Value { param($p) throw "simulated SFTP transport failure" }
+        $rvThrowCaught = $false
+        try {
+            $rvThrowResult = & $traceArchiveModule {
+                param($s, $e, $sc)
+                Test-BRAVOTraceRemoteArchivePublicationCurrent -Session $s -Entry ([pscustomobject]$e) -SidecarPath $sc
+            } $rvThrowSession $rvEntry $rvSidecarPath
+        } catch {
+            $rvThrowCaught = $true
+        }
+        Test-BRAVOCondition -Condition (-not $rvThrowCaught -and $rvThrowResult.Current -eq $false) `
+            -Name 'TraceArchive/RemoteVerifySftpExceptionFailsClosedWithoutThrow' `
+            -Failure "провал SFTP-виклику під час перевірки має повернути Current=false, а не прокинути виняток назовні; факт: threw=$rvThrowCaught Current=$($rvThrowResult.Current)"
+
+        # (vii) Оркестраторний рівень: SFTP-сесія недоступна цього прогону
+        # (credentials/host-key-mismatch тощо -> $Session = $null у
+        # production) -> кешований запис НЕ підтверджується, skip
+        # неможливий (fail-safe), джерело НЕ видаляється цього прогону.
+        $rvNoSessionDir = Join-Path $traceArchiveTestRoot "remote-verify-nosession\Trace"
+        [void](New-Item -ItemType Directory -Path $rvNoSessionDir -Force)
+        $rvNoSessionFile = Join-Path $rvNoSessionDir 'TraceSRV_20260911_090000.out'
+        [IO.File]::WriteAllText($rvNoSessionFile, 'remote verify no session')
+        (Get-Item -LiteralPath $rvNoSessionFile).LastWriteTime = (Get-Date).AddDays(-1)
+        $rvNoSessionStatePath = Join-Path $traceArchiveTestRoot 'remote-verify-nosession\state.json'
+        $rvNoSessionSession1 = New-BRAVOSelfTestFakeBazaSession
+        [void](& $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace, $statePath)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $rvNoSessionDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword $rvNoSessionSession1 'trace' 7 $rvNoSessionStatePath)
+        $rvNoSessionResult2 = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $rd, $grace, $statePath)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $null -RemoteDirectory $rd -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $rvNoSessionDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword 'trace' 7 $rvNoSessionStatePath
+        Test-BRAVOCondition -Condition (
+            [int]$rvNoSessionResult2.SourcesDeleted -eq 0 -and
+            [int]$rvNoSessionResult2.UploadsDeferred -eq 1 -and
+            (Test-Path -LiteralPath $rvNoSessionFile)
+        ) -Name 'TraceArchive/RemoteVerifyNoSessionThisRunNeverDeletesSource' `
+            -Failure "без SFTP-сесії цього прогону (credentials/host-key недоступні) джерело НЕ повинно видалятись, навіть попри валідний кешований запис; факт: deleted=$($rvNoSessionResult2.SourcesDeleted) deferred=$($rvNoSessionResult2.UploadsDeferred) sourceExists=$(Test-Path -LiteralPath $rvNoSessionFile)"
 
         # --- B: тампер stored-розміру в state -> reprocess (safe fallback), не помилковий skip.
         $taP7StaleDir = Join-Path $traceArchiveTestRoot "grace-completion-stale\Trace"
@@ -638,7 +829,7 @@ function Get-BRAVODirectories {
         $taP7StaleJson = Get-Content -LiteralPath $taP7StaleStatePath -Raw -Encoding UTF8 | ConvertFrom-Json
         $taP7StaleJson.entries.'20260902'.sources[0].size = 999999
         [IO.File]::WriteAllText($taP7StaleStatePath, ($taP7StaleJson | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding($false)))
-        $taP7StaleSession2 = New-BRAVOSelfTestFakeBazaSession
+        $taP7StaleSession2 = New-BRAVOSelfTestFakeBazaSession -SeedRemoteState $taP7StaleSession1.State
         $taP7StaleResult2 = & $traceArchiveModule {
             param($d, $z, $ap, $p, $s, $rd, $grace, $statePath)
             Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
@@ -707,7 +898,7 @@ function Get-BRAVODirectories {
         # Реальний плин часу (не мутація LastWriteTime) переносить те саме
         # немодифіковане джерело за grace-межу (1 день).
         Start-Sleep -Seconds 3
-        $taP7ExpireSession2 = New-BRAVOSelfTestFakeBazaSession
+        $taP7ExpireSession2 = New-BRAVOSelfTestFakeBazaSession -SeedRemoteState $taP7ExpireSession1.State
         $taP7ExpireResult2 = & $traceArchiveModule {
             param($d, $z, $ap, $p, $s, $rd, $grace, $statePath)
             Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `

@@ -757,10 +757,24 @@ Test-BRAVOCondition `
 # Invoke-BRAVOLegacySweep: одноразове маркер-гейтоване очищення
 # legacy-артефактів ери ARCHIV_LIMS-предка (регресія 2026-09, LIMS-TOP).
 # ============================================================
+# Get-BRAVODirectories з опційним test-only гаком
+# $script:legacySweepVanishAfterDiscoveryPath (R4-2, PR #136 review, 4-е
+# коло) — той самий прийом, що $script:taP2VanishAfterDiscoveryPath у
+# BRAVO_SELF_TEST.TraceArchive.ps1: синхронно й детерміновано видаляє
+# вказаний candidate ПІСЛЯ реального сканування каталогу, але ДО
+# per-candidate EnumerateFileSystemInfos() — відтворює РЕАЛЬНИЙ
+# DirectoryNotFoundException для ОДНОГО candidate без потоків/сну.
 $legacySweepStubText = @'
 function Write-Log { param($Message, [string]$Level = 'INFO') }
 function Get-BRAVOFiles { BRAVO.Compatibility\Get-BRAVOFiles @args }
-function Get-BRAVODirectories { BRAVO.Compatibility\Get-BRAVODirectories @args }
+function Get-BRAVODirectories {
+    param([string]$Path, [string]$Filter = "*", [switch]$Recurse)
+    $realResult = @(BRAVO.Compatibility\Get-BRAVODirectories -Path $Path -Filter $Filter -Recurse:$Recurse)
+    if ($script:legacySweepVanishAfterDiscoveryPath -and (Test-Path -LiteralPath $script:legacySweepVanishAfterDiscoveryPath)) {
+        Remove-Item -LiteralPath $script:legacySweepVanishAfterDiscoveryPath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    return $realResult
+}
 '@
 $legacySweepModule = New-BRAVOSelfTestRuntimeModule `
     -SourceText ($legacySweepStubText + "`n" + $maintenanceRepairScriptText) `
@@ -768,6 +782,9 @@ $legacySweepModule = New-BRAVOSelfTestRuntimeModule `
         'Write-Log',
         'Get-BRAVOFiles',
         'Get-BRAVODirectories',
+        'Get-BRAVOCanonicalBackupRootIdentity',
+        'Get-BRAVOEmptyLogDateDirectories',
+        'Remove-BRAVOEmptyLogDateDirectories',
         'Get-BRAVOLegacySweepStatePath',
         'Write-BRAVOLegacySweepState',
         'Read-BRAVOLegacySweepState',
@@ -782,6 +799,7 @@ try {
     [void](New-Item -ItemType Directory -Path $legacySweepLogDir -Force)
     [void](New-Item -ItemType Directory -Path $legacySweepTraceDir -Force)
     $legacySweepStatePath = Join-Path $legacySweepRoot 'State\BRAVO_LEGACY_SWEEP_STATE.json'
+    $legacySweepBackupRootA = Join-Path $legacySweepRoot 'BackupRootA'
 
     # --- (a) Немає стану + legacy-артефакти присутні -> виметено, маркер записано.
     [IO.File]::WriteAllText((Join-Path $legacySweepLogDir 'script_log_20260830_2355.txt'), 'legacy', (New-Object Text.UTF8Encoding($false)))
@@ -793,9 +811,9 @@ try {
     [IO.File]::WriteAllText((Join-Path $legacySweepNonEmptyDir 'traceBIS_000001.out'), 'stray', (New-Object Text.UTF8Encoding($false)))
 
     & $legacySweepModule {
-        param($LogDir, $TraceDir, $StatePath)
-        Invoke-BRAVOLegacySweep -LogDir $LogDir -TraceDir $TraceDir -StateFilePath $StatePath -SweptBy '5.3.0-dev.2-selftest'
-    } $legacySweepLogDir $legacySweepTraceDir $legacySweepStatePath
+        param($LogDir, $TraceDir, $StatePath, $Root)
+        Invoke-BRAVOLegacySweep -LogDir $LogDir -TraceDir $TraceDir -StateFilePath $StatePath -BackupRoot $Root -SweptBy '5.3.0-dev.2-selftest' | Out-Null
+    } $legacySweepLogDir $legacySweepTraceDir $legacySweepStatePath $legacySweepBackupRootA
 
     Test-BRAVOCondition -Condition (
         -not (Test-Path -LiteralPath (Join-Path $legacySweepLogDir 'script_log_20260830_2355.txt')) -and
@@ -810,9 +828,9 @@ try {
     # --- (b) Маркер присутній -> sweep пропущено, навіть якщо legacy-артефакти знову з'явились.
     [IO.File]::WriteAllText((Join-Path $legacySweepLogDir 'script_log_20260901_0000.txt'), 'reappeared', (New-Object Text.UTF8Encoding($false)))
     & $legacySweepModule {
-        param($LogDir, $TraceDir, $StatePath)
-        Invoke-BRAVOLegacySweep -LogDir $LogDir -TraceDir $TraceDir -StateFilePath $StatePath -SweptBy '5.3.0-dev.2-selftest'
-    } $legacySweepLogDir $legacySweepTraceDir $legacySweepStatePath
+        param($LogDir, $TraceDir, $StatePath, $Root)
+        Invoke-BRAVOLegacySweep -LogDir $LogDir -TraceDir $TraceDir -StateFilePath $StatePath -BackupRoot $Root -SweptBy '5.3.0-dev.2-selftest' | Out-Null
+    } $legacySweepLogDir $legacySweepTraceDir $legacySweepStatePath $legacySweepBackupRootA
     Test-BRAVOCondition -Condition (
         Test-Path -LiteralPath (Join-Path $legacySweepLogDir 'script_log_20260901_0000.txt')
     ) -Name 'Maintenance/LegacySweepSkippedWhenMarkerPresent' `
@@ -822,9 +840,9 @@ try {
     [IO.File]::WriteAllText($legacySweepStatePath, 'not-valid-json{{{', (New-Object Text.UTF8Encoding($false)))
     $legacySweepCorruptRead = & $legacySweepModule { param($p) Read-BRAVOLegacySweepState -Path $p } $legacySweepStatePath
     & $legacySweepModule {
-        param($LogDir, $TraceDir, $StatePath)
-        Invoke-BRAVOLegacySweep -LogDir $LogDir -TraceDir $TraceDir -StateFilePath $StatePath -SweptBy '5.3.0-dev.2-selftest'
-    } $legacySweepLogDir $legacySweepTraceDir $legacySweepStatePath
+        param($LogDir, $TraceDir, $StatePath, $Root)
+        Invoke-BRAVOLegacySweep -LogDir $LogDir -TraceDir $TraceDir -StateFilePath $StatePath -BackupRoot $Root -SweptBy '5.3.0-dev.2-selftest' | Out-Null
+    } $legacySweepLogDir $legacySweepTraceDir $legacySweepStatePath $legacySweepBackupRootA
     Test-BRAVOCondition -Condition (
         $null -eq $legacySweepCorruptRead -and
         (Test-Path -LiteralPath (Join-Path $legacySweepLogDir 'script_log_20260901_0000.txt'))
@@ -855,5 +873,167 @@ try {
 } finally {
     if (Test-Path -LiteralPath $legacySweepRoot) {
         Remove-Item -LiteralPath $legacySweepRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# ===== R4-2 (PR #136 review, 4-е коло): провал enumeration для ОДНОГО
+# candidate не зупиняє обробку інших і не веде до видалення
+# непідтвердженого каталогу; структурований результат розрізняє
+# DiscoveredCandidates/ConfirmedEmpty/Deleted/EnumerationWarnings/
+# DeletionWarnings. Invoke-BRAVOLegacySweep тепер повертає результат
+# КАНОНІЧНОЇ Remove-BRAVOEmptyLogDateDirectories замість власного
+# паралельного enumeration-циклу. =====
+$legacySweepP2Root = Join-Path ([IO.Path]::GetTempPath()) `
+    ("BRAVO_LEGACY_SWEEP_P2_SELF_TEST_{0}" -f [guid]::NewGuid().ToString("N"))
+try {
+    $p2LogDir = Join-Path $legacySweepP2Root 'LOGS'
+    $p2TraceDir = Join-Path $legacySweepP2Root 'LOGS\Trace'
+    [void](New-Item -ItemType Directory -Path $p2LogDir -Force)
+    [void](New-Item -ItemType Directory -Path $p2TraceDir -Force)
+    $p2StatePath = Join-Path $legacySweepP2Root 'State\BRAVO_LEGACY_SWEEP_STATE.json'
+    $p2BackupRoot = Join-Path $legacySweepP2Root 'BackupRoot'
+    $p2VanishingDir = Join-Path $p2TraceDir '2026-09-01'
+    $p2ValidEmptyDir = Join-Path $p2TraceDir '2026-09-02'
+    [void](New-Item -ItemType Directory -Path $p2VanishingDir -Force)
+    [void](New-Item -ItemType Directory -Path $p2ValidEmptyDir -Force)
+
+    $p2Result = & $legacySweepModule {
+        param($LogDir, $TraceDir, $StatePath, $Root, $VanishPath)
+        $script:legacySweepVanishAfterDiscoveryPath = $VanishPath
+        try { Invoke-BRAVOLegacySweep -LogDir $LogDir -TraceDir $TraceDir -StateFilePath $StatePath -BackupRoot $Root -SweptBy '5.3.0-dev.2-selftest' }
+        finally { $script:legacySweepVanishAfterDiscoveryPath = $null }
+    } $p2LogDir $p2TraceDir $p2StatePath $p2BackupRoot $p2VanishingDir
+
+    Test-BRAVOCondition -Condition (
+        $null -ne $p2Result -and
+        $p2Result.DiscoveredCandidates -eq 2 -and
+        $p2Result.ConfirmedEmpty -eq 1 -and
+        $p2Result.Deleted -eq 1 -and
+        $p2Result.EnumerationWarnings -eq 1 -and
+        $p2Result.DeletionWarnings -eq 0 -and
+        (-not (Test-Path -LiteralPath $p2ValidEmptyDir)) -and
+        (Test-Path -LiteralPath $p2StatePath)
+    ) -Name 'Maintenance/LegacySweepEnumerationFailureIsolatedPerCandidate' `
+        -Failure ("провал enumeration для ОДНОГО candidate не повинен зупиняти обробку іншого; факт: " + `
+            "discovered=$($p2Result.DiscoveredCandidates), confirmedEmpty=$($p2Result.ConfirmedEmpty), " + `
+            "deleted=$($p2Result.Deleted), enumWarn=$($p2Result.EnumerationWarnings), delWarn=$($p2Result.DeletionWarnings)")
+} finally {
+    if (Test-Path -LiteralPath $legacySweepP2Root) {
+        Remove-Item -LiteralPath $legacySweepP2Root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# ===== R4-4 (PR #136 review, 4-е коло): legacy-sweep маркер прив'язаний
+# до BackupRoot — зміна кореня тригерить повторний sweep; той самий
+# корінь в іншому лексичному форматі — ні; corrupt/unknown стан і провал
+# атомарного запису лишаються fail-safe незалежно від кореня. =====
+$legacySweepRootScopeRoot = Join-Path ([IO.Path]::GetTempPath()) `
+    ("BRAVO_LEGACY_SWEEP_ROOTSCOPE_SELF_TEST_{0}" -f [guid]::NewGuid().ToString("N"))
+try {
+    $rsLogDir = Join-Path $legacySweepRootScopeRoot 'LOGS'
+    $rsTraceDir = Join-Path $legacySweepRootScopeRoot 'LOGS\Trace'
+    [void](New-Item -ItemType Directory -Path $rsLogDir -Force)
+    [void](New-Item -ItemType Directory -Path $rsTraceDir -Force)
+    $rsStatePath = Join-Path $legacySweepRootScopeRoot 'State\BRAVO_LEGACY_SWEEP_STATE.json'
+    $rsBackupRootA = Join-Path $legacySweepRootScopeRoot 'BackupRootA'
+    $rsBackupRootB = Join-Path $legacySweepRootScopeRoot 'BackupRootB'
+
+    # --- (i) Перший sweep для root A.
+    [IO.File]::WriteAllText((Join-Path $rsLogDir 'script_log_20260901_0100.txt'), 'legacy', (New-Object Text.UTF8Encoding($false)))
+    & $legacySweepModule {
+        param($LogDir, $TraceDir, $StatePath, $Root)
+        Invoke-BRAVOLegacySweep -LogDir $LogDir -TraceDir $TraceDir -StateFilePath $StatePath -BackupRoot $Root -SweptBy '5.3.0-dev.2-selftest' | Out-Null
+    } $rsLogDir $rsTraceDir $rsStatePath $rsBackupRootA
+    Test-BRAVOCondition -Condition (
+        -not (Test-Path -LiteralPath (Join-Path $rsLogDir 'script_log_20260901_0100.txt')) -and
+        (Test-Path -LiteralPath $rsStatePath)
+    ) -Name 'Maintenance/LegacySweepRootScopeFirstSweepForRootA' `
+        -Failure "перший sweep для root A має видалити legacy-артефакт і записати маркер"
+
+    # --- (ii) Повторний прогін для root A -> пропущено.
+    [IO.File]::WriteAllText((Join-Path $rsLogDir 'script_log_20260901_0200.txt'), 'reappeared', (New-Object Text.UTF8Encoding($false)))
+    & $legacySweepModule {
+        param($LogDir, $TraceDir, $StatePath, $Root)
+        Invoke-BRAVOLegacySweep -LogDir $LogDir -TraceDir $TraceDir -StateFilePath $StatePath -BackupRoot $Root -SweptBy '5.3.0-dev.2-selftest' | Out-Null
+    } $rsLogDir $rsTraceDir $rsStatePath $rsBackupRootA
+    Test-BRAVOCondition -Condition (
+        Test-Path -LiteralPath (Join-Path $rsLogDir 'script_log_20260901_0200.txt')
+    ) -Name 'Maintenance/LegacySweepRootScopeRepeatForSameRootSkipped' `
+        -Failure "повторний прогін для того самого root A має бути пропущений"
+
+    # --- (iii) Той самий root A, лише в іншому лексичному форматі
+    # (інший регістр + кінцевий '\') -> НЕ тригерить повторний sweep.
+    $rsBackupRootAAltFormat = $rsBackupRootA.ToUpperInvariant() + '\'
+    & $legacySweepModule {
+        param($LogDir, $TraceDir, $StatePath, $Root)
+        Invoke-BRAVOLegacySweep -LogDir $LogDir -TraceDir $TraceDir -StateFilePath $StatePath -BackupRoot $Root -SweptBy '5.3.0-dev.2-selftest' | Out-Null
+    } $rsLogDir $rsTraceDir $rsStatePath $rsBackupRootAAltFormat
+    Test-BRAVOCondition -Condition (
+        Test-Path -LiteralPath (Join-Path $rsLogDir 'script_log_20260901_0200.txt')
+    ) -Name 'Maintenance/LegacySweepRootScopePathFormatChangeWithoutCanonicalChangeNotResweep' `
+        -Failure "зміна лексичного формату (регістр/кінцевий '\') того самого root A не повинна тригерити повторний sweep"
+
+    # --- (iv) Зміна на root B -> повторний sweep для нового кореня.
+    & $legacySweepModule {
+        param($LogDir, $TraceDir, $StatePath, $Root)
+        Invoke-BRAVOLegacySweep -LogDir $LogDir -TraceDir $TraceDir -StateFilePath $StatePath -BackupRoot $Root -SweptBy '5.3.0-dev.2-selftest' | Out-Null
+    } $rsLogDir $rsTraceDir $rsStatePath $rsBackupRootB
+    Test-BRAVOCondition -Condition (
+        -not (Test-Path -LiteralPath (Join-Path $rsLogDir 'script_log_20260901_0200.txt'))
+    ) -Name 'Maintenance/LegacySweepRootScopeChangeToRootBTriggersResweep' `
+        -Failure "зміна BackupRoot на root B має тригерити повторний sweep для нового кореня"
+
+    # --- (v) corrupt/unknown стан fail-safe пропускає sweep незалежно
+    # від переданого BackupRoot (той самий принцип, що (c)/(d) вище).
+    [IO.File]::WriteAllText($rsStatePath, 'not-valid-json{{{', (New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText((Join-Path $rsLogDir 'script_log_20260901_0300.txt'), 'reappeared-corrupt', (New-Object Text.UTF8Encoding($false)))
+    & $legacySweepModule {
+        param($LogDir, $TraceDir, $StatePath, $Root)
+        Invoke-BRAVOLegacySweep -LogDir $LogDir -TraceDir $TraceDir -StateFilePath $StatePath -BackupRoot $Root -SweptBy '5.3.0-dev.2-selftest' | Out-Null
+    } $rsLogDir $rsTraceDir $rsStatePath $rsBackupRootB
+    Test-BRAVOCondition -Condition (
+        Test-Path -LiteralPath (Join-Path $rsLogDir 'script_log_20260901_0300.txt')
+    ) -Name 'Maintenance/LegacySweepRootScopeCorruptStateFailsSafeRegardlessOfRoot' `
+        -Failure "пошкоджений стан-файл має fail-closed пропустити sweep незалежно від переданого BackupRoot"
+
+    # --- (vi) Провал атомарного запису НЕ знищує попередній валідний
+    # маркер. Спершу відновлюємо валідний маркер для root B, тоді
+    # блокуємо ЦІЛЬОВИЙ файл маркера (відкритий FileStream без
+    # FileShare.Write/Delete) так, щоб [IO.File]::Replace у
+    # Write-BRAVOLegacySweepState кинув виняток під час спроби sweep для
+    # НОВОГО root C — попередній валідний маркер (для root B) має
+    # лишитись читабельним і байт-у-байт незмінним.
+    Remove-Item -LiteralPath $rsStatePath -Force -ErrorAction SilentlyContinue
+    & $legacySweepModule {
+        param($LogDir, $TraceDir, $StatePath, $Root)
+        Invoke-BRAVOLegacySweep -LogDir $LogDir -TraceDir $TraceDir -StateFilePath $StatePath -BackupRoot $Root -SweptBy '5.3.0-dev.2-selftest' | Out-Null
+    } $rsLogDir $rsTraceDir $rsStatePath $rsBackupRootB
+    $rsPriorValidStateBytes = [IO.File]::ReadAllBytes($rsStatePath)
+
+    [IO.File]::WriteAllText((Join-Path $rsLogDir 'script_log_20260901_0400.txt'), 'triggers-resweep-for-root-c', (New-Object Text.UTF8Encoding($false)))
+    $rsBackupRootC = Join-Path $legacySweepRootScopeRoot 'BackupRootC'
+    $rsLockStream = New-Object IO.FileStream($rsStatePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        & $legacySweepModule {
+            param($LogDir, $TraceDir, $StatePath, $Root)
+            Invoke-BRAVOLegacySweep -LogDir $LogDir -TraceDir $TraceDir -StateFilePath $StatePath -BackupRoot $Root -SweptBy '5.3.0-dev.2-selftest' | Out-Null
+        } $rsLogDir $rsTraceDir $rsStatePath $rsBackupRootC
+    } finally {
+        $rsLockStream.Close()
+    }
+    $rsPostFailureStateBytes = [IO.File]::ReadAllBytes($rsStatePath)
+    # Примітка: сам legacy-файл-тригер ОЧІКУВАНО видаляється до спроби
+    # запису маркера (та сама поведінка, що й наявний P2 partial-failure
+    # шлях: успішно видалені об'єкти при повторному прогоні просто не
+    # будуть знайдені знову) — атомарність тут гарантується ЛИШЕ для
+    # самого стан-файлу маркера, не для вже виконаної sweep-роботи.
+    Test-BRAVOCondition -Condition (
+        (Test-Path -LiteralPath $rsStatePath) -and
+        ([System.Convert]::ToBase64String($rsPriorValidStateBytes) -eq [System.Convert]::ToBase64String($rsPostFailureStateBytes))
+    ) -Name 'Maintenance/LegacySweepRootScopeAtomicWriteFailurePreservesPriorValidState' `
+        -Failure "провал атомарного запису маркера (заблокований цільовий файл) не повинен знищувати/змінювати попередній валідний стан-файл"
+} finally {
+    if (Test-Path -LiteralPath $legacySweepRootScopeRoot) {
+        Remove-Item -LiteralPath $legacySweepRootScopeRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
