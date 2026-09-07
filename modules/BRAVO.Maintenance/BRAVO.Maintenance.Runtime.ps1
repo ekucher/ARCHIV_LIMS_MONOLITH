@@ -9142,6 +9142,130 @@ if ($BravoMaintenanceEnabled -and $RangeIdMonitoringEnabled) {
         -Details 'вимкнено'
 }
 
+# Порожні каталоги-дати — незалежно від віку: нема чого втрачати, тому
+# без ARCHIVE_RETENTION_DAYS-gate. Регресія (2026-09, real-server LIMS-TOP):
+# поточна ("5.2.0") модель Trace/exchangAPI/BravoWeb пише лише пласкі
+# timestamped-файли — жоден чинний код більше не пише у каталоги-дати
+# YYYY-MM-DD, тож щойно така тека спорожніла (увесь вміст архівовано),
+# вона гарантовано вже НЕ отримає нового вмісту. Проте
+# Get-BRAVOExpiredLogDateDirectories все одно чекала би повні
+# ARCHIVE_RETENTION_DAYS (14) днів, перш ніж її прибрати — попри
+# відсутність будь-яких даних, які можна втратити. Непорожні
+# каталоги-дати лишаються завданням наявного age-gated Compress-OldData-
+# шляху (Get-BRAVOExpiredLogDateDirectories нижче за файлом) без змін.
+#
+# Означення обох функцій навмисно поставлено ПЕРЕД секцією "Первинна
+# очистка legacy-артефактів" (нижче) — Invoke-BRAVOLegacySweep викликає
+# Remove-BRAVOEmptyLogDateDirectories, а сам Invoke-BRAVOLegacySweep
+# виконується топ-рівнево ще ДО фізичного кінця цього файлу; .ps1
+# виконується послідовно (не модуль з попереднім парсингом усіх
+# function-тверджень), тож функція мусить бути визначена РАНІШЕ за
+# перший виклик за порядком виконання, інакше — CommandNotFoundException
+# у проді (реальний регрес, знайдений review 5803859, виправлено цим
+# переміщенням).
+function Get-BRAVOEmptyLogDateDirectories {
+    # Enumeration — best-effort: candidate може зникнути між
+    # Get-BRAVODirectories і EnumerateFileSystemInfos() (паралельний
+    # видалювач/архіватор), або доступ може бути раптово заборонений
+    # (ACL/антивірус). EnumerateFileSystemInfos() у такому разі кидає
+    # виняток — БЕЗ per-candidate try/catch він вилітав би з усього
+    # Where-Object-пайплайна назовні й перетворював чисто best-effort
+    # cleanup на critical failure всього прогону Maintenance (P2-2).
+    # Непідтверджену порожнечу трактуємо fail-safe: каталог НЕ
+    # потрапляє в результат (і, відповідно, не видаляється нижче) —
+    # краще пропустити цикл, ніж видалити каталог, що міг щойно
+    # отримати новий вміст.
+    # $DiscoveredCandidatesOut/$EnumerationWarningsOut (P2-2/P2-3, PR #136
+    # review) — необовʼязкові [ref]-виходи для Remove-BRAVOEmptyLogDateDirectories,
+    # щоб той міг звести повний структурований результат (скільки
+    # каталогів-дат узагалі знайдено ДО спроби enumeration, і скільки з
+    # них не вдалося підтвердити) без повторного сканування диска. Основний
+    # (позиційний) контракт повернення — масив ПІДТВЕРДЖЕНО порожніх
+    # каталогів — лишається незмінним для наявних викликів.
+    param([string]$Path, [string]$Label, [ref]$DiscoveredCandidatesOut, [ref]$EnumerationWarningsOut)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        if ($DiscoveredCandidatesOut) { $DiscoveredCandidatesOut.Value = 0 }
+        if ($EnumerationWarningsOut) { $EnumerationWarningsOut.Value = 0 }
+        return @()
+    }
+    $labelPrefix = if ([string]::IsNullOrWhiteSpace($Label)) { '' } else { "${Label}: " }
+    $candidates = @(Get-BRAVODirectories -Path $Path |
+        Where-Object { $_.Name -match '^\d{4}-\d{2}-\d{2}$' })
+    if ($DiscoveredCandidatesOut) { $DiscoveredCandidatesOut.Value = $candidates.Count }
+    $emptyDirs = New-Object System.Collections.Generic.List[object]
+    $enumerationWarnings = 0
+    foreach ($candidate in $candidates) {
+        try {
+            if (@((New-Object System.IO.DirectoryInfo($candidate.FullName)).EnumerateFileSystemInfos()).Count -eq 0) {
+                [void]$emptyDirs.Add($candidate)
+            }
+        } catch {
+            Write-Log "${labelPrefix}не вдалося підтвердити порожнечу каталогу $($candidate.FullName): $($_.Exception.Message)" -Level "WARNING"
+            $enumerationWarnings++
+        }
+    }
+    if ($EnumerationWarningsOut) { $EnumerationWarningsOut.Value = $enumerationWarnings }
+    # .ToArray(), а не @($emptyDirs): той самий PS 5.1 гейт, що
+    # Get-BRAVOFileLockingProcesses вище — @() напряму на
+    # System.Collections.Generic.List[T] кидає "Argument types do not
+    # match" (емпірично відтворено, версія 5.1.26100.9168).
+    return $emptyDirs.ToArray()
+}
+
+function Remove-BRAVOEmptyLogDateDirectories {
+    # Best-effort негайне видалення порожніх каталогів-дат. Некритичний
+    # ефект — провал видалення одного каталогу не зупиняє обробку решти
+    # й не встановлює $script:criticalErrorOccurred (чиста зручність
+    # очищення диска, не data-integrity операція).
+    #
+    # Повертає структурований результат (P2-3): виклик цієї функції —
+    # єдина реальна робота, коли всі дані вже заархівовано і лишилися
+    # тільки спорожнілі legacy-каталоги-дати; без цього результату
+    # виклик обробляв candidates/Deleted мовчки, і підсумковий крок
+    # очистки показував SKIPPED/«даних для очищення немає» попри
+    # реальне видалення каталогів з диска.
+    param([string]$Path, [string]$Label)
+
+    $discoveredCandidates = 0
+    $enumerationWarnings = 0
+    $candidates = @(Get-BRAVOEmptyLogDateDirectories -Path $Path -Label $Label `
+        -DiscoveredCandidatesOut ([ref]$discoveredCandidates) -EnumerationWarningsOut ([ref]$enumerationWarnings))
+    $deleted = New-Object System.Collections.Generic.List[string]
+    $deletionWarnings = 0
+    foreach ($emptyDir in $candidates) {
+        try {
+            (New-Object System.IO.DirectoryInfo($emptyDir.FullName)).Delete()
+            Write-Log "Порожній legacy-каталог ${Label} видалено: $($emptyDir.FullName)" -Level "INFO"
+            [void]$deleted.Add($emptyDir.FullName)
+        } catch {
+            Write-Log "ПОМИЛКА видалення порожнього каталогу ${Label} $($emptyDir.FullName): $($_.Exception.Message)" -Level "WARNING"
+            $deletionWarnings++
+        }
+    }
+    # .ToArray(), а не @($deleted) — той самий PS 5.1 гейт, що вище.
+    #
+    # DiscoveredCandidates/ConfirmedEmpty/Deleted/EnumerationWarnings/
+    # DeletionWarnings (P2-2/P2-3, PR #136 review) — розрізняють "скільки
+    # каталогів-дат узагалі знайдено", "скільки з них підтверджено
+    # порожніми" і "скільки видалено", а також ДВА типи warnings (не
+    # вдалося підтвердити порожнечу vs не вдалося видалити) окремо, щоб
+    # обидва типи можна було показати в підсумку очистки. CandidateCount/
+    # DeletedCount/DeletedPaths/WarningCount лишаються для зворотної
+    # сумісності з наявними викликами (WarningCount — сума обох типів).
+    return [pscustomobject]@{
+        DiscoveredCandidates = $discoveredCandidates
+        ConfirmedEmpty       = $candidates.Count
+        Deleted              = $deleted.Count
+        EnumerationWarnings  = $enumerationWarnings
+        DeletionWarnings     = $deletionWarnings
+        CandidateCount       = $candidates.Count
+        DeletedCount         = $deleted.Count
+        DeletedPaths         = $deleted.ToArray()
+        WarningCount         = $enumerationWarnings + $deletionWarnings
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Первинна (одноразова) очистка legacy-артефактів ери ARCHIV_LIMS-предка.
 # Маркер-гейтована: виконується РІВНО один раз (перший прогін, де маркер
@@ -9679,120 +9803,6 @@ function Get-BRAVOExpiredLogDateDirectories {
         Where-Object {
             $_.Name -match '^\d{4}-\d{2}-\d{2}$' -and $_.CreationTime -lt $cutoff
         })
-}
-
-# Порожні каталоги-дати — незалежно від віку: нема чого втрачати, тому
-# без ARCHIVE_RETENTION_DAYS-gate. Регресія (2026-09, real-server LIMS-TOP):
-# поточна ("5.2.0") модель Trace/exchangAPI/BravoWeb пише лише пласкі
-# timestamped-файли — жоден чинний код більше не пише у каталоги-дати
-# YYYY-MM-DD, тож щойно така тека спорожніла (увесь вміст архівовано),
-# вона гарантовано вже НЕ отримає нового вмісту. Проте
-# Get-BRAVOExpiredLogDateDirectories все одно чекала би повні
-# ARCHIVE_RETENTION_DAYS (14) днів, перш ніж її прибрати — попри
-# відсутність будь-яких даних, які можна втратити. Непорожні
-# каталоги-дати лишаються завданням наявного age-gated Compress-OldData-
-# шляху (Get-BRAVOExpiredLogDateDirectories вище) без змін.
-function Get-BRAVOEmptyLogDateDirectories {
-    # Enumeration — best-effort: candidate може зникнути між
-    # Get-BRAVODirectories і EnumerateFileSystemInfos() (паралельний
-    # видалювач/архіватор), або доступ може бути раптово заборонений
-    # (ACL/антивірус). EnumerateFileSystemInfos() у такому разі кидає
-    # виняток — БЕЗ per-candidate try/catch він вилітав би з усього
-    # Where-Object-пайплайна назовні й перетворював чисто best-effort
-    # cleanup на critical failure всього прогону Maintenance (P2-2).
-    # Непідтверджену порожнечу трактуємо fail-safe: каталог НЕ
-    # потрапляє в результат (і, відповідно, не видаляється нижче) —
-    # краще пропустити цикл, ніж видалити каталог, що міг щойно
-    # отримати новий вміст.
-    # $DiscoveredCandidatesOut/$EnumerationWarningsOut (P2-2/P2-3, PR #136
-    # review) — необовʼязкові [ref]-виходи для Remove-BRAVOEmptyLogDateDirectories,
-    # щоб той міг звести повний структурований результат (скільки
-    # каталогів-дат узагалі знайдено ДО спроби enumeration, і скільки з
-    # них не вдалося підтвердити) без повторного сканування диска. Основний
-    # (позиційний) контракт повернення — масив ПІДТВЕРДЖЕНО порожніх
-    # каталогів — лишається незмінним для наявних викликів.
-    param([string]$Path, [string]$Label, [ref]$DiscoveredCandidatesOut, [ref]$EnumerationWarningsOut)
-
-    if ([string]::IsNullOrWhiteSpace($Path)) {
-        if ($DiscoveredCandidatesOut) { $DiscoveredCandidatesOut.Value = 0 }
-        if ($EnumerationWarningsOut) { $EnumerationWarningsOut.Value = 0 }
-        return @()
-    }
-    $labelPrefix = if ([string]::IsNullOrWhiteSpace($Label)) { '' } else { "${Label}: " }
-    $candidates = @(Get-BRAVODirectories -Path $Path |
-        Where-Object { $_.Name -match '^\d{4}-\d{2}-\d{2}$' })
-    if ($DiscoveredCandidatesOut) { $DiscoveredCandidatesOut.Value = $candidates.Count }
-    $emptyDirs = New-Object System.Collections.Generic.List[object]
-    $enumerationWarnings = 0
-    foreach ($candidate in $candidates) {
-        try {
-            if (@((New-Object System.IO.DirectoryInfo($candidate.FullName)).EnumerateFileSystemInfos()).Count -eq 0) {
-                [void]$emptyDirs.Add($candidate)
-            }
-        } catch {
-            Write-Log "${labelPrefix}не вдалося підтвердити порожнечу каталогу $($candidate.FullName): $($_.Exception.Message)" -Level "WARNING"
-            $enumerationWarnings++
-        }
-    }
-    if ($EnumerationWarningsOut) { $EnumerationWarningsOut.Value = $enumerationWarnings }
-    # .ToArray(), а не @($emptyDirs): той самий PS 5.1 гейт, що
-    # Get-BRAVOFileLockingProcesses вище — @() напряму на
-    # System.Collections.Generic.List[T] кидає "Argument types do not
-    # match" (емпірично відтворено, версія 5.1.26100.9168).
-    return $emptyDirs.ToArray()
-}
-
-function Remove-BRAVOEmptyLogDateDirectories {
-    # Best-effort негайне видалення порожніх каталогів-дат. Некритичний
-    # ефект — провал видалення одного каталогу не зупиняє обробку решти
-    # й не встановлює $script:criticalErrorOccurred (чиста зручність
-    # очищення диска, не data-integrity операція).
-    #
-    # Повертає структурований результат (P2-3): виклик цієї функції —
-    # єдина реальна робота, коли всі дані вже заархівовано і лишилися
-    # тільки спорожнілі legacy-каталоги-дати; без цього результату
-    # виклик обробляв candidates/Deleted мовчки, і підсумковий крок
-    # очистки показував SKIPPED/«даних для очищення немає» попри
-    # реальне видалення каталогів з диска.
-    param([string]$Path, [string]$Label)
-
-    $discoveredCandidates = 0
-    $enumerationWarnings = 0
-    $candidates = @(Get-BRAVOEmptyLogDateDirectories -Path $Path -Label $Label `
-        -DiscoveredCandidatesOut ([ref]$discoveredCandidates) -EnumerationWarningsOut ([ref]$enumerationWarnings))
-    $deleted = New-Object System.Collections.Generic.List[string]
-    $deletionWarnings = 0
-    foreach ($emptyDir in $candidates) {
-        try {
-            (New-Object System.IO.DirectoryInfo($emptyDir.FullName)).Delete()
-            Write-Log "Порожній legacy-каталог ${Label} видалено: $($emptyDir.FullName)" -Level "INFO"
-            [void]$deleted.Add($emptyDir.FullName)
-        } catch {
-            Write-Log "ПОМИЛКА видалення порожнього каталогу ${Label} $($emptyDir.FullName): $($_.Exception.Message)" -Level "WARNING"
-            $deletionWarnings++
-        }
-    }
-    # .ToArray(), а не @($deleted) — той самий PS 5.1 гейт, що вище.
-    #
-    # DiscoveredCandidates/ConfirmedEmpty/Deleted/EnumerationWarnings/
-    # DeletionWarnings (P2-2/P2-3, PR #136 review) — розрізняють "скільки
-    # каталогів-дат узагалі знайдено", "скільки з них підтверджено
-    # порожніми" і "скільки видалено", а також ДВА типи warnings (не
-    # вдалося підтвердити порожнечу vs не вдалося видалити) окремо, щоб
-    # обидва типи можна було показати в підсумку очистки. CandidateCount/
-    # DeletedCount/DeletedPaths/WarningCount лишаються для зворотної
-    # сумісності з наявними викликами (WarningCount — сума обох типів).
-    return [pscustomobject]@{
-        DiscoveredCandidates = $discoveredCandidates
-        ConfirmedEmpty       = $candidates.Count
-        Deleted              = $deleted.Count
-        EnumerationWarnings  = $enumerationWarnings
-        DeletionWarnings     = $deletionWarnings
-        CandidateCount       = $candidates.Count
-        DeletedCount         = $deleted.Count
-        DeletedPaths         = $deleted.ToArray()
-        WarningCount         = $enumerationWarnings + $deletionWarnings
-    }
 }
 
 # Перевірка даних основного компонента BRAVO

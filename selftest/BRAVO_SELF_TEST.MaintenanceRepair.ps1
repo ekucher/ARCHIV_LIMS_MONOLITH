@@ -754,6 +754,65 @@ Test-BRAVOCondition `
     -Failure "помилка, що НЕ є 429, має прокидатись одразу без retry-циклу"
 
 # ============================================================
+# Регресія порядку виконання (P0, знайдено /code-review коміту 5803859):
+# Get-BRAVOEmptyLogDateDirectories/Remove-BRAVOEmptyLogDateDirectories
+# МУСЯТЬ бути фізично визначені у файлі РАНІШЕ за топ-рівневий виклик
+# Invoke-BRAVOLegacySweep (який їх опосередковано викликає). Це
+# .ps1-скрипт, а не модуль із попереднім парсингом усіх function-
+# тверджень — виконується строго послідовно; виклик функції, чиє
+# `function`-твердження ще фізично нижче за файлом, кидає
+# CommandNotFoundException у проді щоразу, коли $BravoMaintenanceEnabled.
+# New-BRAVOSelfTestRuntimeModule НЕ ловить цей клас дефекту: він
+# екстрагує потрібні функції по AST за іменами й dot-sources їх у
+# ПОРЯДКУ СПИСКУ -FunctionNames (довільному, не фізичному) — саме тому
+# нижче перевіряється РЕАЛЬНИЙ AST усього файлу через Extent.StartOffset,
+# а не поведінка ізольованого рантайм-модуля.
+# ============================================================
+$orderingAst = [System.Management.Automation.Language.Parser]::ParseInput($maintenanceRepairScriptText, [ref]$null, [ref]$null)
+$orderingGetFn = @($orderingAst.FindAll(
+    { param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-BRAVOEmptyLogDateDirectories' },
+    $true
+)) | Select-Object -First 1
+$orderingRemoveFn = @($orderingAst.FindAll(
+    { param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Remove-BRAVOEmptyLogDateDirectories' },
+    $true
+)) | Select-Object -First 1
+# Топ-рівневі виклики Invoke-BRAVOLegacySweep — CommandAst-и з цим
+# іменем команди, які НЕ вкладені у жоден FunctionDefinitionAst (тобто
+# виконуються одразу під час запуску скрипта, а не всередині означення
+# іншої функції).
+$orderingTopLevelInvokeCalls = New-Object System.Collections.Generic.List[object]
+foreach ($orderingCandidate in @($orderingAst.FindAll(
+    { param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Invoke-BRAVOLegacySweep' },
+    $true
+))) {
+    $orderingInsideFunctionDef = $false
+    $orderingAncestor = $orderingCandidate.Parent
+    while ($null -ne $orderingAncestor) {
+        if ($orderingAncestor -is [System.Management.Automation.Language.FunctionDefinitionAst]) {
+            $orderingInsideFunctionDef = $true
+            break
+        }
+        $orderingAncestor = $orderingAncestor.Parent
+    }
+    if (-not $orderingInsideFunctionDef) {
+        [void]$orderingTopLevelInvokeCalls.Add($orderingCandidate)
+    }
+}
+$orderingMisorderedCalls = @($orderingTopLevelInvokeCalls | Where-Object {
+    $_.Extent.StartOffset -lt $orderingGetFn.Extent.StartOffset -or
+    $_.Extent.StartOffset -lt $orderingRemoveFn.Extent.StartOffset
+})
+Test-BRAVOCondition `
+    -Condition (
+        $null -ne $orderingGetFn -and $null -ne $orderingRemoveFn -and
+        $orderingTopLevelInvokeCalls.Count -ge 1 -and
+        $orderingMisorderedCalls.Count -eq 0
+    ) `
+    -Name 'Maintenance/LegacySweepDependencyFunctionsDefinedBeforeTopLevelInvocation' `
+    -Failure "Get-BRAVOEmptyLogDateDirectories/Remove-BRAVOEmptyLogDateDirectories мають бути фізично визначені ДО топ-рівневого виклику Invoke-BRAVOLegacySweep; факт: GetFnFound=$($null -ne $orderingGetFn) RemoveFnFound=$($null -ne $orderingRemoveFn) topLevelCalls=$($orderingTopLevelInvokeCalls.Count) misordered=$($orderingMisorderedCalls.Count)"
+
+# ============================================================
 # Invoke-BRAVOLegacySweep: одноразове маркер-гейтоване очищення
 # legacy-артефактів ери ARCHIV_LIMS-предка (регресія 2026-09, LIMS-TOP).
 # ============================================================
