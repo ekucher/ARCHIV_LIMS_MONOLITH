@@ -40,6 +40,30 @@ $script:failures = New-Object System.Collections.ArrayList
 $script:passCount = 0
 $script:selfTestConfigRoot = $null
 
+# P0 fail-fast/telemetry (BRAVO SELF_TEST P0 DESIGN — FINAL): один глобальний
+# wall-clock секундомір від найранішньої можливої точки бутстрапу до початку
+# фінального звіту. TOTAL у підсумку НІКОЛИ не обчислюється як сума
+# suite-таблиці нижче (framework/reporting overhead між межами suite —
+# очікувана, видима розбіжність, не помилка підрахунку).
+$script:selfTestTotalStopwatch = [Diagnostics.Stopwatch]::StartNew()
+
+# Per-suite wall-clock accumulator: Suite-ім'я -> накопичена мілісекунди.
+# 'Root (inline)' — не одна суцільна ділянка, а СУМА всіх проміжків
+# root-коду МІЖ dot-source-викликами доменних фрагментів (реальний
+# accumulator, не sum-of-assertion-durations).
+$script:suiteDurationTotals = [ordered]@{}
+$script:currentSuiteName = 'Root (inline)'
+$script:currentSuiteSpanStopwatch = $null
+
+# Per-assertion telemetry: LeadDurationMs (час МІЖ завершенням попереднього
+# Test-BRAVOCondition і входом у поточний — тут "ховається" AST/filesystem/
+# fixture/process-робота, яку неможливо виміряти, обгортаючи лише сам
+# виклик) + AssertionDurationMs (сам виклик Test-BRAVOCondition). Це НЕ
+# execution time сценарію — назва виводу нижче навмисно "assertion
+# intervals", а не "tests".
+$script:testTimings = New-Object System.Collections.Generic.List[object]
+$script:lastAssertionCompletedAtMs = 0.0
+
 # SELFTEST-SAFETY-0 v1.4: одна ізоляційна сесія VersionState на весь
 # прогін самотесту. Root обирає ЦЕЙ батьківський харнес рівно один раз
 # (RUNNER_TEMP у CI, інакше TEMP); контракт кортежу з трьох змінних
@@ -100,12 +124,67 @@ function Test-BRAVOCondition {
         [string]$Name,
         [string]$Failure
     )
-    if ($Condition) {
-        $script:passCount++
-        Write-Host "[PASS] $Name" -ForegroundColor Green
-    } else {
-        Write-Host "[FAIL] ${Name}: $Failure" -ForegroundColor Red
-        [void]$script:failures.Add("$Name — $Failure")
+    # P0 fail-fast/telemetry: $Condition уже обчислений PowerShell'ом ДО
+    # виклику цієї функції — Stopwatch тут міряє ЛИШЕ саму
+    # Test-BRAVOCondition (PASS/FAIL API незмінний, жодного нового
+    # параметра, жодної зміни поведінки при $Condition=$true/$false).
+    # LeadDurationMs (час МІЖ попереднім і цим викликом) — окремий сигнал,
+    # де насправді ховається дорога підготовча робота.
+    $nowBeforeMs = $script:selfTestTotalStopwatch.Elapsed.TotalMilliseconds
+    $leadMs = $nowBeforeMs - $script:lastAssertionCompletedAtMs
+    $assertionStopwatch = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        if ($Condition) {
+            $script:passCount++
+            Write-Host "[PASS] $Name" -ForegroundColor Green
+        } else {
+            Write-Host "[FAIL] ${Name}: $Failure" -ForegroundColor Red
+            [void]$script:failures.Add("$Name — $Failure")
+        }
+    } finally {
+        $assertionStopwatch.Stop()
+        $assertionMs = $assertionStopwatch.Elapsed.TotalMilliseconds
+        [void]$script:testTimings.Add([pscustomobject]@{
+            Name                = $Name
+            Suite               = $script:currentSuiteName
+            Result              = if ($Condition) { 'PASS' } else { 'FAIL' }
+            LeadDurationMs      = $leadMs
+            AssertionDurationMs = $assertionMs
+            IntervalMs          = $leadMs + $assertionMs
+        })
+        $script:lastAssertionCompletedAtMs = $script:selfTestTotalStopwatch.Elapsed.TotalMilliseconds
+    }
+}
+
+# P0 fail-fast/telemetry: перемикання поточного suite-контексту для
+# per-test атрибуції (Test-BRAVOCondition вище) І для реального wall-clock
+# accumulator ($script:suiteDurationTotals). Викликається парно навколо
+# кожного наявного dot-source domain-фрагмента: перед — з ім'ям домену,
+# одразу після — знову з 'Root (inline)', щоб root-код МІЖ фрагментами
+# продовжував накопичуватись в один і той самий accumulator, а не
+# перезаписувався.
+function Enter-BRAVOSelfTestSuite {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    Complete-BRAVOSelfTestActiveSuiteSpan
+    $script:currentSuiteName = $Name
+    $script:currentSuiteSpanStopwatch = [Diagnostics.Stopwatch]::StartNew()
+}
+
+# Закриває поточний відкритий suite-інтервал (якщо є) і накопичує його
+# тривалість у $script:suiteDurationTotals[$script:currentSuiteName].
+# Викликається як з Enter-BRAVOSelfTestSuite (перемикання), так і окремо
+# наприкінці прогону/у Fatal-catch (флеш останнього відкритого інтервалу,
+# щоб winning exception path не "губив" накопичений час).
+function Complete-BRAVOSelfTestActiveSuiteSpan {
+    if ($null -ne $script:currentSuiteSpanStopwatch) {
+        $script:currentSuiteSpanStopwatch.Stop()
+        $elapsedMs = $script:currentSuiteSpanStopwatch.Elapsed.TotalMilliseconds
+        if (-not $script:suiteDurationTotals.Contains($script:currentSuiteName)) {
+            $script:suiteDurationTotals[$script:currentSuiteName] = 0.0
+        }
+        $script:suiteDurationTotals[$script:currentSuiteName] =
+            $script:suiteDurationTotals[$script:currentSuiteName] + $elapsedMs
+        $script:currentSuiteSpanStopwatch = $null
     }
 }
 
@@ -217,7 +296,120 @@ function Clear-BRAVOSelfTestOwnedRuntimeModules {
     $script:BRAVOSelfTestOwnedRuntimeModules.Clear()
 }
 
+# P0 fail-fast/telemetry: друкує суто ДОДАТКОВУ (assertion-level і
+# suite-level) телеметрію. Викликається з Complete-BRAVOSelfTestReport
+# ПІСЛЯ незмінних machine-readable маркерів (SELF-TEST PASSED/FAILED,
+# Код завершення) і ПЕРЕД Write-BRAVOFinalSummaryFooter — жодна наявна
+# позиція/текст не зсувається, це чисто адитивний блок.
+function Write-BRAVOSelfTestTimingSummary {
+    Write-BRAVOResultBlankLine
+    Write-Host "Suite / Section                    Tests      Wall Time"
+    Write-Host "--------------------------------------------------------"
+    $sumOfSuitesMs = 0.0
+    foreach ($suiteName in $script:suiteDurationTotals.Keys) {
+        $suiteDurationMs = $script:suiteDurationTotals[$suiteName]
+        $sumOfSuitesMs += $suiteDurationMs
+        $suiteTestCount = @($script:testTimings | Where-Object { $_.Suite -eq $suiteName }).Count
+        Write-Host ("{0,-30} {1,10}   {2,8:N1}s" -f $suiteName, $suiteTestCount, ($suiteDurationMs / 1000.0))
+    }
+    Write-Host "--------------------------------------------------------"
+    Write-Host ("{0,-30} {1,10}   {2,8:N1}s" -f 'Sum of measured suites', $script:testTimings.Count, ($sumOfSuitesMs / 1000.0))
+    Write-BRAVOResultBlankLine
+    Write-Host ("Total wall-clock: {0:hh\:mm\:ss\.fff}" -f $script:selfTestTotalStopwatch.Elapsed)
+    Write-BRAVOResultBlankLine
+
+    Write-Host "Top 20 longest assertion intervals"
+    Write-Host ("Lead = час підготовки МІЖ попереднім і цим assertion (AST/filesystem/fixture/" +
+        "process); для setup, що готує кілька assertions одразу, увесь час атрибутується " +
+        "ПЕРШОМУ assertion після setup. Це НЕ per-scenario execution profiler — основна " +
+        "метрика для оптимізації performance це suite wall-clock таблиця вище.")
+    Write-Host "------------------------------------------------------------------------"
+    Write-Host ("{0,-40} {1,-11} {2,-8} {3,9} {4,10} {5,9}" -f 'Assertion', 'Suite', 'Result', 'Lead(ms)', 'Assert(ms)', 'Total(ms)')
+    Write-Host "------------------------------------------------------------------------"
+    $topAssertionIntervals = @($script:testTimings | Sort-Object -Property IntervalMs -Descending | Select-Object -First 20)
+    foreach ($entry in $topAssertionIntervals) {
+        Write-Host ("{0,-40} {1,-11} {2,-8} {3,9:N1} {4,10:N1} {5,9:N1}" -f `
+            $entry.Name, $entry.Suite, $entry.Result, $entry.LeadDurationMs, $entry.AssertionDurationMs, $entry.IntervalMs)
+    }
+    Write-Host "------------------------------------------------------------------------"
+    Write-BRAVOResultBlankLine
+}
+
+# P0 fail-fast/telemetry: канонічний ЄДИНИЙ фінальний reporting/exit
+# шлях — екстрагований з попереднього inline-хвоста FULL-прогону БЕЗ
+# ЗМІНИ ЛОГІКИ (exit-code formula, SELF-TEST PASSED/FAILED, Wait-
+# BRAVOManualExit контракт — усе дослівно збережено). Викликається з
+# ДВОХ місць: (a) Phase-0-FAIL short-circuit одразу після структурних
+# перевірок, (b) кінець файлу після повного FULL прогону. Ізоляційні
+# meta-тести й owned-module/config-root cleanup НАВМИСНО лишаються ЗА
+# межами цієї функції (виконуються лише в кінці файлу, FULL-шлях) —
+# при Phase-0-FAIL вони були б вакуумно-істинними (жодних fixture ще не
+# створено) і лише засмічували б short-circuit шлях.
+function Complete-BRAVOSelfTestReport {
+    Complete-BRAVOSelfTestActiveSuiteSpan
+
+    # SELF-TEST Console UX: один resolved exit code — і для operator summary,
+    # і для реального завершення процесу (Complete-BRAVOHelperLog нижче).
+    # Ніколи не обчислюється повторно після паузи (той самий інваріант, що
+    # Archive/Health/Maintenance: "обчислити ДО друку РЕЗУЛЬТАТ").
+    $script:selfTestExitCode = if ($script:failures.Count -gt 0) { 1 } else { 0 }
+    $script:selfTestStatusText = if ($script:selfTestExitCode -eq 0) { 'УСПІШНО' } else { 'ВИЯВЛЕНО ПОМИЛКИ' }
+    $script:selfTestStatusColor = if ($script:selfTestExitCode -eq 0) { [ConsoleColor]::Green } else { [ConsoleColor]::Red }
+
+    # Явний Initialize-BRAVOConsole (Enabled за замовчуванням $true) — доменні
+    # self-test фрагменти вище неодноразово роблять Remove-Module/Import-Module
+    # -Force для BRAVO.Console під власні сценарії; operator summary не повинен
+    # залежати від того, у якому стані модуль лишився після останнього з них.
+    Initialize-BRAVOConsole
+    Write-BRAVOFinalSummaryHeader -Title 'BRAVO SELF-TEST' -Status $script:selfTestStatusText -StatusColor $script:selfTestStatusColor
+    Write-BRAVOResultField -Label 'Статус' -Value $script:selfTestStatusText -Color $script:selfTestStatusColor
+    Write-BRAVOResultField -Label 'Перевірки' -Value ([string]$script:passCount)
+    Write-BRAVOResultField -Label 'Помилки' -Value ([string]$script:failures.Count)
+    Write-BRAVOResultBlankLine
+    if ($script:selfTestExitCode -eq 0) {
+        Write-Host 'Усі перевірки BRAVO-Toolkit успішно пройдено.'
+        Write-Host 'Проблем не виявлено. Додаткові дії не потрібні.'
+    } else {
+        Write-Host 'BRAVO-Toolkit не пройшов усі перевірки.'
+        Write-Host 'Перегляньте рядки [FAIL] вище та журнал self-test.'
+    }
+    Write-BRAVOResultBlankLine
+
+    # Канонічні machine-readable маркери (CI/тести/скрипти) — не видалені,
+    # лише перенесені в операторський підсумок; текст незмінний.
+    if ($script:selfTestExitCode -gt 0) {
+        Write-Host "SELF-TEST FAILED: $($script:failures.Count)" -ForegroundColor Red
+    } else {
+        Write-Host "SELF-TEST PASSED" -ForegroundColor Green
+    }
+    Write-BRAVOResultField -Label 'Код завершення' -Value ([string]$script:selfTestExitCode)
+
+    # P0 fail-fast/telemetry: чисто адитивний блок ПІСЛЯ незмінних
+    # machine-readable маркерів, ПЕРЕД footer.
+    Write-BRAVOSelfTestTimingSummary
+
+    Write-BRAVOFinalSummaryFooter -LogFile $script:selfTestHelperLogPath
+
+    # exit усередині Complete-BRAVOHelperLog (яка сама теж пише "Код
+    # завершення"/"Лог" перед exit — той самий контракт, що й для всіх інших
+    # допоміжних скриптів, що підключають BRAVO.HelperLogging) проходить крізь
+    # finally ПЕРЕД тим, як процес справді завершується — той самий емпірично
+    # підтверджений принцип, що Maintenance.Runtime.ps1 використовує навколо
+    # свого exit. Тому пауза (у finally) не може змінити вже викликаний
+    # exit-код (P16), і оператор бачить весь підсумок ДО очікування клавіші
+    # (P17), а Wait-BRAVOManualExit викликається рівно один раз на цьому
+    # шляху завершення (P18). SYSTEM/non-interactive/-NoPause не чекають —
+    # рішення повністю всередині самої Wait-BRAVOManualExit (той самий
+    # контракт, що й Archive/Health/Maintenance, жодної паралельної реалізації).
+    try {
+        Complete-BRAVOHelperLog -ExitCode $script:selfTestExitCode
+    } finally {
+        Wait-BRAVOManualExit -NoPause:$NoPause
+    }
+}
+
 try {
+    Enter-BRAVOSelfTestSuite -Name 'Root (inline)'
     Write-Host "BRAVO SELF-TEST (STATIC + RUNTIME)" -ForegroundColor Cyan
     $powerShellFiles = @(
         @(Get-ChildItem -LiteralPath $root -File -Filter '*.ps1')
@@ -1041,6 +1233,19 @@ $broken = Invoke-SuspensionScenario -LogPath (Join-Path $TestRoot 'broken.log') 
         }
     }
 
+    # PHASE 0 — STRUCTURAL PREFLIGHT (BRAVO SELF_TEST P0 DESIGN — FINAL).
+    # Baseline фіксується ДО існуючої RuntimeManifest-перевірки нижче:
+    # gate реагує лише на ЦІ конкретні 4 Phase-0-перевірки (1 наявна +
+    # 3 нові), а НЕ на глобальний $script:failures.Count. Свідомо НЕ
+    # гейтуємо на все, що вже виконалось раніше у файлі (Parser/*.ps1
+    # syntax-перевірки над усім комплектом, HelperLogging/Credentials/
+    # transcript-suspension тести вище) — вони існували до цього P0 і не
+    # були спроєктовані як частина Phase 0; розширення гейту на них було
+    # б неавторизованою зміною поведінки для прогонів з несумісним, але
+    # не структурним провалом.
+    $phase0FailureBaseline = $script:failures.Count
+    Enter-BRAVOSelfTestSuite -Name 'Phase0'
+
     # Маніфест у репозиторії має відповідати реальному комплекту: інакше
     # свіжо розгорнутий комплект заблокує сам себе на першому запуску.
     $repositoryRuntimeManifest = Test-BRAVORuntimeManifestIntegrity `
@@ -1051,6 +1256,88 @@ $broken = Invoke-SuspensionScenario -LogPath (Join-Path $TestRoot 'broken.log') 
         -Condition $repositoryRuntimeManifest.IsValid `
         -Name "RuntimeManifest/RepositoryManifestMatchesRuntime" `
         -Failure "RUNTIME_MANIFEST.json не відповідає комплекту (запустіть ci\Update-BRAVORuntimeManifest.ps1 -Apply): $($repositoryRuntimeManifest.Message)"
+
+    # КРИТИЧНО: manifest-derived перевірки (5.2/5.3/5.4) виконуються ЛИШЕ
+    # якщо $repositoryRuntimeManifest.IsValid — інакше НІЯКОГО звернення
+    # до вмісту маніфесту (жодного .files/.Keys), бо Test-
+    # BRAVORuntimeManifestIntegrity НЕ гарантує структуру $parsed.files
+    # при пошкодженому/відсутньому/порожньому маніфесті (повертає рано
+    # з IsValid=$false, не викидаючи виняток — підтверджено читанням
+    # BRAVO_RUNTIME_GUARD.ps1:64-212). Сам об'єкт результату НЕ виставляє
+    # список файлів як публічну властивість (немає .Files/.ExpectedFiles) —
+    # тому canonical-список тут деривується прямим ЧИТАННЯМ того самого
+    # RUNTIME_MANIFEST.json (той самий source of truth, не окремий
+    # hardcoded список), а не з $repositoryRuntimeManifest.
+    if ($repositoryRuntimeManifest.IsValid) {
+        $phase0ManifestRaw = [IO.File]::ReadAllText((Join-Path $root "RUNTIME_MANIFEST.json"), [Text.Encoding]::UTF8)
+        $phase0ManifestParsed = $phase0ManifestRaw | ConvertFrom-Json
+        $phase0ManifestFileNames = @($phase0ManifestParsed.files.PSObject.Properties.Name)
+
+        # 5.2 RequiredRuntimeManifestFilesExist — derive-ений з того самого
+        # canonical списку, що й хеш-перевірка вище (BRAVO.config свідомо
+        # відсутній у RUNTIME_MANIFEST.json — сервер-специфічний, НЕ входить
+        # у цей список за дизайном самого маніфесту).
+        $phase0MissingFiles = @(
+            $phase0ManifestFileNames | Where-Object { -not [IO.File]::Exists((Join-Path $root $_)) }
+        )
+        Test-BRAVOCondition `
+            -Condition ($phase0MissingFiles.Count -eq 0) `
+            -Name "Phase0/RequiredRuntimeManifestFilesExist" `
+            -Failure "відсутні файли з RUNTIME_MANIFEST.json: $($phase0MissingFiles -join ', ')"
+
+        # 5.3 RuntimeEntrypointSyntaxValid — scope НЕ hardcoded: похідний
+        # фільтр canonical manifest-ключів за суфіксом ".Runtime.ps1" (саме
+        # ті 4 файли — Archive/DataRestore/Health/Maintenance — які
+        # New-BRAVOSelfTestRuntimeModule багаторазово AST-парсить нижче).
+        $phase0SyntaxTargets = @($phase0ManifestFileNames | Where-Object { $_ -match '\.Runtime\.ps1$' })
+        foreach ($phase0SyntaxTarget in $phase0SyntaxTargets) {
+            $phase0SyntaxTargetPath = Join-Path $root $phase0SyntaxTarget
+            $phase0SyntaxTokens = $null
+            $phase0SyntaxErrors = $null
+            if ([IO.File]::Exists($phase0SyntaxTargetPath)) {
+                [void][Management.Automation.Language.Parser]::ParseFile(
+                    $phase0SyntaxTargetPath, [ref]$phase0SyntaxTokens, [ref]$phase0SyntaxErrors)
+            } else {
+                $phase0SyntaxErrors = @([pscustomobject]@{ Message = "файл відсутній: $phase0SyntaxTarget" })
+            }
+            Test-BRAVOCondition `
+                -Condition (@($phase0SyntaxErrors).Count -eq 0) `
+                -Name "Phase0/RuntimeEntrypointSyntaxValid[$phase0SyntaxTarget]" `
+                -Failure "синтаксична помилка: $((@($phase0SyntaxErrors) | ForEach-Object { $_.Message }) -join ' | ')"
+        }
+
+        # 5.4 CriticalJsonParsesCleanly — той самий manifest-derived список,
+        # фільтр за розширенням ".json" (RUNTIME_MANIFEST.json, VERSION.json,
+        # Tools\TOOLS_MANIFEST.json — без окремого паралельного списку).
+        $phase0JsonTargets = @($phase0ManifestFileNames | Where-Object { $_ -match '\.json$' })
+        foreach ($phase0JsonTarget in $phase0JsonTargets) {
+            $phase0JsonTargetPath = Join-Path $root $phase0JsonTarget
+            $phase0JsonParsedOk = $false
+            if ([IO.File]::Exists($phase0JsonTargetPath)) {
+                try {
+                    [void](Get-Content -LiteralPath $phase0JsonTargetPath -Raw | ConvertFrom-Json)
+                    $phase0JsonParsedOk = $true
+                } catch {
+                    $phase0JsonParsedOk = $false
+                }
+            }
+            Test-BRAVOCondition `
+                -Condition $phase0JsonParsedOk `
+                -Name "Phase0/CriticalJsonParsesCleanly[$phase0JsonTarget]" `
+                -Failure "невалідний або відсутній JSON: $phase0JsonTarget"
+        }
+    }
+
+    # Structural hard gate: будь-який провал серед РІВНО цих 4 Phase-0
+    # перевірок (RuntimeManifest + 3 нові вище) завершує прогін КРІЗЬ
+    # стандартний Complete-BRAVOSelfTestReport (той самий summary/exit-
+    # code/Wait-BRAVOManualExit шлях, що й у кінці FULL прогону) — НЕ
+    # голий exit, що обійшов би reporting/cleanup. Жоден із 21 доменних
+    # фрагментів нижче НЕ виконується при Phase-0-FAIL.
+    if ($script:failures.Count -gt $phase0FailureBaseline) {
+        Complete-BRAVOSelfTestReport
+    }
+    Enter-BRAVOSelfTestSuite -Name 'Root (inline)'
 
     # Усі entrypoint мають перевіряти цілісність ДО Import-Module.
     foreach ($entryPointName in @('BRAVO_ARCHIV.ps1', 'BRAVO_HEALTH.ps1', 'BRAVO_MAINTENANCE.ps1', 'BRAVO_DATA_RESTORE.ps1')) {
@@ -8682,7 +8969,9 @@ if ($r.StateUpdated -and -not [IO.File]::Exists($PassedPath)) { exit 0 } else { 
         -Name "ConfigurationLoader/CredentialsSetupNoNameCollision" `
         -Failure "локальний wrapper credentials-утиліти не повинен збігатися за ім'ям із Import-BravoConfiguration"
 
+    Enter-BRAVOSelfTestSuite -Name 'Governance'
     . (Join-Path $root 'selftest\BRAVO_SELF_TEST.Governance.ps1')
+    Enter-BRAVOSelfTestSuite -Name 'Root (inline)'
 
     # ===== DRY-RUN МУСИТЬ ПЕРЕВІРЯТИ ЦІЛІСНІСТЬ =====
     # Знайдено тестовим розгортанням: dry-run звітував «0 помилок» на
@@ -11468,9 +11757,13 @@ if ($r.StateUpdated -and -not [IO.File]::Exists($PassedPath)) { exit 0 } else { 
         -Name "RestoreDrill/ScriptImplementsFullDrillCycle" `
         -Failure "BRAVO_RESTORE_TEST.ps1 має вибирати один COMPLETE GenerationId для всіх компонентів через спільні функції BRAVO.ArchiveHelpers (не локальні копії), перевіряти SHA512/7za, розпаковувати в ізольований каталог, повертати контрактний exit code і прибирати за собою"
 
+    Enter-BRAVOSelfTestSuite -Name 'DataRestore'
     . (Join-Path $root 'selftest\BRAVO_SELF_TEST.DataRestore.ps1')
+    Enter-BRAVOSelfTestSuite -Name 'Root (inline)'
 
+    Enter-BRAVOSelfTestSuite -Name 'ServiceQuiescence'
     . (Join-Path $root 'selftest\BRAVO_SELF_TEST.ServiceQuiescence.ps1')
+    Enter-BRAVOSelfTestSuite -Name 'Root (inline)'
 
     # AUD-008 (аудит P1.6): sanity-check обсягу backup. Технічно валідний
     # архів (7za test + SHA512 збігається) все одно може бути підозріло
@@ -11606,7 +11899,9 @@ if ($r.StateUpdated -and -not [IO.File]::Exists($PassedPath)) { exit 0 } else { 
         ) `
         -Name "SizeSanity/WiredIntoArchiveRuntime" `
         -Failure "BRAVO.Archive.Runtime.ps1 має викликати Test-BRAVOBackupSizeAnomaly з налаштувань backupMonitoring.SizeSanity"
+    Enter-BRAVOSelfTestSuite -Name 'ManifestStorage'
     . (Join-Path $root 'selftest\BRAVO_SELF_TEST.ManifestStorage.ps1')
+    Enter-BRAVOSelfTestSuite -Name 'Root (inline)'
 
     # ================================================================
     # dev.14 (round 2, частина B): operator console UX BRAVO_MAINTENANCE.
@@ -14396,7 +14691,9 @@ function Get-BRAVOMaintenanceSummaryResult {
         -Name "Runtime/10-PreflightCoversAllRequiredRoots" `
         -Failure "SYSTEM preflight має перевіряти читання RuntimeRoot/ConfigPath/modules/Tools/LIMSRoot/bravo.ini і запис ArchiveRoot/BackupRoot/LOGS та всіх каталогів призначення ротації"
 
+    Enter-BRAVOSelfTestSuite -Name 'Paths'
     . (Join-Path $root 'selftest\BRAVO_SELF_TEST.Paths.ps1')
+    Enter-BRAVOSelfTestSuite -Name 'Root (inline)'
 
     # ===== ВИПРАВЛЕННЯ ПІСЛЯ ТЕСТОВОГО РОЗГОРТАННЯ 5.0.0-dev.1
     # (SID-акаунти, RuntimeRoot!=ConfigRoot, effective BAZASync, BAZA source
@@ -15003,8 +15300,12 @@ function Get-BRAVOMaintenanceSummaryResult {
         -Name "Version/StampConsistency" `
         -Failure "VERSION.json.buildId має бути префіксом 40-символьного sourceCommit; інакше артефакт pre-stamp/неузгоджений"
 
+    Enter-BRAVOSelfTestSuite -Name 'LogRotation'
     . (Join-Path $root 'selftest\BRAVO_SELF_TEST.LogRotation.ps1')
+    Enter-BRAVOSelfTestSuite -Name 'Root (inline)'
+    Enter-BRAVOSelfTestSuite -Name 'ConsoleUX'
     . (Join-Path $root 'selftest\BRAVO_SELF_TEST.ConsoleUX.ps1')
+    Enter-BRAVOSelfTestSuite -Name 'Root (inline)'
 
     #####################################################################
     # dev.16 (review round 3): Archive/Health operator-visibility pass —
@@ -16639,54 +16940,87 @@ function Write-BRAVOLog {
 
     # Archive (P2-1/P2-5, PR #136 review): рекурсивне впорядкування SFTP-
     # каталогів перед mkdir і єдиний call site вивантаження власного логу.
+    Enter-BRAVOSelfTestSuite -Name 'Archive'
     . (Join-Path $root 'selftest\BRAVO_SELF_TEST.Archive.ps1')
+    Enter-BRAVOSelfTestSuite -Name 'Root (inline)'
+    Enter-BRAVOSelfTestSuite -Name 'SftpCredentialsRequired'
     . (Join-Path $root 'selftest\BRAVO_SELF_TEST.SftpCredentialsRequired.ps1')
+    Enter-BRAVOSelfTestSuite -Name 'Root (inline)'
+    Enter-BRAVOSelfTestSuite -Name 'MaintenanceOwnLog'
     . (Join-Path $root 'selftest\BRAVO_SELF_TEST.MaintenanceOwnLog.ps1')
+    Enter-BRAVOSelfTestSuite -Name 'Root (inline)'
+    Enter-BRAVOSelfTestSuite -Name 'BazaSync'
     . (Join-Path $root 'selftest\BRAVO_SELF_TEST.BazaSync.ps1')
+    Enter-BRAVOSelfTestSuite -Name 'Root (inline)'
     # TraceArchive ПІСЛЯ BazaSync: SFTP-сценарії добового Trace-архіву
     # використовують New-BRAVOSelfTestFakeBazaSession, визначену там.
+    Enter-BRAVOSelfTestSuite -Name 'TraceArchive'
     . (Join-Path $root 'selftest\BRAVO_SELF_TEST.TraceArchive.ps1')
+    Enter-BRAVOSelfTestSuite -Name 'Root (inline)'
     # MaintenanceRepair: false-positive rollback після bravocmd repair +
     # Discord HTTP 429 retry (fix/repair-rollback-false-positive-and-discord-429).
+    Enter-BRAVOSelfTestSuite -Name 'MaintenanceRepair'
     . (Join-Path $root 'selftest\BRAVO_SELF_TEST.MaintenanceRepair.ps1')
+    Enter-BRAVOSelfTestSuite -Name 'Root (inline)'
     # RestoreSynthetic: наскрізний синтетичний тест відкату — справжній
     # tools\7za.exe (архів + цілісність + екстракція) на синтетичній моделі,
     # SHA256-верифікація відновлення, fail-closed на пошкодженому/відсутньому
     # архіві. Приймальну перевірку на DEV-LIMS не замінює.
+    Enter-BRAVOSelfTestSuite -Name 'RestoreSynthetic'
     . (Join-Path $root 'selftest\BRAVO_SELF_TEST.RestoreSynthetic.ps1')
+    Enter-BRAVOSelfTestSuite -Name 'Root (inline)'
     # RestoreVerify (P1.1): state-API верифікації відновлюваності, health-
     # оцінка віку, канонічний DaysOfWeek-mask, контракти scheduled drill і
     # loader-нормалізація legacy-конфігів без RestoreVerify-вузлів.
+    Enter-BRAVOSelfTestSuite -Name 'RestoreVerify'
     . (Join-Path $root 'selftest\BRAVO_SELF_TEST.RestoreVerify.ps1')
+    Enter-BRAVOSelfTestSuite -Name 'Root (inline)'
     # Status (P2.1): machine-readable status contract v1 — атомарний
     # roundtrip, деривація status з exitCode, fail-closed схема,
     # відсутність секретів і fail-soft контракти чотирьох call-site'ів.
+    Enter-BRAVOSelfTestSuite -Name 'Status'
     . (Join-Path $root 'selftest\BRAVO_SELF_TEST.Status.ps1')
+    Enter-BRAVOSelfTestSuite -Name 'Root (inline)'
     # ConfigLoader: діагностичне збагачення помилки виконання BRAVO.config
     # (реальний DEV-майданчик, PowerShell 3.0 -> Get-BRAVOOSSupportTier hint
     # замість голої NullReferenceException).
+    Enter-BRAVOSelfTestSuite -Name 'ConfigLoader'
     . (Join-Path $root 'selftest\BRAVO_SELF_TEST.ConfigLoader.ps1')
+    Enter-BRAVOSelfTestSuite -Name 'Root (inline)'
     # Configuration Foundation (P0, PR A): canonical built-in raw defaults +
     # Merge-BRAVOConfiguration/ConvertTo-BRAVONestedOverride/
     # Resolve-BRAVORawConfiguration (modules/BRAVO.Configuration) — ще не
     # підключено до BRAVO_CONFIG_LOADER.ps1/BRAVO.config
     # (docs/design/BRAVO_CONFIGURATION_FOUNDATION_DESIGN.md).
+    Enter-BRAVOSelfTestSuite -Name 'Configuration'
     . (Join-Path $root 'selftest\BRAVO_SELF_TEST.Configuration.ps1')
+    Enter-BRAVOSelfTestSuite -Name 'Root (inline)'
     # Configuration Foundation: AUTO/EXPLICIT намір -ConfigPath на межі
     # оператора + пропагація в runtime/child (регресія acceptance CF-17
     # та AUTO-intent класу дефектів root-entrypoint splat-ів).
+    Enter-BRAVOSelfTestSuite -Name 'ConfigIntent'
     . (Join-Path $root 'selftest\BRAVO_SELF_TEST.ConfigIntent.ps1')
+    Enter-BRAVOSelfTestSuite -Name 'Root (inline)'
     # Configurator backend: Schema/Model/Effective/Validation/Persistence/
     # Credentials/Presets/Preview (docs/design/BRAVO_CONFIGURATOR_DESIGN.md).
+    Enter-BRAVOSelfTestSuite -Name 'Configurator'
     . (Join-Path $root 'selftest\BRAVO_SELF_TEST.Configurator.ps1')
+    Enter-BRAVOSelfTestSuite -Name 'Root (inline)'
     # Configurator UI: лише headless-тестовані pure-функції (coverage,
     # filters, search, category tree, boolean tri-state) — жодного
     # System.Windows.Forms-об'єкта в цьому фрагменті, ShowDialog() тут не
     # викликається.
+    Enter-BRAVOSelfTestSuite -Name 'ConfiguratorUI'
     . (Join-Path $root 'selftest\BRAVO_SELF_TEST.ConfiguratorUI.ps1')
+    Enter-BRAVOSelfTestSuite -Name 'Root (inline)'
 } catch {
     [void]$script:failures.Add($_.Exception.Message)
     Write-Host "[FAIL] Fatal: $($_.Exception.Message)" -ForegroundColor Red
+    # P0 fail-fast/telemetry: якщо виняток стався ПОСЕРЕД відкритого suite-
+    # інтервалу (Enter-BRAVOSelfTestSuite викликана, парний виклик, що мав
+    # би закрити інтервал, — пропущено через unwind до цього catch),
+    # флешимо накопичений час явно тут, а не мовчки втрачаємо його.
+    Complete-BRAVOSelfTestActiveSuiteSpan
 }
 
 # ============================================================
@@ -16775,61 +17109,177 @@ Test-BRAVOCondition `
             ($leakedHelperCommands | ForEach-Object { "$($_.Name) [$($_.ModuleName)]" }) -join ', '
         )")
 
+# ============================================================
+# P0 fail-fast/telemetry: framework regression coverage (BRAVO SELF_TEST
+# P0 DESIGN — FINAL, розділ 9). Перевіряють сам новий harness-код
+# (Phase 0 gate + timing-обгортка), не production-домени.
+# ============================================================
+
+# Framework/Phase0FailStopsDomains: реальний дочірній процес на ІЗОЛЬОВАНІЙ
+# TEMP-копії репозиторію (НЕ working tree) з навмисно пошкодженим
+# RUNTIME_MANIFEST.json. Доводить (а) domain-тести НЕ запускаються,
+# (б) SELF-TEST FAILED і non-zero exit code, (в) пошкоджений маніфест НЕ
+# спричиняє необроблений виняток крізь manifest-derived Phase0-код (5.2-
+# 5.4) — саме той клас багу, якого критично уникнути (розділ 4 завдання).
+$phase0FailStopsDomainsTempRoot = Join-Path $env:TEMP ("BRAVO_SELFTEST_PHASE0_{0}" -f [guid]::NewGuid().ToString("N"))
+try {
+    [void][IO.Directory]::CreateDirectory($phase0FailStopsDomainsTempRoot)
+    $phase0ExcludedTopLevelNames = @('.git', 'LOGS', 'Tools', '.claude', '.vscode')
+    foreach ($topLevelItem in Get-ChildItem -LiteralPath $root -Force) {
+        if ($phase0ExcludedTopLevelNames -contains $topLevelItem.Name) { continue }
+        $destinationPath = Join-Path $phase0FailStopsDomainsTempRoot $topLevelItem.Name
+        if ($topLevelItem.PSIsContainer) {
+            Copy-Item -LiteralPath $topLevelItem.FullName -Destination $destinationPath -Recurse -Force
+        } else {
+            Copy-Item -LiteralPath $topLevelItem.FullName -Destination $destinationPath -Force
+        }
+    }
+    # Навмисно пошкодити маніфест ЛИШЕ у TEMP-копії — working repository
+    # не редагується жодним байтом.
+    [IO.File]::WriteAllText(
+        (Join-Path $phase0FailStopsDomainsTempRoot 'RUNTIME_MANIFEST.json'),
+        '{ "schemaVersion": 1, corrupted',
+        (New-Object Text.UTF8Encoding($true)))
+
+    $phase0ChildOutput = & powershell.exe -NoProfile -File (Join-Path $phase0FailStopsDomainsTempRoot 'BRAVO_SELF_TEST.ps1') -NoPause 2>&1
+    $phase0ChildExitCode = $LASTEXITCODE
+    $phase0ChildOutputText = ($phase0ChildOutput | Out-String)
+
+    Test-BRAVOCondition `
+        -Condition ($phase0ChildExitCode -ne 0) `
+        -Name "Framework/Phase0FailStopsDomains.ExitCode" `
+        -Failure "дочірній self-test на пошкодженому RUNTIME_MANIFEST.json має завершуватись non-zero; фактично: $phase0ChildExitCode"
+    Test-BRAVOCondition `
+        -Condition (-not $phase0ChildOutputText.Contains('[PASS] Documentation/SecurityMdExists')) `
+        -Name "Framework/Phase0FailStopsDomains.NoDomainTestsRan" `
+        -Failure "Phase-0-FAIL мав зупинити прогін ДО першого доменного фрагмента (Governance); знайдено доменний PASS-маркер у виводі"
+    Test-BRAVOCondition `
+        -Condition $phase0ChildOutputText.Contains('SELF-TEST FAILED') `
+        -Name "Framework/Phase0FailStopsDomains.SummaryEmitted" `
+        -Failure "дочірній прогін не надрукував стандартний machine-readable SELF-TEST FAILED маркер"
+    Test-BRAVOCondition `
+        -Condition (
+            -not $phase0ChildOutputText.Contains('PropertyNotFoundException') -and
+            -not $phase0ChildOutputText.Contains('NullReferenceException') -and
+            -not $phase0ChildOutputText.Contains('Unhandled exception')
+        ) `
+        -Name "Framework/Phase0FailStopsDomains.NoUncontrolledException" `
+        -Failure "пошкоджений RUNTIME_MANIFEST.json спричинив необроблений виняток у manifest-derived Phase0-коді замість контрольованого fail-closed звіту"
+} finally {
+    if (Test-Path -LiteralPath $phase0FailStopsDomainsTempRoot) {
+        [IO.Directory]::Delete($phase0FailStopsDomainsTempRoot, $true)
+    }
+}
+
+# Framework/Phase0PassPreservesFullBehavior: без вкладеного FULL self-test
+# (дорого й рекурсивно, п.7 завдання). Дві частини: (а) структурна
+# перевірка САМОГО boolean-виразу gate-умови в ізоляції (той самий
+# літерал, що й реальний Phase-0-гейт вище), (б) емпіричний доказ для
+# ЦЬОГО прогону — досягнення цього рядка (глибоко серед framework-тестів,
+# ПІСЛЯ усіх 21 доменних фрагментів) саме по собі можливе лише якщо
+# short-circuit НЕ спрацював на PASS-стані маніфесту цього прогону.
+$phase0GateProbeBaseline = 5
+Test-BRAVOCondition `
+    -Condition (-not ($phase0GateProbeBaseline -gt $phase0GateProbeBaseline)) `
+    -Name "Framework/Phase0PassPreservesFullBehavior.GateConditionFalseOnZeroDelta" `
+    -Failure "gate-умова 'lastFailureCount -gt baseline' має бути `$false, коли лічильник не зріс відносно baseline"
+Test-BRAVOCondition `
+    -Condition ($script:failures.Count -ge $phase0FailureBaseline) `
+    -Name "Framework/Phase0PassPreservesFullBehavior.DomainExecutionContinued" `
+    -Failure "досягнення цього коду (після 21 доменного фрагмента) саме по собі доводить, що Phase-0-FAIL short-circuit не спрацював на PASS-стані маніфесту цього прогону"
+
+# Framework/TimingDoesNotAlterResult + Framework/TimingCapturesInterval:
+# ІЗОЛЬОВАНИЙ test harness scope — той самий встановлений у файлі патерн
+# (New-BRAVOSelfTestRuntimeModule + New-Module -ScriptBlock, дот-сорсинг
+# AST-екстрагованого тексту в окремий модуль з ВЛАСНИМ $script:-простором,
+# уже використовується десятками інших call-сайтів вище). НЕ викликає
+# живу Test-BRAVOCondition головного процесу з $false — синтетичний probe
+# повністю ізольований у власному $script:passCount/$script:failures/
+# $script:testTimings/$script:currentSuiteName/$script:selfTestTotalStopwatch/
+# $script:lastAssertionCompletedAtMs всередині динамічного модуля; жоден
+# [FAIL]-рядок від probe НЕ потрапляє в console/helper log головного
+# SELF_TEST, і жоден запис НЕ додається/НЕ прибирається з живих
+# $script:failures/$script:testTimings головного процесу. Реальна функція
+# Test-BRAVOCondition береться AST-екстракцією з ЦЬОГО Ж файлу (не ручна
+# копія-дублікат) — гарантує, що ізольований fixture тестує байт-у-байт
+# ту саму реалізацію, що працює в проді.
+$timingProbeSourceText = [IO.File]::ReadAllText($PSCommandPath, [Text.Encoding]::UTF8)
+$timingProbeModule = New-BRAVOSelfTestRuntimeModule -SourceText $timingProbeSourceText -FunctionNames @('Test-BRAVOCondition')
+$timingProbeResult = & $timingProbeModule {
+    # Локальний silent-стаб Write-Host — той самий встановлений у файлі
+    # прийом (test-only переозначення render-функції всередині ізольованого
+    # динамічного модуля, щоб negative-path probe не друкував синтетичний
+    # [FAIL]-рядок у console/helper log головного SELF_TEST). Резолвиться
+    # ЛИШЕ для команд, викликаних із ЦЬОГО модуля (Test-BRAVOCondition
+    # нижче) — не зачіпає Write-Host головного процесу.
+    function Write-Host { param([Parameter(ValueFromRemainingArguments = $true)]$IgnoredArgs) }
+
+    $script:passCount = 0
+    $script:failures = New-Object System.Collections.ArrayList
+    $script:testTimings = New-Object System.Collections.Generic.List[object]
+    $script:currentSuiteName = 'IsolatedFrameworkProbe'
+    $script:selfTestTotalStopwatch = [Diagnostics.Stopwatch]::StartNew()
+    $script:lastAssertionCompletedAtMs = 0.0
+
+    Test-BRAVOCondition -Condition $true -Name 'IsolatedProbe/True' -Failure 'unreachable — probe завжди $true'
+    Test-BRAVOCondition -Condition $false -Name 'IsolatedProbe/False' -Failure 'синтетичний probe, ізольований від головного процесу'
+
+    [pscustomobject]@{
+        PassCount     = $script:passCount
+        FailuresCount = $script:failures.Count
+        Failures      = @($script:failures)
+        # .ToArray(), НЕ @(...): емпірично підтверджено (isolated targeted
+        # validation), що @() навколо System.Collections.Generic.List[object]
+        # при поверненні через & $moduleInfo { scriptblock } кидає
+        # "Argument types do not match" у Windows PowerShell 5.1 — незалежно
+        # від вмісту списку. .ToArray() матеріалізує реальний System.Object[]
+        # ДО перетину межі модуля й уникає цього.
+        Timings       = $script:testTimings.ToArray()
+    }
+}
+
+Test-BRAVOCondition `
+    -Condition (
+        $timingProbeResult.PassCount -eq 1 -and
+        $timingProbeResult.FailuresCount -eq 1 -and
+        $timingProbeResult.Failures.Count -eq 1 -and
+        $timingProbeResult.Failures[0] -like 'IsolatedProbe/False*' -and
+        $timingProbeResult.Timings.Count -eq 2 -and
+        $timingProbeResult.Timings[0].Name -eq 'IsolatedProbe/True' -and
+        $timingProbeResult.Timings[0].Result -eq 'PASS' -and
+        $timingProbeResult.Timings[1].Name -eq 'IsolatedProbe/False' -and
+        $timingProbeResult.Timings[1].Result -eq 'FAIL'
+    ) `
+    -Name "Framework/TimingDoesNotAlterResult" `
+    -Failure "timing-обгортка Test-BRAVOCondition змінила PASS/FAIL semantics в ізольованому fixture: PassCount=$($timingProbeResult.PassCount) FailuresCount=$($timingProbeResult.FailuresCount) TimingsCount=$($timingProbeResult.Timings.Count)"
+
+# BRAVO collection semantics (PS 5.1): 0 pipeline-результатів -> $null,
+# 1 -> скаляр, 2+ -> масив. Обидва Timings-записи на щасливому шляху НЕ
+# проходять жодного 'failed' предиката (0 результатів), тому голий
+# "(pipeline).Count" тут кидав би PropertyNotFoundException під активним
+# Set-StrictMode — саме той P0-blocker, знайдений реальним FULL-прогоном.
+# @(...) охоплює ВЕСЬ pipeline, включно з Where-Object, ДО .Count.
+Test-BRAVOCondition `
+    -Condition (
+        $timingProbeResult.Timings.Count -eq 2 -and
+        @(
+            $timingProbeResult.Timings | ForEach-Object {
+                $_.LeadDurationMs -ge 0 -and $_.AssertionDurationMs -ge 0 -and $_.IntervalMs -ge $_.AssertionDurationMs -and
+                $_.Suite -eq 'IsolatedFrameworkProbe'
+            } | Where-Object { -not $_ }
+        ).Count -eq 0
+    ) `
+    -Name "Framework/TimingCapturesInterval" `
+    -Failure "Lead/Assertion/Interval або Suite-атрибуція некоректні для ізольованих assertion-записів"
+
 if (-not [string]::IsNullOrWhiteSpace([string]$script:selfTestConfigRoot) -and
     [IO.Directory]::Exists($script:selfTestConfigRoot)) {
     [IO.Directory]::Delete($script:selfTestConfigRoot, $true)
 }
 
-# SELF-TEST Console UX: один resolved exit code — і для operator summary,
-# і для реального завершення процесу (Complete-BRAVOHelperLog нижче).
-# Ніколи не обчислюється повторно після паузи (той самий інваріант, що
-# Archive/Health/Maintenance: "обчислити ДО друку РЕЗУЛЬТАТ").
-$script:selfTestExitCode = if ($script:failures.Count -gt 0) { 1 } else { 0 }
-$script:selfTestStatusText = if ($script:selfTestExitCode -eq 0) { 'УСПІШНО' } else { 'ВИЯВЛЕНО ПОМИЛКИ' }
-$script:selfTestStatusColor = if ($script:selfTestExitCode -eq 0) { [ConsoleColor]::Green } else { [ConsoleColor]::Red }
-
-# Явний Initialize-BRAVOConsole (Enabled за замовчуванням $true) — доменні
-# self-test фрагменти вище неодноразово роблять Remove-Module/Import-Module
-# -Force для BRAVO.Console під власні сценарії; operator summary не повинен
-# залежати від того, у якому стані модуль лишився після останнього з них.
-Initialize-BRAVOConsole
-Write-BRAVOFinalSummaryHeader -Title 'BRAVO SELF-TEST' -Status $script:selfTestStatusText -StatusColor $script:selfTestStatusColor
-Write-BRAVOResultField -Label 'Статус' -Value $script:selfTestStatusText -Color $script:selfTestStatusColor
-Write-BRAVOResultField -Label 'Перевірки' -Value ([string]$script:passCount)
-Write-BRAVOResultField -Label 'Помилки' -Value ([string]$script:failures.Count)
-Write-BRAVOResultBlankLine
-if ($script:selfTestExitCode -eq 0) {
-    Write-Host 'Усі перевірки BRAVO-Toolkit успішно пройдено.'
-    Write-Host 'Проблем не виявлено. Додаткові дії не потрібні.'
-} else {
-    Write-Host 'BRAVO-Toolkit не пройшов усі перевірки.'
-    Write-Host 'Перегляньте рядки [FAIL] вище та журнал self-test.'
-}
-Write-BRAVOResultBlankLine
-
-# Канонічні machine-readable маркери (CI/тести/скрипти) — не видалені,
-# лише перенесені в операторський підсумок; текст незмінний.
-if ($script:selfTestExitCode -gt 0) {
-    Write-Host "SELF-TEST FAILED: $($script:failures.Count)" -ForegroundColor Red
-} else {
-    Write-Host "SELF-TEST PASSED" -ForegroundColor Green
-}
-Write-BRAVOResultField -Label 'Код завершення' -Value ([string]$script:selfTestExitCode)
-Write-BRAVOFinalSummaryFooter -LogFile $script:selfTestHelperLogPath
-
-# exit усередині Complete-BRAVOHelperLog (яка сама теж пише "Код
-# завершення"/"Лог" перед exit — той самий контракт, що й для всіх інших
-# допоміжних скриптів, що підключають BRAVO.HelperLogging) проходить крізь
-# finally ПЕРЕД тим, як процес справді завершується — той самий емпірично
-# підтверджений принцип, що Maintenance.Runtime.ps1 використовує навколо
-# свого exit. Тому пауза (у finally) не може змінити вже викликаний
-# exit-код (P16), і оператор бачить весь підсумок ДО очікування клавіші
-# (P17), а Wait-BRAVOManualExit викликається рівно один раз на цьому
-# шляху завершення (P18). SYSTEM/non-interactive/-NoPause не чекають —
-# рішення повністю всередині самої Wait-BRAVOManualExit (той самий
-# контракт, що й Archive/Health/Maintenance, жодної паралельної реалізації).
-try {
-    Complete-BRAVOHelperLog -ExitCode $script:selfTestExitCode
-} finally {
-    Wait-BRAVOManualExit -NoPause:$NoPause
-}
+# P0 fail-fast/telemetry: увесь попередній inline reporting/exit-хвіст
+# (exit-code formula, operator summary, SELF-TEST PASSED/FAILED, Complete-
+# BRAVOHelperLog/Wait-BRAVOManualExit) екстрагований 1:1 у
+# Complete-BRAVOSelfTestReport (визначена вище, перед головним try) —
+# та сама функція, що й Phase-0-FAIL short-circuit вище викликає.
+Complete-BRAVOSelfTestReport
