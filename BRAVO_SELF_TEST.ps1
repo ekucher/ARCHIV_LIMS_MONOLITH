@@ -17279,88 +17279,188 @@ function Copy-BRAVOSelfTestManifestFixtureFiles {
         -Destination (Join-Path $DestinationRoot "RUNTIME_MANIFEST.json") -Force
 }
 
-# Framework/Phase0FailStopsDomains: реальний дочірній процес на ІЗОЛЬОВАНІЙ
-# TEMP-копії репозиторію (НЕ working tree) з навмисно пошкодженим
-# RUNTIME_MANIFEST.json. Доводить (а) domain-тести НЕ запускаються,
-# (б) SELF-TEST FAILED і non-zero exit code, (в) пошкоджений маніфест НЕ
-# спричиняє необроблений виняток крізь bootstrap/manifest-derived Phase0-
-# код (5.2-5.4) — саме той клас багу, якого критично уникнути (розділ 4
-# завдання).
-$phase0FailStopsDomainsTempRoot = Join-Path $env:TEMP ("BRAVO_SELFTEST_PHASE0_{0}" -f [guid]::NewGuid().ToString("N"))
-try {
-    [void][IO.Directory]::CreateDirectory($phase0FailStopsDomainsTempRoot)
+# Framework/BootstrapInvalidManifestFailsClosed (P2 regression, review
+# comment 3960370672): ІЗОЛЬОВАНА коротка перевірка ЛИШЕ bootstrap-рівня
+# fail-closed поведінки. Раніше цей сценарій (пошкоджений
+# RUNTIME_MANIFEST.json) жив під іменем Framework/Phase0FailStopsDomains
+# і претендував доводити Phase 0 gate — але після P1-A (bootstrap
+# integrity ДО Import-Module/main try) такий вхід перехоплюється значно
+# РАНІШЕ, самим бутстрапом (рядки ~59-116), і дитина ніколи навіть не
+# доходить до Phase 0. Це означало б, що regression проходив би, навіть
+# якби сам Phase 0 short-circuit видалили повністю — назву й скоуп
+# звужено до того, що вона реально тестує. Phase 0 gate тестується
+# ОКРЕМО нижче (Framework/Phase0FailStopsDomains), де bootstrap integrity
+# свідомо лишається VALID.
+& {
+    $tempRoot = Join-Path $env:TEMP ("BRAVO_SELFTEST_BOOTSTRAPINVALID_{0}" -f [guid]::NewGuid().ToString("N"))
+    try {
+        [void][IO.Directory]::CreateDirectory($tempRoot)
+        Copy-BRAVOSelfTestManifestFixtureFiles -SourceRoot $root -DestinationRoot $tempRoot
 
-    Copy-BRAVOSelfTestManifestFixtureFiles -SourceRoot $root -DestinationRoot $phase0FailStopsDomainsTempRoot
-
-    # Regression (P1-B acceptance): ці каталоги РЕАЛЬНО існують у working
-    # tree (не синтетичний sentinel — working tree НЕ мутується жодним
-    # байтом) і НЕ входять у RUNTIME_MANIFEST.json жодним записом;
-    # bounded-копіювання вище не повинно було створити їх у TEMP-копії
-    # взагалі. `.git` на практиці найбільший — саме той сценарій, що
-    # unbounded Get-ChildItem+exclude-list раніше копіював би цілком.
-    & {
+        # Regression (P1-B acceptance): ці каталоги РЕАЛЬНО існують у
+        # working tree (не синтетичний sentinel — working tree НЕ
+        # мутується жодним байтом) і НЕ входять у RUNTIME_MANIFEST.json
+        # жодним записом; bounded-копіювання вище не повинно було
+        # створити їх у TEMP-копії взагалі. `.git` на практиці найбільший
+        # — саме той сценарій, що unbounded Get-ChildItem+exclude-list
+        # раніше копіював би цілком.
         $unexpectedDirNames = @('.git', 'LOGS', '.claude', '.vscode')
         $unexpectedCopiedDirs = @(
             $unexpectedDirNames | Where-Object {
-                [IO.Directory]::Exists((Join-Path $phase0FailStopsDomainsTempRoot $_))
+                [IO.Directory]::Exists((Join-Path $tempRoot $_))
             }
         )
         Test-BRAVOCondition `
             -Condition ($unexpectedCopiedDirs.Count -eq 0) `
-            -Name "Framework/Phase0FailStopsDomains.UnrelatedDirectoriesNotCopied" `
+            -Name "Framework/BootstrapInvalidManifestFailsClosed.UnrelatedDirectoriesNotCopied" `
             -Failure "bounded fixture copy має ігнорувати каталоги, відсутні у RUNTIME_MANIFEST.json; потрапили у TEMP-копію: $($unexpectedCopiedDirs -join ', ')"
+
+        # Навмисно пошкодити маніфест ЛИШЕ у TEMP-копії — working repository
+        # не редагується жодним байтом.
+        [IO.File]::WriteAllText(
+            (Join-Path $tempRoot 'RUNTIME_MANIFEST.json'),
+            '{ "schemaVersion": 1, corrupted',
+            (New-Object Text.UTF8Encoding($true)))
+
+        $childOutput = & powershell.exe -NoProfile -File (Join-Path $tempRoot 'BRAVO_SELF_TEST.ps1') -NoPause 2>&1
+        $childExitCode = $LASTEXITCODE
+        $childOutputText = ($childOutput | Out-String)
+        $childHelperLogDirExists = [IO.Directory]::Exists((Join-Path $tempRoot 'LOGS\HELPERS'))
+
+        Test-BRAVOCondition `
+            -Condition ($childExitCode -ne 0) `
+            -Name "Framework/BootstrapInvalidManifestFailsClosed.ExitCode" `
+            -Failure "дочірній self-test на пошкодженому RUNTIME_MANIFEST.json має завершуватись non-zero; фактично: $childExitCode"
+        Test-BRAVOCondition `
+            -Condition $childOutputText.Contains('SELF-TEST FAILED') `
+            -Name "Framework/BootstrapInvalidManifestFailsClosed.SummaryEmitted" `
+            -Failure "дочірній прогін не надрукував стандартний machine-readable SELF-TEST FAILED маркер"
+        Test-BRAVOCondition `
+            -Condition (
+                -not $childOutputText.Contains('PropertyNotFoundException') -and
+                -not $childOutputText.Contains('NullReferenceException') -and
+                -not $childOutputText.Contains('Unhandled exception')
+            ) `
+            -Name "Framework/BootstrapInvalidManifestFailsClosed.NoUncontrolledException" `
+            -Failure "пошкоджений RUNTIME_MANIFEST.json спричинив необроблений виняток замість контрольованого fail-closed звіту"
+        # HelperLogging НЕ імпортований/виконаний — той самий доказ, що
+        # Framework/BootstrapIntegrityScanExceptionIsControlled.
+        # HelperLoggingNeverExecuted: Start-BRAVOHelperLog (якби виконався)
+        # завжди друкує "Лог допоміжного скрипта: ..." і створює
+        # LOGS\HELPERS.
+        Test-BRAVOCondition `
+            -Condition (
+                -not $childOutputText.Contains('Лог допоміжного скрипта:') -and
+                -not $childHelperLogDirExists
+            ) `
+            -Name "Framework/BootstrapInvalidManifestFailsClosed.HelperLoggingNeverExecuted" `
+            -Failure "BRAVO.HelperLogging виконався попри пошкоджений RUNTIME_MANIFEST.json: ConsoleMessage=$($childOutputText.Contains('Лог допоміжного скрипта:')) LOGS\HELPERS exists=$childHelperLogDirExists"
+    } catch {
+        # PR #138 review (P2-A): при активному $ErrorActionPreference='Stop'
+        # будь-яка помилка ІНФРАСТРУКТУРИ самого fixture (Copy-Item на
+        # непрочитному/заблокованому top-level елементі, TEMP create/write
+        # failure, збій запуску дочірнього процесу) раніше була терміную-
+        # чою. Перетворюємо інфраструктурний збій САМОГО fixture у
+        # звичайний Test-BRAVOCondition FAIL — не маскуємо причину (повне
+        # $_.Exception.Message у Failure), не re-throw, гарантовано
+        # продовжуємо до стандартного report-шляху нижче.
+        Test-BRAVOCondition `
+            -Condition $false `
+            -Name "Framework/BootstrapInvalidManifestFailsClosed.FixtureExecution" `
+            -Failure "не вдалося виконати isolated bootstrap-invalid-manifest regression fixture (setup/copy/child-launch): $($_.Exception.Message)"
+    } finally {
+        if (Test-Path -LiteralPath $tempRoot) {
+            [IO.Directory]::Delete($tempRoot, $true)
+        }
     }
+}
 
-    # Навмисно пошкодити маніфест ЛИШЕ у TEMP-копії — working repository
-    # не редагується жодним байтом.
-    [IO.File]::WriteAllText(
-        (Join-Path $phase0FailStopsDomainsTempRoot 'RUNTIME_MANIFEST.json'),
-        '{ "schemaVersion": 1, corrupted',
-        (New-Object Text.UTF8Encoding($true)))
+# Framework/Phase0FailStopsDomains (P2 fix, review comment 3960370672):
+# ЦЕЙ fixture тепер реально тестує сам Phase 0 gate (5.2-5.4), а не
+# bootstrap-рівень (той окремо покритий Framework/
+# BootstrapInvalidManifestFailsClosed вище). Bootstrap integrity
+# лишається VALID — реальний, незмінений RUNTIME_MANIFEST.json і всі
+# реальні файли з bounded copy — а замість цього додається СИНТЕТИЧНИЙ
+# TEMP-only файл `Phase0Only.json` з НЕВАЛІДНИМ JSON, зареєстрований у
+# TEMP-копії RUNTIME_MANIFEST.json з коректним (реально обчисленим)
+# SHA256: integrity hash-перевірка PASS, але Phase0 5.4
+# CriticalJsonParsesCleanly (manifest-derived, автоматично підхоплює
+# будь-який `*.json`-ключ маніфесту) провалюється саме на ньому.
+# Синтетичний файл ніколи не потрапляє у working tree чи у repository
+# RUNTIME_MANIFEST.json — лише у цю ізольовану TEMP-копію.
+& {
+    $tempRoot = Join-Path $env:TEMP ("BRAVO_SELFTEST_PHASE0ONLY_{0}" -f [guid]::NewGuid().ToString("N"))
+    try {
+        [void][IO.Directory]::CreateDirectory($tempRoot)
+        Copy-BRAVOSelfTestManifestFixtureFiles -SourceRoot $root -DestinationRoot $tempRoot
 
-    $phase0ChildOutput = & powershell.exe -NoProfile -File (Join-Path $phase0FailStopsDomainsTempRoot 'BRAVO_SELF_TEST.ps1') -NoPause 2>&1
-    $phase0ChildExitCode = $LASTEXITCODE
-    $phase0ChildOutputText = ($phase0ChildOutput | Out-String)
+        # Deterministic invalid-JSON вміст, UTF-8 без BOM — синтаксично
+        # невалідний JSON (незакритий об'єкт).
+        $syntheticFilePath = Join-Path $tempRoot "Phase0Only.json"
+        $syntheticFileContent = '{ "phase0": true,'
+        [IO.File]::WriteAllText($syntheticFilePath, $syntheticFileContent, (New-Object Text.UTF8Encoding($false)))
+        $syntheticFileHash = (Get-BRAVOFileHash -Path $syntheticFilePath -Algorithm SHA256).Hash.ToUpperInvariant()
 
-    Test-BRAVOCondition `
-        -Condition ($phase0ChildExitCode -ne 0) `
-        -Name "Framework/Phase0FailStopsDomains.ExitCode" `
-        -Failure "дочірній self-test на пошкодженому RUNTIME_MANIFEST.json має завершуватись non-zero; фактично: $phase0ChildExitCode"
-    Test-BRAVOCondition `
-        -Condition (-not $phase0ChildOutputText.Contains('[PASS] Documentation/SecurityMdExists')) `
-        -Name "Framework/Phase0FailStopsDomains.NoDomainTestsRan" `
-        -Failure "Phase-0-FAIL мав зупинити прогін ДО першого доменного фрагмента (Governance); знайдено доменний PASS-маркер у виводі"
-    Test-BRAVOCondition `
-        -Condition $phase0ChildOutputText.Contains('SELF-TEST FAILED') `
-        -Name "Framework/Phase0FailStopsDomains.SummaryEmitted" `
-        -Failure "дочірній прогін не надрукував стандартний machine-readable SELF-TEST FAILED маркер"
-    Test-BRAVOCondition `
-        -Condition (
-            -not $phase0ChildOutputText.Contains('PropertyNotFoundException') -and
-            -not $phase0ChildOutputText.Contains('NullReferenceException') -and
-            -not $phase0ChildOutputText.Contains('Unhandled exception')
-        ) `
-        -Name "Framework/Phase0FailStopsDomains.NoUncontrolledException" `
-        -Failure "пошкоджений RUNTIME_MANIFEST.json спричинив необроблений виняток у manifest-derived Phase0-коді замість контрольованого fail-closed звіту"
-} catch {
-    # PR #138 review (P2-A): при активному $ErrorActionPreference='Stop'
-    # будь-яка помилка ІНФРАСТРУКТУРИ самого fixture (Copy-Item на
-    # непрочитному/заблокованому top-level елементі, TEMP create/write
-    # failure, збій запуску дочірнього процесу) раніше була терміную-
-    # чою — минала весь зовнішній try/catch файлу (цей блок living OUTSIDE
-    # головного try, всередині лише мав finally) і завершувала SELF_TEST
-    # без SELF-TEST FAILED/Complete-BRAVOSelfTestReport/резолвленого exit
-    # code. Перетворюємо інфраструктурний збій САМОГО fixture у звичайний
-    # Test-BRAVOCondition FAIL — не маскуємо причину (повне
-    # $_.Exception.Message у Failure), не re-throw, гарантовано
-    # продовжуємо до стандартного report-шляху нижче.
-    Test-BRAVOCondition `
-        -Condition $false `
-        -Name "Framework/Phase0FailStopsDomains.FixtureExecution" `
-        -Failure "не вдалося виконати isolated Phase0 regression fixture (setup/copy/child-launch): $($_.Exception.Message)"
-} finally {
-    if (Test-Path -LiteralPath $phase0FailStopsDomainsTempRoot) {
-        [IO.Directory]::Delete($phase0FailStopsDomainsTempRoot, $true)
+        # Дописати новий запис у TEMP-копію RUNTIME_MANIFEST.json (НЕ у
+        # repository-файл) — реальний SHA256 щойно записаних байтів,
+        # тому integrity hash-перевірка залишається PASS.
+        $tempManifestPath = Join-Path $tempRoot "RUNTIME_MANIFEST.json"
+        $tempManifestParsed = [IO.File]::ReadAllText($tempManifestPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+        $tempManifestParsed.files | Add-Member -MemberType NoteProperty -Name 'Phase0Only.json' -Value $syntheticFileHash -Force
+        [IO.File]::WriteAllText($tempManifestPath, ($tempManifestParsed | ConvertTo-Json -Depth 10), (New-Object Text.UTF8Encoding($true)))
+
+        $childOutput = & powershell.exe -NoProfile -File (Join-Path $tempRoot 'BRAVO_SELF_TEST.ps1') -NoPause 2>&1
+        $childExitCode = $LASTEXITCODE
+        $childOutputText = ($childOutput | Out-String)
+
+        Test-BRAVOCondition `
+            -Condition $childOutputText.Contains('[PASS] RuntimeManifest/RepositoryManifestMatchesRuntime') `
+            -Name "Framework/Phase0FailStopsDomains.BootstrapIntegrityPassed" `
+            -Failure "bootstrap integrity мала лишитися PASS (маніфест і всі реальні файли не пошкоджені) — дочірній вивід не містить очікуваного [PASS]-маркера; можливо, тест провалився ще на bootstrap-рівні, а не на Phase0"
+        Test-BRAVOCondition `
+            -Condition $childOutputText.Contains('[FAIL] Phase0/CriticalJsonParsesCleanly[Phase0Only.json]') `
+            -Name "Framework/Phase0FailStopsDomains.CriticalJsonFailureReached" `
+            -Failure "дочірній прогін не досяг Phase0-специфічної перевірки CriticalJsonParsesCleanly для синтетичного Phase0Only.json — regression більше не доводить, що саме ЦЯ Phase0-перевірка ловить невалідний JSON"
+        Test-BRAVOCondition `
+            -Condition ($childExitCode -ne 0) `
+            -Name "Framework/Phase0FailStopsDomains.ExitCode" `
+            -Failure "дочірній self-test на Phase0-only невалідному JSON має завершуватись non-zero; фактично: $childExitCode"
+        Test-BRAVOCondition `
+            -Condition (-not $childOutputText.Contains('[PASS] Documentation/SecurityMdExists')) `
+            -Name "Framework/Phase0FailStopsDomains.NoDomainTestsRan" `
+            -Failure "Phase-0-FAIL мав зупинити прогін ДО першого доменного фрагмента (Governance); знайдено доменний PASS-маркер у виводі"
+        Test-BRAVOCondition `
+            -Condition $childOutputText.Contains('SELF-TEST FAILED') `
+            -Name "Framework/Phase0FailStopsDomains.SummaryEmitted" `
+            -Failure "дочірній прогін не надрукував стандартний machine-readable SELF-TEST FAILED маркер"
+        # Rich reporting path: "Код завершення" друкується ЛИШЕ всередині
+        # Complete-BRAVOSelfTestReport (і на PASS, і на Phase0-FAIL
+        # short-circuit) — на відміну від мінімального dependency-free
+        # bootstrap fail path (лише 2 голих Write-Host + exit), який цей
+        # рядок ніколи не друкує. Присутність доводить, що дитина
+        # завершилась через стандартний report/exit-контракт, а не через
+        # bootstrap-рівень.
+        Test-BRAVOCondition `
+            -Condition $childOutputText.Contains('Код завершення:') `
+            -Name "Framework/Phase0FailStopsDomains.RichReportPathReached" `
+            -Failure "дочірній прогін не досяг Complete-BRAVOSelfTestReport (rich reporting шлях) — 'Код завершення' відсутнє у виводі; можливо, завершився через мінімальний dependency-free bootstrap fail path замість Phase0-гейту"
+        Test-BRAVOCondition `
+            -Condition (
+                -not $childOutputText.Contains('PropertyNotFoundException') -and
+                -not $childOutputText.Contains('NullReferenceException') -and
+                -not $childOutputText.Contains('Unhandled exception')
+            ) `
+            -Name "Framework/Phase0FailStopsDomains.NoUncontrolledException" `
+            -Failure "невалідний Phase0-only JSON спричинив необроблений виняток у manifest-derived Phase0-коді замість контрольованого fail-closed звіту"
+    } catch {
+        Test-BRAVOCondition `
+            -Condition $false `
+            -Name "Framework/Phase0FailStopsDomains.FixtureExecution" `
+            -Failure "не вдалося виконати isolated Phase0-only regression fixture (setup/copy/synthetic-file/child-launch): $($_.Exception.Message)"
+    } finally {
+        if (Test-Path -LiteralPath $tempRoot) {
+            [IO.Directory]::Delete($tempRoot, $true)
+        }
     }
 }
 
