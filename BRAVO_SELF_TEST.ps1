@@ -17279,6 +17279,117 @@ function Copy-BRAVOSelfTestManifestFixtureFiles {
         -Destination (Join-Path $DestinationRoot "RUNTIME_MANIFEST.json") -Force
 }
 
+# Remove-BRAVOSelfTestFixtureDirectory (P2 fix, review comment 3962385067):
+# canonical, дедуплікований cleanup для TEMP-каталогів усіх ISOLATED
+# regression fixtures нижче. Раніше кожен fixture мав власний
+# `finally { if (Test-Path ...) { [IO.Directory]::Delete(...) } }` —
+# якщо саме РЕКУРСИВНЕ видалення кидало виняток (UnauthorizedAccessException/
+# IOException від AV-lock/handle-lock/ACL), цей виняток НЕ мав catch,
+# що стояв ВИЩЕ по стеку (finally виконується вже ПІСЛЯ catch-блоку
+# того самого try), і міг термінувати self-test, обійшовши
+# Complete-BRAVOSelfTestReport. Контракт: filesystem-виняток НІКОЛИ не
+# покидає цю функцію — завжди повертається structured result, а
+# викликач сам вирішує, як позначити провал (Test-BRAVOCondition FAIL),
+# не втрачаючи стандартний report-шлях.
+#
+# -DeleteAction — ін'єкований testing seam (лише для
+# Framework/FixtureCleanupFailureIsControlled нижче): дозволяє
+# детерміновано підмінити саму delete-операцію синтетичним throw, без
+# залежності від реального файлового locking/AV-стану хоста. Production
+# call-сайти цей параметр не передають — використовується справжній
+# [IO.Directory]::Delete.
+function Remove-BRAVOSelfTestFixtureDirectory {
+    param(
+        # AllowEmptyString: контракт explicit допускає порожній Path
+        # (наприклад, якщо викликач ще не встиг встановити $tempRoot) —
+        # без цього атрибуту Mandatory-string parameter binding відкидав
+        # би порожній рядок ДО того, як тіло функції взагалі побачило б
+        # власну IsNullOrWhiteSpace-перевірку нижче.
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path,
+        [scriptblock]$DeleteAction
+    )
+    $result = [PSCustomObject]@{
+        Success      = $true
+        ErrorMessage = $null
+    }
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $result
+    }
+    try {
+        if (-not [IO.Directory]::Exists($Path)) {
+            return $result
+        }
+        if ($null -ne $DeleteAction) {
+            & $DeleteAction
+        } else {
+            [IO.Directory]::Delete($Path, $true)
+        }
+        return $result
+    } catch {
+        $result.Success = $false
+        $result.ErrorMessage = $_.Exception.Message
+        return $result
+    }
+}
+
+# Framework/FixtureCleanupFailureIsControlled (P2 fix, review comment
+# 3962385067): деterministic-доказ самого контракту Remove-
+# BRAVOSelfTestFixtureDirectory, БЕЗ залежності від реального
+# AV/handle-locking стану хоста (не flaky). Синтетичний -DeleteAction
+# кидає виняток замість справжнього [IO.Directory]::Delete — доводить,
+# що: (1) сам helper НІКОЛИ не re-throw'ить назовні; (2) result.Success
+# коректно $false; (3) реальне повідомлення винятку зберігається
+# незміненим; (4) звичайний Test-BRAVOCondition і далі повністю
+# працездатний одразу після цього виклику (тобто контрольований fail
+# ніяк не пошкоджує стан self-test-фреймворку). Синтетичний throw НЕ
+# записується як реальний cleanup FAIL у $script:failures — регресія
+# перевіряє САМ helper, а не імітує провал продакшн-фікстури.
+& {
+    $cleanupProbeRoot = Join-Path $env:TEMP ("BRAVO_SELFTEST_CLEANUPPROBE_{0}" -f [guid]::NewGuid().ToString("N"))
+    try {
+        [void][IO.Directory]::CreateDirectory($cleanupProbeRoot)
+        $syntheticMessage = 'synthetic fixture cleanup failure (Framework/FixtureCleanupFailureIsControlled)'
+        $probeResult = Remove-BRAVOSelfTestFixtureDirectory -Path $cleanupProbeRoot -DeleteAction {
+            throw $syntheticMessage
+        }.GetNewClosure()
+
+        Test-BRAVOCondition `
+            -Condition ($null -ne $probeResult -and $probeResult.Success -eq $false) `
+            -Name "Framework/FixtureCleanupFailureIsControlled.HelperReturnsControlledFailure" `
+            -Failure "Remove-BRAVOSelfTestFixtureDirectory мала повернути Success=`$false при синтетичному throw у -DeleteAction, а не кинути виняток назовні чи повернути Success=`$true"
+        Test-BRAVOCondition `
+            -Condition ($null -ne $probeResult -and $probeResult.ErrorMessage -eq $syntheticMessage) `
+            -Name "Framework/FixtureCleanupFailureIsControlled.ExceptionMessagePreserved" `
+            -Failure "реальне повідомлення синтетичного винятку не збереглося у ErrorMessage; фактично: '$($probeResult.ErrorMessage)'"
+        # Live-доказ, що звичайний Test-BRAVOCondition і далі коректно
+        # пише у $script:failures/$script:passCount після контрольованого
+        # cleanup-провалу вище — той самий канонічний шлях, яким справжні
+        # fixture-виклики нижче звітують FAIL, не втрачаючи report-шлях.
+        Test-BRAVOCondition `
+            -Condition $true `
+            -Name "Framework/FixtureCleanupFailureIsControlled.LiveAssertionStillUsable" `
+            -Failure "Test-BRAVOCondition недоступний/пошкоджений одразу після контрольованого cleanup-провалу"
+    } catch {
+        Test-BRAVOCondition `
+            -Condition $false `
+            -Name "Framework/FixtureCleanupFailureIsControlled.FixtureExecution" `
+            -Failure "не вдалося виконати isolated cleanup-helper regression fixture: $($_.Exception.Message)"
+    } finally {
+        # Справжнє (не injected) прибирання власного TEMP-scratch цієї
+        # регресії — best-effort, бо це не одна з production-фікстур із
+        # Coverage Scope: втрата цього маленького TEMP-каталогу не є
+        # прихованим провалом контракту, який ця регресія доводить.
+        try {
+            if ([IO.Directory]::Exists($cleanupProbeRoot)) {
+                [IO.Directory]::Delete($cleanupProbeRoot, $true)
+            }
+        } catch {
+            # Best-effort: цей TEMP-artifact — не production fixture,
+            # відсутність видалення тут не маскує жоден реальний дефект.
+        }
+    }
+}
+
 # Framework/BootstrapInvalidManifestFailsClosed (P2 regression, review
 # comment 3960370672): ІЗОЛЬОВАНА коротка перевірка ЛИШЕ bootstrap-рівня
 # fail-closed поведінки. Раніше цей сценарій (пошкоджений
@@ -17293,6 +17404,7 @@ function Copy-BRAVOSelfTestManifestFixtureFiles {
 # свідомо лишається VALID.
 & {
     $tempRoot = Join-Path $env:TEMP ("BRAVO_SELFTEST_BOOTSTRAPINVALID_{0}" -f [guid]::NewGuid().ToString("N"))
+    $cleanupResult = $null
     try {
         [void][IO.Directory]::CreateDirectory($tempRoot)
         Copy-BRAVOSelfTestManifestFixtureFiles -SourceRoot $root -DestinationRoot $tempRoot
@@ -17369,9 +17481,13 @@ function Copy-BRAVOSelfTestManifestFixtureFiles {
             -Name "Framework/BootstrapInvalidManifestFailsClosed.FixtureExecution" `
             -Failure "не вдалося виконати isolated bootstrap-invalid-manifest regression fixture (setup/copy/child-launch): $($_.Exception.Message)"
     } finally {
-        if (Test-Path -LiteralPath $tempRoot) {
-            [IO.Directory]::Delete($tempRoot, $true)
-        }
+        $cleanupResult = Remove-BRAVOSelfTestFixtureDirectory -Path $tempRoot
+    }
+    if ($null -ne $cleanupResult -and -not $cleanupResult.Success) {
+        Test-BRAVOCondition `
+            -Condition $false `
+            -Name "Framework/BootstrapInvalidManifestFailsClosed.Cleanup" `
+            -Failure "не вдалося видалити TEMP fixture-каталог '$tempRoot': $($cleanupResult.ErrorMessage)"
     }
 }
 
@@ -17390,6 +17506,7 @@ function Copy-BRAVOSelfTestManifestFixtureFiles {
 # RUNTIME_MANIFEST.json — лише у цю ізольовану TEMP-копію.
 & {
     $tempRoot = Join-Path $env:TEMP ("BRAVO_SELFTEST_PHASE0ONLY_{0}" -f [guid]::NewGuid().ToString("N"))
+    $cleanupResult = $null
     try {
         [void][IO.Directory]::CreateDirectory($tempRoot)
         Copy-BRAVOSelfTestManifestFixtureFiles -SourceRoot $root -DestinationRoot $tempRoot
@@ -17458,9 +17575,13 @@ function Copy-BRAVOSelfTestManifestFixtureFiles {
             -Name "Framework/Phase0FailStopsDomains.FixtureExecution" `
             -Failure "не вдалося виконати isolated Phase0-only regression fixture (setup/copy/synthetic-file/child-launch): $($_.Exception.Message)"
     } finally {
-        if (Test-Path -LiteralPath $tempRoot) {
-            [IO.Directory]::Delete($tempRoot, $true)
-        }
+        $cleanupResult = Remove-BRAVOSelfTestFixtureDirectory -Path $tempRoot
+    }
+    if ($null -ne $cleanupResult -and -not $cleanupResult.Success) {
+        Test-BRAVOCondition `
+            -Condition $false `
+            -Name "Framework/Phase0FailStopsDomains.Cleanup" `
+            -Failure "не вдалося видалити TEMP fixture-каталог '$tempRoot': $($cleanupResult.ErrorMessage)"
     }
 }
 
@@ -17524,6 +17645,7 @@ function Copy-BRAVOSelfTestManifestFixtureFiles {
 & {
     $tempRoot = Join-Path $env:TEMP ("BRAVO_SELFTEST_TAMPER_{0}" -f [guid]::NewGuid().ToString("N"))
     $sentinelPath = Join-Path $env:TEMP ("BRAVO_SELFTEST_TAMPER_SENTINEL_{0}.txt" -f [guid]::NewGuid().ToString("N"))
+    $cleanupResult = $null
     try {
         [void][IO.Directory]::CreateDirectory($tempRoot)
         Copy-BRAVOSelfTestManifestFixtureFiles -SourceRoot $root -DestinationRoot $tempRoot
@@ -17569,12 +17691,27 @@ function Copy-BRAVOSelfTestManifestFixtureFiles {
             -Name "Framework/TamperedHelperLoggingBlockedBeforeExecution.FixtureExecution" `
             -Failure "не вдалося виконати isolated tampered-HelperLogging regression fixture (setup/copy/tamper/child-launch): $($_.Exception.Message)"
     } finally {
-        if (Test-Path -LiteralPath $tempRoot) {
-            [IO.Directory]::Delete($tempRoot, $true)
+        $cleanupResult = Remove-BRAVOSelfTestFixtureDirectory -Path $tempRoot
+        # Sentinel — окремий одиночний файл (не каталог), той самий
+        # інваріант: filesystem-виняток тут теж не має покинути finally.
+        if ($null -eq $cleanupResult -or $cleanupResult.Success) {
+            try {
+                if ([IO.File]::Exists($sentinelPath)) {
+                    [IO.File]::Delete($sentinelPath)
+                }
+            } catch {
+                $cleanupResult = [PSCustomObject]@{
+                    Success      = $false
+                    ErrorMessage = "sentinel-файл: $($_.Exception.Message)"
+                }
+            }
         }
-        if ([IO.File]::Exists($sentinelPath)) {
-            [IO.File]::Delete($sentinelPath)
-        }
+    }
+    if ($null -ne $cleanupResult -and -not $cleanupResult.Success) {
+        Test-BRAVOCondition `
+            -Condition $false `
+            -Name "Framework/TamperedHelperLoggingBlockedBeforeExecution.Cleanup" `
+            -Failure "не вдалося видалити TEMP fixture-каталог '$tempRoot' або sentinel-файл '$sentinelPath': $($cleanupResult.ErrorMessage)"
     }
 }
 
@@ -17592,6 +17729,7 @@ function Copy-BRAVOSelfTestManifestFixtureFiles {
 # лише TEMP-копія.
 & {
     $tempRoot = Join-Path $env:TEMP ("BRAVO_SELFTEST_BOOTSTRAPTHROW_{0}" -f [guid]::NewGuid().ToString("N"))
+    $cleanupResult = $null
     try {
         [void][IO.Directory]::CreateDirectory($tempRoot)
         Copy-BRAVOSelfTestManifestFixtureFiles -SourceRoot $root -DestinationRoot $tempRoot
@@ -17655,9 +17793,13 @@ function Copy-BRAVOSelfTestManifestFixtureFiles {
             -Name "Framework/BootstrapIntegrityScanExceptionIsControlled.FixtureExecution" `
             -Failure "не вдалося виконати isolated bootstrap-exception regression fixture (setup/copy/tamper/child-launch): $($_.Exception.Message)"
     } finally {
-        if (Test-Path -LiteralPath $tempRoot) {
-            [IO.Directory]::Delete($tempRoot, $true)
-        }
+        $cleanupResult = Remove-BRAVOSelfTestFixtureDirectory -Path $tempRoot
+    }
+    if ($null -ne $cleanupResult -and -not $cleanupResult.Success) {
+        Test-BRAVOCondition `
+            -Condition $false `
+            -Name "Framework/BootstrapIntegrityScanExceptionIsControlled.Cleanup" `
+            -Failure "не вдалося видалити TEMP fixture-каталог '$tempRoot': $($cleanupResult.ErrorMessage)"
     }
 }
 
