@@ -430,6 +430,20 @@ function Assert-BravoLoadedConfiguration {
                 Write-Warning "maintenanceSettings.Retention.CompressedLogDeletionEnabled = '$($retentionSettingsForValidation.CompressedLogDeletionEnabled)' не є `$true/`$false — застосовується безпечне `$false (стиснуті .mdz не видаляються)."
                 $retentionSettingsForValidation.CompressedLogDeletionEnabled = $false
             }
+            if (-not $retentionSettingsForValidation.Contains('RawSourceGraceDays')) {
+                # Безпечний дефолт: 0 = точна попередня поведінка (негайне
+                # видалення джерела одразу після успішної архівації).
+                $retentionSettingsForValidation.RawSourceGraceDays = 0
+            } else {
+                $rawSourceGraceDaysValue = 0
+                if (-not [int]::TryParse([string]$retentionSettingsForValidation.RawSourceGraceDays, [ref]$rawSourceGraceDaysValue) -or
+                    $rawSourceGraceDaysValue -lt 0) {
+                    Write-Warning "maintenanceSettings.Retention.RawSourceGraceDays = '$($retentionSettingsForValidation.RawSourceGraceDays)' некоректне — застосовується безпечний дефолт 0 (негайне видалення після успішної архівації, поточна поведінка)."
+                    $retentionSettingsForValidation.RawSourceGraceDays = 0
+                } else {
+                    $retentionSettingsForValidation.RawSourceGraceDays = $rawSourceGraceDaysValue
+                }
+            }
         }
     }
 
@@ -448,6 +462,18 @@ function Assert-BravoLoadedConfiguration {
         if (-not $global:sftpDirectories.Contains('ExchangeApiLogs') -or
             [string]::IsNullOrWhiteSpace([string]$global:sftpDirectories.ExchangeApiLogs)) {
             $global:sftpDirectories.ExchangeApiLogs = 'logs/exchangapi'
+        }
+        # Каталоги власних операційних логів BRAVO (log-lifecycle P1):
+        # legacy-конфіги без цих ключів отримують канонічні дефолти — самі
+        # вивантаження при цьому лишаються вимкненими окремими opt-in
+        # тумблерами componentSettings.SFTP.*UploadEnabled нижче.
+        if (-not $global:sftpDirectories.Contains('MaintenanceLog') -or
+            [string]::IsNullOrWhiteSpace([string]$global:sftpDirectories.MaintenanceLog)) {
+            $global:sftpDirectories.MaintenanceLog = 'logs/maintenance'
+        }
+        if (-not $global:sftpDirectories.Contains('ArchivLog') -or
+            [string]::IsNullOrWhiteSpace([string]$global:sftpDirectories.ArchivLog)) {
+            $global:sftpDirectories.ArchivLog = 'logs/archiv'
         }
     }
 
@@ -601,6 +627,27 @@ function Assert-BravoLoadedConfiguration {
         } elseif (-not ($storageDestinationNode.Enabled -is [bool])) {
             throw ("componentSettings.{0}.Enabled = '{1}' некоректне: головний вимикач сховища приймає лише `$true або `$false." -f `
                 $storageDestinationName, [string]$storageDestinationNode.Enabled)
+        }
+    }
+
+    # Opt-in вивантаження власних операційних логів (log-lifecycle P1):
+    # legacy-конфіги без цих ключів = $false (точна попередня поведінка,
+    # жодних нових мережевих операцій мовчки). На відміну від Enabled вище,
+    # некоректне значення НЕ кидає, а деградує до безпечного $false з
+    # попередженням: помилкове $false лише пропускає телеметричне
+    # вивантаження логу, тоді як помилкове $true увімкнуло б нову вихідну
+    # SFTP-поведінку, якої оператор не просив.
+    if ($global:componentSettings.Contains('SFTP') -and
+        ($global:componentSettings.SFTP -is [hashtable])) {
+        foreach ($ownLogUploadToggleName in @('MaintenanceLogUploadEnabled', 'ArchiveLogUploadEnabled')) {
+            $sftpComponentNode = $global:componentSettings.SFTP
+            if (-not $sftpComponentNode.Contains($ownLogUploadToggleName)) {
+                $sftpComponentNode[$ownLogUploadToggleName] = $false
+            } elseif (-not ($sftpComponentNode[$ownLogUploadToggleName] -is [bool])) {
+                Write-Warning ("componentSettings.SFTP.{0} = '{1}' некоректне — застосовується безпечний дефолт `$false (вивантаження власного логу вимкнено)." -f `
+                    $ownLogUploadToggleName, [string]$sftpComponentNode[$ownLogUploadToggleName])
+                $sftpComponentNode[$ownLogUploadToggleName] = $false
+            }
         }
     }
 

@@ -200,11 +200,17 @@ function Resolve-RequestedComponents {
                 # обов'язковими) — $bazaSyncEffective.ScheduledSftpSyncRequired
                 # покриває APP+WWW разом, той самий канонічний вираз, що
                 # Archive/Health.
-                $sftpRequired = [bool]$storageEffective.SFTP.Enabled -and (
-                    [bool]$storageEffective.SFTP.ArchiveUpload -or
-                    [bool]$bazaSyncEffective.ScheduledSftpSyncRequired -or
-                    [bool]$backupMonitoring.SFTP.Enabled
-                )
+                # R3-4 (PR #136, третє коло review): canonical формула тепер
+                # у Test-BRAVOSftpCredentialsRequired (BRAVO.Configuration.
+                # Derivation) — враховує й MaintenanceLogUploadEnabled/
+                # ArchiveLogUploadEnabled, які цей inline-вираз пропускав.
+                $sftpRequired = Test-BRAVOSftpCredentialsRequired `
+                    -SftpEnabled ([bool]$storageEffective.SFTP.Enabled) `
+                    -ArchiveUploadEnabled ([bool]$storageEffective.SFTP.ArchiveUpload) `
+                    -MaintenanceLogUploadEnabled ([bool]$componentSettings.SFTP.MaintenanceLogUploadEnabled) `
+                    -ArchiveLogUploadEnabled ([bool]$componentSettings.SFTP.ArchiveLogUploadEnabled) `
+                    -ScheduledSftpSyncRequired ([bool]$bazaSyncEffective.ScheduledSftpSyncRequired) `
+                    -BackupMonitoringSftpEnabled ([bool]$backupMonitoring.SFTP.Enabled)
                 if ($sftpRequired -and -not $resolved.Contains("SFTP")) {
                     [void]$resolved.Add("SFTP")
                 }

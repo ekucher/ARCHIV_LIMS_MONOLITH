@@ -631,12 +631,19 @@ $broken = Invoke-SuspensionScenario -LogPath (Join-Path $TestRoot 'broken.log') 
     # effective-шар, а не сирий componentSettings — інакше глобально
     # вимкнений destination все одно вимагав би креденшелів чи виконував
     # мережеву TCP-пробу.
+    # R3-4 (PR #136, третє коло review): sftpEnabled/sftpConfigured тепер
+    # обчислюються через canonical Test-BRAVOSftpCredentialsRequired
+    # (враховує й own-log upload тумблери), а не через inline-вираз —
+    # умова тесту оновлена на новий call site, та сама властивість (master-
+    # switch AND, ArchiveUpload включено, SMB без прямого дочірнього
+    # обходу) перевіряється й далі.
     Test-BRAVOCondition `
         -Condition (
-            $dryRunScriptTextForSftp.Contains('$sftpEnabled = [bool]$storageEffective.SFTP.Enabled -and (') -and
-            $dryRunScriptTextForSftp.Contains('$sftpConfigured = [bool]$storageEffective.SFTP.Enabled -and (') -and
+            $dryRunScriptTextForSftp.Contains('$sftpEnabled = Test-BRAVOSftpCredentialsRequired') -and
+            $dryRunScriptTextForSftp.Contains('$sftpConfigured = Test-BRAVOSftpCredentialsRequired') -and
+            $dryRunScriptTextForSftp.Contains('-SftpEnabled (Test-SettingEnabled $storageEffective.SFTP.Enabled)') -and
+            $dryRunScriptTextForSftp.Contains('-ArchiveUploadEnabled (Test-SettingEnabled $storageEffective.SFTP.ArchiveUpload)') -and
             $dryRunScriptTextForSftp.Contains('$smbEnabled = Test-SettingEnabled $storageEffective.SMB.ArchiveCopy') -and
-            $dryRunScriptTextForSftp.Contains('(Test-SettingEnabled $storageEffective.SFTP.ArchiveUpload) -or') -and
             -not $dryRunScriptTextForSftp.Contains('Test-SettingEnabled $componentSettings.SMB.ArchiveCopy')
         ) `
         -Name "DryRun/StorageMasterSwitchGatesCredentialsAndNetworkProbes" `
@@ -3387,10 +3394,16 @@ if ($r.StateUpdated -and -not [IO.File]::Exists($PassedPath)) { exit 0 } else { 
     # креденшели обов'язковими). $bazaSyncEffective.ScheduledSftpSyncRequired
     # покриває APP+WWW разом; master-вимикач гейтить усе "Required"-обчислення,
     # explicit-меню лишається доступним завжди.
+    # R3-4 (PR #136, третє коло review): sftpRequired тепер обчислюється
+    # через canonical Test-BRAVOSftpCredentialsRequired (враховує й own-log
+    # upload тумблери), а не через inline-вираз — та сама властивість
+    # (master-switch, обидва напрямки BAZA, без прямого дочірнього обходу
+    # SMB) перевіряється й далі на новому call site.
     Test-BRAVOCondition `
         -Condition (
-            $credentialsSetupScriptText.Contains('$sftpRequired = [bool]$storageEffective.SFTP.Enabled -and (') -and
-            $credentialsSetupScriptText.Contains('[bool]$bazaSyncEffective.ScheduledSftpSyncRequired -or') -and
+            $credentialsSetupScriptText.Contains('$sftpRequired = Test-BRAVOSftpCredentialsRequired') -and
+            $credentialsSetupScriptText.Contains('-SftpEnabled ([bool]$storageEffective.SFTP.Enabled)') -and
+            $credentialsSetupScriptText.Contains('-ScheduledSftpSyncRequired ([bool]$bazaSyncEffective.ScheduledSftpSyncRequired)') -and
             $credentialsSetupScriptText.Contains('$smbRequired = [bool]$storageEffective.SMB.ArchiveCopy') -and
             -not $credentialsSetupScriptText.Contains('[bool]$componentSettings.Synchronization.BAZA_APP_SFTP -or')
         ) `
@@ -5693,10 +5706,46 @@ if ($r.StateUpdated -and -not [IO.File]::Exists($PassedPath)) { exit 0 } else { 
             -not [string]::IsNullOrWhiteSpace($sftpMkdirFunctionText) -and
             $sftpMkdirFunctionText.Contains('option batch continue') -and
             $sftpMkdirFunctionText.Contains('mkdir') -and
-            $sftpMkdirCallCount -eq 2
+            # 3 точки виклику: автоматичний потік завантаження/синхронізації,
+            # ручна -SyncBAZA і best-effort вивантаження власного логу
+            # прогону наприкінці Main (log-lifecycle P1, sftpDirectories.
+            # ArchivLog).
+            $sftpMkdirCallCount -eq 3
         ) `
         -Name "Console/ArchiveEnsuresSFTPDirectoriesBeforeTransfer" `
-        -Failure "Initialize-BRAVOSFTPRemoteDirectories (mkdir з option batch continue) має існувати й викликатись і в автоматичному потоці завантаження/синхронізації, і в ручній -SyncBAZA — інакше відсутні каталоги на SFTP і далі валять кожну передачу"
+        -Failure "Initialize-BRAVOSFTPRemoteDirectories (mkdir з option batch continue) має існувати й викликатись в автоматичному потоці завантаження/синхронізації, у ручній -SyncBAZA і перед вивантаженням власного логу — інакше відсутні каталоги на SFTP і далі валять кожну передачу"
+
+    # Log-lifecycle P1 (code-review знахідка): вивантаження власного логу —
+    # самостійна причина мати SFTP-креденшели. Без цього терму
+    # ArchiveLogUploadEnabled=$true при ArchiveUpload=$false (і без
+    # scheduled sync) лишав $script:sftpUrl порожнім, і фінальний
+    # upload-блок мовчки пропускався назавжди (мертвий тумблер).
+    Test-BRAVOCondition `
+        -Condition (
+            $archiveScriptText.Contains('[bool]$componentSettings.SFTP.ArchiveLogUploadEnabled') -and
+            ($archiveScriptText -match '(?s)\$sftpCredentialRequired = .{0,700}?ArchiveLogUploadEnabled')
+        ) `
+        -Name "Console/ArchiveOwnLogUploadAloneRequiresSftpCredentials" `
+        -Failure "ArchiveLogUploadEnabled має входити термом у `$sftpCredentialRequired — інакше тумблер мертвий без увімкненого ArchiveUpload/scheduled sync"
+
+    # Log-lifecycle P1: контракт "провал вивантаження власного логу
+    # структурно не може змінити результат прогону" тримається на ПОРЯДКУ
+    # коду — upload-блок Maintenance мусить стояти ПІСЛЯ резолву
+    # $script:maintenanceRuntimeExitCode і фінального футера. Пін ловить
+    # випадкове перенесення блоку вище під час майбутніх рефакторингів.
+    $maintenanceOwnLogUploadIndex = $maintenanceScriptText.IndexOf('$componentSettings.SFTP.MaintenanceLogUploadEnabled')
+    $maintenanceExitResolveIndex = $maintenanceScriptText.IndexOf('Get-BRAVOMaintenanceResolvedExitCode')
+    $maintenanceSummaryFooterIndex = $maintenanceScriptText.IndexOf('Write-BRAVOFinalSummaryFooter -LogFile $LOG_FILE')
+    Test-BRAVOCondition `
+        -Condition (
+            $maintenanceOwnLogUploadIndex -ge 0 -and
+            $maintenanceExitResolveIndex -ge 0 -and
+            $maintenanceSummaryFooterIndex -ge 0 -and
+            $maintenanceOwnLogUploadIndex -gt $maintenanceExitResolveIndex -and
+            $maintenanceOwnLogUploadIndex -gt $maintenanceSummaryFooterIndex
+        ) `
+        -Name "Console/MaintenanceOwnLogUploadRunsAfterExitCodeResolution" `
+        -Failure "вивантаження власного логу Maintenance мусить стояти після резолву exit code і фінального футера — інакше провал телеметрії може змінити результат прогону"
 
     # $difference.Local з WinSCP CompareDirectories — це RemoteFileInfo
     # навіть для локальної сторони порівняння, а не System.IO.FileInfo:
@@ -13135,9 +13184,14 @@ function Get-BRAVOMaintenanceSummaryResult {
         -Name "Maintenance/LogsStepBaselineIsTakenAfterRestore"
 
     # --- Cleanup: SKIPPED/OK/WARN-FAIL wiring у реальному джерелі.
+    # Вікно 1400 -> 2000: P2-2/P2-3 (PR #136 review) додав дві нові
+    # EnumerationWarnings/DeletionWarnings-гілки в $cleanupDetailParts
+    # ПЕРЕД цим call site, тож фіксований 1400-символьний lookback
+    # більше не дотягувався до SKIPPED/Get-BRAVOMaintenanceStepStatus
+    # вище.
     $cleanupResultCallIndex = $maintenanceScriptTextForManifestStorage.IndexOf("-Name 'Очистка старих даних/логів' ``", $planCleanupIndex)
     $cleanupResultCallWindow = if ($cleanupResultCallIndex -ge 0) {
-        $maintenanceScriptTextForManifestStorage.Substring([Math]::Max(0, $cleanupResultCallIndex - 1400), 1400)
+        $maintenanceScriptTextForManifestStorage.Substring([Math]::Max(0, $cleanupResultCallIndex - 2000), 2000)
     } else { '' }
     Test-BRAVOCondition `
         -Condition (
@@ -13202,13 +13256,16 @@ function Get-BRAVOMaintenanceSummaryResult {
     # --- AutoShutdown: SKIPPED/OK/FAIL wiring (Invoke-AutoShutdown реально
     # НЕ викликається в тесті — це системна команда shutdown; лише
     # структурна перевірка джерела, повернення значення й wiring).
-    $autoShutdownResultCallIndex = $maintenanceScriptTextForManifestStorage.IndexOf("`$script:currentMaintenanceOperation = 'Автоматичне вимкнення сервера'")
-    # dev.16 (review round 3): 2200, не 1400 — гілка $script:EnableAutoShutdown
-    # тепер містить 3-way Scheduled/Cancelled/Failed switch (AutoShutdown
-    # final-state rendering), і фіксоване вікно мусить сягати ELSE-гілки
-    # (SKIPPED 'вимкнено') нижче за течією тексту.
+    # P2-6 (PR #136 review): фактичний виклик Invoke-AutoShutdown перенесено
+    # в кінець скрипта (ПІСЛЯ best-effort вивантаження власних логів) —
+    # 60-секундний countdown більше не стартує до відкриття SFTP-сесії.
+    # Якір вікна тепер на відкладеному блоці, а не на ранньому маркері
+    # reachability (той самий рядок 'Автоматичне вимкнення сервера' тепер
+    # зустрічається двічі: маркер + відкладений виклик — беремо ОСТАННЄ
+    # входження).
+    $autoShutdownResultCallIndex = $maintenanceScriptTextForManifestStorage.LastIndexOf('ВИКЛИК ФУНКЦІЇ АВТОМАТИЧНОГО ВИМКНЕННЯ (P2-6')
     $autoShutdownResultCallWindow = if ($autoShutdownResultCallIndex -ge 0) {
-        $maintenanceScriptTextForManifestStorage.Substring($autoShutdownResultCallIndex, [Math]::Min(2200, $maintenanceScriptTextForManifestStorage.Length - $autoShutdownResultCallIndex))
+        $maintenanceScriptTextForManifestStorage.Substring($autoShutdownResultCallIndex, [Math]::Min(2600, $maintenanceScriptTextForManifestStorage.Length - $autoShutdownResultCallIndex))
     } else { '' }
     Test-BRAVOCondition `
         -Condition (
@@ -13318,14 +13375,20 @@ function Get-BRAVOMaintenanceSummaryResult {
         ) `
         -Name "Maintenance/PostOperationsRenderAfterEightOfEight" `
         -Failure "Cleanup -> Archive -> AutoShutdown мають рендеритись у цьому порядку, і всі — після [8/8] Контроль діапазонів ID"
+    # P2-6 (PR #136 review): фактичний виклик Invoke-AutoShutdown (60-
+    # секундний countdown) перенесено ПІСЛЯ best-effort вивантаження
+    # власних логів на SFTP, яке саме по собі відбувається ПІСЛЯ
+    # обчислення exit code і фінального summary/footer — інакше сервер
+    # міг вимкнутись посеред передачі логу. Порядок тепер: exit code ->
+    # фінальний summary -> (uploads) -> AutoShutdown, а не навпаки.
     Test-BRAVOCondition `
         -Condition (
-            $autoShutdownResultCallIndex -ge 0 -and
-            $maintenanceExitCodeCalcIndex -gt $autoShutdownResultCallIndex -and
-            $maintenanceSummaryHeaderOrderIndex -gt $maintenanceExitCodeCalcIndex
+            $maintenanceExitCodeCalcIndex -ge 0 -and
+            $maintenanceSummaryHeaderOrderIndex -gt $maintenanceExitCodeCalcIndex -and
+            $autoShutdownResultCallIndex -gt $maintenanceSummaryHeaderOrderIndex
         ) `
         -Name "Maintenance/PostOperationsPrecedeFinalSummary" `
-        -Failure "AutoShutdown має рендеритись ДО обчислення exit code, яке, своєю чергою, ДО Write-BRAVOFinalSummaryHeader"
+        -Failure "обчислення exit code має передувати Write-BRAVOFinalSummaryHeader, а фактичний відкладений виклик AutoShutdown (P2-6) — рендеритись ПІСЛЯ фінального summary (після best-effort log uploads, перед exit)"
 
     # --- Exact failure attribution: реальний $errorMsg у catch і
     # fallback-FAIL "рівно один раз" через прапорці *Reported.
@@ -16574,6 +16637,11 @@ function Write-BRAVOLog {
         -Name 'Archive/HashBusinessCallsRemainUnchanged' `
         -Failure "переміщення заголовка HASH не повинно було змінити бізнес-логіку хешування: New-SHA512Hash має викликатися рівно 1 раз (усередині Invoke-BRAVOComponentBackup), Get-BRAVOFileHash — рівно 4 рази; знайдено $($archiveNewSha512HashCallAsts.Count)/$($archiveGetFileHashCallAsts.Count)"
 
+    # Archive (P2-1/P2-5, PR #136 review): рекурсивне впорядкування SFTP-
+    # каталогів перед mkdir і єдиний call site вивантаження власного логу.
+    . (Join-Path $root 'selftest\BRAVO_SELF_TEST.Archive.ps1')
+    . (Join-Path $root 'selftest\BRAVO_SELF_TEST.SftpCredentialsRequired.ps1')
+    . (Join-Path $root 'selftest\BRAVO_SELF_TEST.MaintenanceOwnLog.ps1')
     . (Join-Path $root 'selftest\BRAVO_SELF_TEST.BazaSync.ps1')
     # TraceArchive ПІСЛЯ BazaSync: SFTP-сценарії добового Trace-архіву
     # використовують New-BRAVOSelfTestFakeBazaSession, визначену там.

@@ -172,6 +172,7 @@ function Get-BRAVODefaultConfiguration {
                 CompressedLogDeletionEnabled = $false
                 CompressedLogDays = 180
                 FailedArchiveDays = 30
+                RawSourceGraceDays = 0
             }
             Trace = @{
                 BISSourcePath = ""
@@ -228,6 +229,8 @@ function Get-BRAVODefaultConfiguration {
             SFTP = @{
                 Enabled = $true
                 ArchiveUpload = $true
+                MaintenanceLogUploadEnabled = $false
+                ArchiveLogUploadEnabled = $false
             }
             SMB = @{
                 Enabled = $true
@@ -360,6 +363,8 @@ function Get-BRAVODefaultConfiguration {
             Trace = "trace"
             TraceLogs = "logs/trace"
             ExchangeApiLogs = "logs/exchangapi"
+            MaintenanceLog = "logs/maintenance"
+            ArchivLog = "logs/archiv"
         }
 
         backupMonitoring = @{

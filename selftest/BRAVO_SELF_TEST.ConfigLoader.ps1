@@ -421,7 +421,12 @@ try {
     [void][IO.Directory]::CreateDirectory($storageSwitchBackupDir)
     $storageSwitchKitText = [IO.File]::ReadAllText((Join-Path $root 'BRAVO.config'))
     $storageSwitchBackupRootLine = '    BackupRoot    = ""'
-    $storageSwitchSftpBlock = "    SFTP = @{`r`n        Enabled = `$true`r`n        ArchiveUpload = `$true`r`n    }"
+    # Префікс без закриваючої дужки: блок SFTP у committed BRAVO.config
+    # тепер містить додаткові opt-in ключі (MaintenanceLogUploadEnabled/
+    # ArchiveLogUploadEnabled, log-lifecycle P1) — заміни нижче
+    # модифікують лише рядки Enabled/ArchiveUpload, лишаючи хвіст блоку
+    # (коментарі + нові тумблери + дужку) недоторканим.
+    $storageSwitchSftpBlock = "    SFTP = @{`r`n        Enabled = `$true`r`n        ArchiveUpload = `$true"
     $storageSwitchSmbBlock = "    SMB = @{`r`n        Enabled = `$true"
     foreach ($storageSwitchRequiredLine in @($storageSwitchBackupRootLine, $storageSwitchSftpBlock, $storageSwitchSmbBlock)) {
         if (-not $storageSwitchKitText.Contains($storageSwitchRequiredLine)) {
@@ -445,7 +450,12 @@ try {
         "';SMBCP=' + [string]`$global:storageEffective.SMB.ArchiveCopy + " +
         "';RAWUP=' + [string]`$global:componentSettings.SFTP.ArchiveUpload + " +
         "';SCHED=' + [string]`$global:schedulerSettings.BAZASync.Enabled + " +
-        "';REQ=' + [string]`$global:bazaSyncEffective.ScheduledSftpSyncRequired " +
+        "';REQ=' + [string]`$global:bazaSyncEffective.ScheduledSftpSyncRequired + " +
+        "';MLUP=' + [string]`$global:componentSettings.SFTP.MaintenanceLogUploadEnabled + " +
+        "';ALUP=' + [string]`$global:componentSettings.SFTP.ArchiveLogUploadEnabled + " +
+        "';MLDIR=' + [string]`$global:sftpDirectories.MaintenanceLog + " +
+        "';ALDIR=' + [string]`$global:sftpDirectories.ArchivLog + " +
+        "';GRACE=' + [string]`$global:maintenanceSettings.Retention.RawSourceGraceDays " +
         "} catch { 'CHILD-ERROR: ' + `$_.Exception.Message }"
     )
     $storageSwitchCases = @(
@@ -460,7 +470,7 @@ try {
             Name = 'ConfigLoader/StorageSwitchSftpDisabledKeepsRawChildAndDropsEffective'
             ConfigText = $storageSwitchHermeticText.Replace(
                 $storageSwitchSftpBlock,
-                "    SFTP = @{`r`n        Enabled = `$false`r`n        ArchiveUpload = `$true`r`n    }"
+                "    SFTP = @{`r`n        Enabled = `$false`r`n        ArchiveUpload = `$true"
             )
             LocalOverride = $null
             Expected = 'SFTPEN=False;SFTPUP=False;SMBEN=True;SMBCP=False;RAWUP=True;SCHED=False;REQ=False'
@@ -470,7 +480,7 @@ try {
             Name = 'ConfigLoader/StorageSwitchInvalidValueIsCanonicalConfigError'
             ConfigText = $storageSwitchHermeticText.Replace(
                 $storageSwitchSftpBlock,
-                "    SFTP = @{`r`n        Enabled = 'yes'`r`n        ArchiveUpload = `$true`r`n    }"
+                "    SFTP = @{`r`n        Enabled = 'yes'`r`n        ArchiveUpload = `$true"
             )
             LocalOverride = $null
             Expected = 'CHILD-ERROR:'
@@ -495,6 +505,48 @@ try {
             LocalOverride = $null
             Expected = 'SFTPEN=True;SFTPUP=True;SMBEN=True;SMBCP=False;RAWUP=True;SCHED=True;REQ=True'
             Failure = 'повернення Enabled=$true (комплектний дефолт) мусить відновлювати effective-поведінку 5.2.1 без ручної зміни дочірніх прапорців'
+        },
+        @{
+            # Log-lifecycle P1: конфіг, що передує ключам вивантаження
+            # власних логів (тумблери + каталоги видалені) — loader мусить
+            # нормалізувати тумблери в $false (opt-in, жодних нових
+            # мережевих операцій мовчки) і каталоги в канонічні дефолти.
+            Name = 'ConfigLoader/OwnLogUploadLegacyConfigDefaultsToDisabled'
+            ConfigText = ($storageSwitchHermeticText `
+                -replace '(?m)^[ \t]+MaintenanceLogUploadEnabled = .*\r?\n', '' `
+                -replace '(?m)^[ \t]+ArchiveLogUploadEnabled = .*\r?\n', '' `
+                -replace '(?m)^[ \t]+MaintenanceLog = .*\r?\n', '' `
+                -replace '(?m)^[ \t]+ArchivLog = .*\r?\n', '')
+            LocalOverride = $null
+            Expected = 'MLUP=False;ALUP=False;MLDIR=logs/maintenance;ALDIR=logs/archiv'
+            Failure = 'legacy-конфіг без ключів вивантаження власних логів мусить давати вимкнені тумблери (opt-in) і канонічні дефолт-каталоги'
+        },
+        @{
+            # Некоректне значення тумблера деградує до безпечного $false
+            # (телеметрію пропускаємо), а НЕ вмикає нову SFTP-поведінку і
+            # НЕ валить конфігурацію (на відміну від master-Enabled вище).
+            Name = 'ConfigLoader/OwnLogUploadInvalidValueDegradesToDisabled'
+            ConfigText = $storageSwitchHermeticText.Replace(
+                "        MaintenanceLogUploadEnabled = `$false",
+                "        MaintenanceLogUploadEnabled = 'yes'"
+            )
+            LocalOverride = $null
+            Expected = 'MLUP=False;ALUP=False'
+            Failure = "не-bool значення MaintenanceLogUploadEnabled мусить деградувати до `$false з попередженням, без помилки конфігурації"
+        },
+        @{
+            # Log-lifecycle P5: некоректне значення grace-періоду сирих
+            # джерел деградує до безпечного 0 (негайне видалення після
+            # успішної архівації = точна попередня поведінка), а не валить
+            # конфігурацію і не лишає сміттєве значення під StrictMode.
+            Name = 'ConfigLoader/RawSourceGraceDaysInvalidValueDegradesToZero'
+            ConfigText = $storageSwitchHermeticText.Replace(
+                "        RawSourceGraceDays = 0",
+                "        RawSourceGraceDays = 'abc'"
+            )
+            LocalOverride = $null
+            Expected = 'GRACE=0'
+            Failure = "некоректне RawSourceGraceDays мусить деградувати до 0 з попередженням (безпечний дефолт = попередня поведінка)"
         }
     )
     $storageSwitchLocalConfigPath = Join-Path $storageSwitchScenarioRoot 'BRAVO.local.config'

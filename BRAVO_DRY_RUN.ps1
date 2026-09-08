@@ -414,11 +414,18 @@ function Get-RequiredCredentialDescriptors {
     # потрібен лише для backupMonitoring.SFTP.Enabled (Health-моніторинг),
     # яке master-вимикач теж нейтралізує — Health більше не торкається
     # SFTP при глобально вимкненому destination.
-    $sftpEnabled = [bool]$storageEffective.SFTP.Enabled -and (
-        (Test-SettingEnabled $storageEffective.SFTP.ArchiveUpload) -or
-        $bazaSyncEffective.ScheduledSftpSyncRequired -or
-        (Test-SettingEnabled $backupMonitoring.SFTP.Enabled)
-    )
+    # R3-4 (PR #136, третє коло review): canonical формула тепер у
+    # Test-BRAVOSftpCredentialsRequired (BRAVO.Configuration.Derivation) —
+    # враховує й MaintenanceLogUploadEnabled/ArchiveLogUploadEnabled, які
+    # цей inline-вираз раніше пропускав. Кожен caller лишає власний спосіб
+    # приведення до bool (тут — Test-SettingEnabled).
+    $sftpEnabled = Test-BRAVOSftpCredentialsRequired `
+        -SftpEnabled (Test-SettingEnabled $storageEffective.SFTP.Enabled) `
+        -ArchiveUploadEnabled (Test-SettingEnabled $storageEffective.SFTP.ArchiveUpload) `
+        -MaintenanceLogUploadEnabled (Test-SettingEnabled $componentSettings.SFTP.MaintenanceLogUploadEnabled) `
+        -ArchiveLogUploadEnabled (Test-SettingEnabled $componentSettings.SFTP.ArchiveLogUploadEnabled) `
+        -ScheduledSftpSyncRequired ([bool]$bazaSyncEffective.ScheduledSftpSyncRequired) `
+        -BackupMonitoringSftpEnabled (Test-SettingEnabled $backupMonitoring.SFTP.Enabled)
     if ($sftpEnabled) {
         [void]$descriptors.Add([pscustomobject]@{
             Name = "SFTP логін"
@@ -1372,14 +1379,17 @@ try {
         Add-DryRunResult FAIL 'Цілісність' 'Compatibility module' "не знайдено: $compatibilityModulePath"
     }
 
-    # componentSettings.SFTP.Enabled (5.2.2): той самий вираз, що і для
-    # $sftpEnabled вище — WinSCP CLI/TCP-проба (нижче, $sftpRequired)
-    # не мають вимагатись для глобально вимкненого destination.
-    $sftpConfigured = [bool]$storageEffective.SFTP.Enabled -and (
-        (Test-SettingEnabled $storageEffective.SFTP.ArchiveUpload) -or
-        $bazaSyncEffective.ScheduledSftpSyncRequired -or
-        (Test-SettingEnabled $backupMonitoring.SFTP.Enabled)
-    )
+    # componentSettings.SFTP.Enabled (5.2.2): той самий canonical предикат,
+    # що і для $sftpEnabled вище (R3-4) — WinSCP CLI/TCP-проба (нижче,
+    # $sftpRequired) не мають вимагатись для глобально вимкненого
+    # destination.
+    $sftpConfigured = Test-BRAVOSftpCredentialsRequired `
+        -SftpEnabled (Test-SettingEnabled $storageEffective.SFTP.Enabled) `
+        -ArchiveUploadEnabled (Test-SettingEnabled $storageEffective.SFTP.ArchiveUpload) `
+        -MaintenanceLogUploadEnabled (Test-SettingEnabled $componentSettings.SFTP.MaintenanceLogUploadEnabled) `
+        -ArchiveLogUploadEnabled (Test-SettingEnabled $componentSettings.SFTP.ArchiveLogUploadEnabled) `
+        -ScheduledSftpSyncRequired ([bool]$bazaSyncEffective.ScheduledSftpSyncRequired) `
+        -BackupMonitoringSftpEnabled (Test-SettingEnabled $backupMonitoring.SFTP.Enabled)
     if ($sftpConfigured) {
         $configuredWinSCPPath = if (-not [string]::IsNullOrWhiteSpace([string]$winSCPPath)) {
             [string]$winSCPPath
@@ -1648,6 +1658,7 @@ try {
             "логи старші $($maintenanceSettings.Retention.LogDays) дн.; " +
             "failed-архіви старші $($maintenanceSettings.Retention.FailedArchiveDays) дн.; " +
             "стиснуті .mdz: $(if ([bool]$maintenanceSettings.Retention.CompressedLogDeletionEnabled) { "видалення старших $($maintenanceSettings.Retention.CompressedLogDays) дн. УВІМКНЕНО" } else { 'автоматичне видалення ВИМКНЕНО (CompressedLogDeletionEnabled=$false)' }); " +
+            "сирі Trace/exchangAPI-джерела: $(if ([int]$maintenanceSettings.Retention.RawSourceGraceDays -gt 0) { "grace-період $($maintenanceSettings.Retention.RawSourceGraceDays) дн. понад LastWriteTime" } else { 'без grace-періоду (видалення одразу після успішної архівації, поточна поведінка)' }); " +
             "нічого не видалено"
         )
         # Trace-модель 5.2.0: план добової MDZ-обробки — суто read-only

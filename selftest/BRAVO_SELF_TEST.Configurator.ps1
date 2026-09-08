@@ -72,6 +72,30 @@ Test-BRAVOCondition ($configuratorSchemaResult.ConfigurableTotal -gt 100) `
     'Configurator: schema каталог не порожній/тривіальний' `
     "ConfigurableTotal=$($configuratorSchemaResult.ConfigurableTotal) (очікувалось > 100)"
 
+# R3-5 (PR #136, третє коло review): 5 нових log-lifecycle ключів мусять
+# мати дескриптор правильного типу — без цього фіча лишається керованою
+# лише прямим редагуванням BRAVO.config, недоступною з Configurator UI.
+$configuratorLogLifecycleDescriptors = @(Get-BRAVOConfiguratorSchemaCatalog)
+$configuratorExpectedLogLifecyclePaths = @{
+    'maintenanceSettings.Retention.RawSourceGraceDays'  = 'Integer'
+    'componentSettings.SFTP.MaintenanceLogUploadEnabled' = 'Boolean'
+    'componentSettings.SFTP.ArchiveLogUploadEnabled'     = 'Boolean'
+    'sftpDirectories.MaintenanceLog'                     = 'String'
+    'sftpDirectories.ArchivLog'                          = 'String'
+}
+$configuratorLogLifecycleMismatches = New-Object System.Collections.Generic.List[string]
+foreach ($expectedPath in $configuratorExpectedLogLifecyclePaths.Keys) {
+    $matchingDescriptor = @($configuratorLogLifecycleDescriptors | Where-Object { $_.Path -eq $expectedPath })
+    if ($matchingDescriptor.Count -ne 1) {
+        $configuratorLogLifecycleMismatches.Add("$expectedPath : відсутній дескриптор (знайдено $($matchingDescriptor.Count))")
+    } elseif ([string]$matchingDescriptor[0].Type -ne $configuratorExpectedLogLifecyclePaths[$expectedPath]) {
+        $configuratorLogLifecycleMismatches.Add("$expectedPath : Type='$($matchingDescriptor[0].Type)', очікувалось '$($configuratorExpectedLogLifecyclePaths[$expectedPath])'")
+    }
+}
+Test-BRAVOCondition ($configuratorLogLifecycleMismatches.Count -eq 0) `
+    'Configurator/LogLifecycleSettingsHaveDescriptors' `
+    "5 нових log-lifecycle ключів мають мати дескриптор коректного типу; розбіжності: $($configuratorLogLifecycleMismatches -join ' | ')"
+
 # ===== Model: Default/Override/Effective/Dirty (§22.4-6 задачі) =====
 $configuratorSchemaCatalog = Get-BRAVOConfiguratorSchemaCatalog
 $configuratorDefaultConfig = Invoke-BRAVOConfiguratorEffectiveComputation -RuntimeRoot $configuratorFixtureRuntimeRoot -CandidateOverrides @{}

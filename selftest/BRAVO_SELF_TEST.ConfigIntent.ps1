@@ -687,6 +687,28 @@ Test-BRAVOCondition `
     -Name 'ConfigIntent/MaintenancePostArchiveChildGatesConfigByIntent' `
     -Failure 'Maintenance мусить вбудовувати -ConfigPath у пост-maintenance запуск BRAVO_ARCHIV лише за explicit-наміру — інакше AUTO no-config прогін дає configuration error у дитини і хибний critical'
 
+# PR #136 review (P2-4): ArchiveAfterMaintenance (пряме увімкнення в
+# конфігурації) і missed-work recovery (-RunMissedRestoreOnly, рядок
+# "Recovery завжди завершується актуальним backup після maintenance")
+# МАЮТЬ вести до одного й того самого виклику BRAVO_ARCHIV — recovery лише
+# виставляє $script:EnableArchiveAfterMaintenance = $true ДО того самого
+# `if ($script:EnableArchiveAfterMaintenance)` блоку, а не дублює запуск
+# окремим шляхом із власним (потенційно нерівнозначним) ConfigPath-гейтом.
+# Рівно один `-File \"$bravoArchivePath\"` доводить, що дитину запускає
+# один код, спільний для обох тригерів.
+$configIntentPostArchiveInvocationCount = (
+    [regex]::Matches($configIntentMaintenanceRuntimeText, [regex]::Escape('-File `"$bravoArchivePath`"'))
+).Count
+Test-BRAVOCondition `
+    -Condition (
+        $configIntentPostArchiveInvocationCount -eq 1 -and
+        $configIntentMaintenanceRuntimeText.Contains('$script:EnableArchiveAfterMaintenance = $true') -and
+        ($configIntentMaintenanceRuntimeText.IndexOf('$script:EnableArchiveAfterMaintenance = $true') -lt
+            $configIntentMaintenanceRuntimeText.IndexOf('-File `"$bravoArchivePath`"'))
+    ) `
+    -Name 'ConfigIntent/MaintenanceRecoverySharesArchiveChildInvocation' `
+    -Failure 'Missed-work recovery мусить вести до ЄДИНОГО виклику BRAVO_ARCHIV, спільного з ArchiveAfterMaintenance, а не до окремого дубльованого шляху запуску з власним ConfigPath-гейтом'
+
 $configIntentDataRestoreRuntimeText = [IO.File]::ReadAllText(
     (Join-Path $root 'modules\BRAVO.DataRestore\BRAVO.DataRestore.Runtime.ps1'),
     [Text.Encoding]::UTF8

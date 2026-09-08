@@ -35,6 +35,26 @@ function ConvertTo-BRAVOWindowsCommandLineArgument { BRAVO.Compatibility\Convert
 function Start-BRAVOProcessOutputCapture { BRAVO.Compatibility\Start-BRAVOProcessOutputCapture @args }
 function Write-BRAVOProcessInputText { BRAVO.Compatibility\Write-BRAVOProcessInputText @args }
 function Complete-BRAVOProcessOutputCapture { BRAVO.Compatibility\Complete-BRAVOProcessOutputCapture @args }
+# Прозорий passthrough до реальної Get-BRAVODirectories з єдиним опційним
+# test-only гаком (P2-2, PR #136 review): $script:taP2VanishAfterDiscoveryPath,
+# коли встановлено, синхронно й детерміновано видаляє вказаний каталог
+# ПІСЛЯ того, як реальна Get-BRAVODirectories вже повернула його як
+# наявний candidate, але ДО того, як per-candidate EnumerateFileSystemInfos()
+# встигає його відкрити — відтворює РЕАЛЬНУ гонитву "candidate зник між
+# скануванням і enumeration" без потоків/сну (Deny-ACL емпірично не
+# блокує enumerate для локального адміністратора в цьому середовищі,
+# reparse-точки Get-BRAVODirectories взагалі відфільтровує на вході —
+# обидва підходи перевірено окремими репро й відкинуто). Коли змінна не
+# встановлена — поведінка ідентична реальній функції для решти тестів
+# цього файлу (Get-BRAVOExpiredLogDateDirectories тощо).
+function Get-BRAVODirectories {
+    param([string]$Path, [string]$Filter = "*", [switch]$Recurse)
+    $realResult = @(BRAVO.Compatibility\Get-BRAVODirectories -Path $Path -Filter $Filter -Recurse:$Recurse)
+    if ($script:taP2VanishAfterDiscoveryPath -and (Test-Path -LiteralPath $script:taP2VanishAfterDiscoveryPath)) {
+        Remove-Item -LiteralPath $script:taP2VanishAfterDiscoveryPath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    return $realResult
+}
 '@
     $traceArchiveModule = New-BRAVOSelfTestRuntimeModule `
         -SourceText ($traceArchiveStubText + "`n" + $traceArchiveScriptText) `
@@ -54,6 +74,7 @@ function Complete-BRAVOProcessOutputCapture { BRAVO.Compatibility\Complete-BRAVO
             "Write-BRAVOLogRotationMessage",
             "Format-CommandOutput",
             "Invoke-CommandWithLog",
+            "Get-BRAVODirectories",
             "Get-BRAVOTraceArchiveBacklog",
             "Get-BRAVOTraceArchiveUpdatePlan",
             "New-BRAVOTraceWorkArchivePath",
@@ -64,9 +85,17 @@ function Complete-BRAVOProcessOutputCapture { BRAVO.Compatibility\Complete-BRAVO
             "Update-BRAVOTraceDailyArchive",
             "Send-BRAVOTraceArchiveFile",
             "Send-BRAVOTraceArchive",
+            "Send-BRAVOOwnLogFile",
             "Invoke-BRAVOTraceRemoteLogMigration",
             "Invoke-BRAVOLegacyModelArchiveLocalMigration",
-            "Invoke-BRAVOTraceArchiveMaintenance"
+            "Invoke-BRAVOTraceArchiveMaintenance",
+            "Get-BRAVOEmptyLogDateDirectories",
+            "Remove-BRAVOEmptyLogDateDirectories",
+            "Get-BRAVOTraceGraceCompletionStatePath",
+            "Read-BRAVOTraceGraceCompletionState",
+            "Write-BRAVOTraceGraceCompletionState",
+            "Test-BRAVOTraceGraceCompletionCurrent",
+            "Test-BRAVOTraceRemoteArchivePublicationCurrent"
         )
 
     $traceArchive7za = Join-Path $root "Tools\7za.exe"
@@ -339,6 +368,53 @@ function Complete-BRAVOProcessOutputCapture { BRAVO.Compatibility\Complete-BRAVO
             @($taSendBadSizeSession.State.RemoveFilesCalls).Count -eq 0
         ) -Name 'TraceArchive/SftpSizeMismatchAbortsBeforeTouchingFinal' -Failure "розбіжність розміру .new має скасувати публікацію ДО будь-якого дотику фінального імені (стара версія 111 байт жива)"
 
+        # ===== Log-lifecycle P1: Send-BRAVOOwnLogFile (best-effort
+        # вивантаження власного логу прогону / знімка range_id_log.json) =====
+
+        # Успішна передача: remote-каталог створюється, файл публікується
+        # через той самий verified-.new канал (Send-BRAVOTraceArchiveFile).
+        $taOwnLogPath = Join-Path $taSendLocalDir 'BRAVO_MAINTENANCE_20260904_010203_PID42.log'
+        [IO.File]::WriteAllText($taOwnLogPath, ('l' * 250))
+        $taOwnLogSession = New-BRAVOSelfTestFakeBazaSession
+        & $traceArchiveModule { param($s, $l, $d) Send-BRAVOOwnLogFile -Session $s -LocalLogPath $l -RemoteDirectory $d } $taOwnLogSession $taOwnLogPath 'logs/maintenance'
+        Test-BRAVOCondition -Condition (
+            [int64]$taOwnLogSession.State.RemoteSizes['/logs/maintenance/BRAVO_MAINTENANCE_20260904_010203_PID42.log'] -eq 250 -and
+            $taOwnLogSession.State.KnownRemoteDirs.Contains('/logs/maintenance')
+        ) -Name 'TraceArchive/OwnLogUploadPublishesFullLogToConfiguredDirectory' -Failure "власний лог має публікуватись у сконфігурований remote-каталог (з рекурсивним створенням) через verified-.new канал; факт: $(@($taOwnLogSession.State.RemoteSizes.Keys) -join ', ')"
+
+        # RemoteFileName override: константне локальне ім'я (range_id_log.json)
+        # публікується під унікальним remote-ім'ям з run-id.
+        $taOwnRangeIdPath = Join-Path $taSendLocalDir 'range_id_log.json'
+        [IO.File]::WriteAllText($taOwnRangeIdPath, '{"r":1}')
+        $taOwnRangeIdSession = New-BRAVOSelfTestFakeBazaSession
+        & $traceArchiveModule { param($s, $l, $d, $n) Send-BRAVOOwnLogFile -Session $s -LocalLogPath $l -RemoteDirectory $d -RemoteFileName $n } $taOwnRangeIdSession $taOwnRangeIdPath 'logs/maintenance' 'range_id_log_20260904_010203_PID42.json'
+        Test-BRAVOCondition -Condition (
+            $taOwnRangeIdSession.State.RemoteSizes.ContainsKey('/logs/maintenance/range_id_log_20260904_010203_PID42.json') -and
+            -not $taOwnRangeIdSession.State.RemoteSizes.ContainsKey('/logs/maintenance/range_id_log.json')
+        ) -Name 'TraceArchive/OwnLogUploadRemoteFileNameOverrideAvoidsOverwrite' -Failure "range_id-знімок має публікуватись під унікальним remote-ім'ям з run-id, а не під константним локальним ім'ям"
+
+        # Відсутній локальний файл — тихий no-op без жодного remote-виклику.
+        $taOwnMissingSession = New-BRAVOSelfTestFakeBazaSession
+        & $traceArchiveModule { param($s, $l, $d) Send-BRAVOOwnLogFile -Session $s -LocalLogPath $l -RemoteDirectory $d } $taOwnMissingSession (Join-Path $taSendLocalDir 'NO_SUCH_LOG.log') 'logs/maintenance'
+        Test-BRAVOCondition -Condition (
+            @($taOwnMissingSession.State.PutFilesCalledFor).Count -eq 0 -and
+            @($taOwnMissingSession.State.KnownRemoteDirs).Count -eq 0
+        ) -Name 'TraceArchive/OwnLogUploadMissingLocalFileIsSilentNoOp' -Failure "відсутній локальний файл (напр., range_id_log.json ще не створено службою) — no-op без remote-викликів"
+
+        # Збій передачі — WARNING усередині, БЕЗ винятку назовні
+        # (best-effort: провал телеметрії ніколи не ламає прогін).
+        $taOwnFailSession = New-BRAVOSelfTestFakeBazaSession -AllTransfersFail
+        $taOwnFailThrew = $false
+        try {
+            & $traceArchiveModule { param($s, $l, $d) Send-BRAVOOwnLogFile -Session $s -LocalLogPath $l -RemoteDirectory $d } $taOwnFailSession $taOwnLogPath 'logs/maintenance'
+        } catch {
+            $taOwnFailThrew = $true
+        }
+        Test-BRAVOCondition -Condition (
+            -not $taOwnFailThrew -and
+            @($taOwnFailSession.State.MoveFileCalls).Count -eq 0
+        ) -Name 'TraceArchive/OwnLogUploadFailureIsBestEffortNoThrow' -Failure "збій передачі власного логу не має кидати виняток назовні (лише WARNING) і не має чіпати remote-фінал"
+
         # --- Оркестратор e2e на фейковій SFTP: повний success видаляє .out,
         # локальний MDZ ЗАЛИШАЄТЬСЯ; SFTP fail зберігає все; retry без дублікатів ---
         $taOrch = Join-Path $traceArchiveTestRoot "orch\Trace"
@@ -384,6 +460,484 @@ function Complete-BRAVOProcessOutputCapture { BRAVO.Compatibility\Complete-BRAVO
             (Test-Path -LiteralPath $taOrchDeferredFile) -and
             (Test-Path -LiteralPath (Join-Path $taOrchDeferred 'Trace_20260817.mdz'))
         ) -Name 'TraceArchive/OrchestratorWithoutSessionDefersUploadKeepsSources' -Failure "без SFTP-сесії: архів оновлюється локально, передача відкладена, .out збережені"
+
+        # ===== P5 (2026-09): RawSourceRetentionDays grace-період =====
+        # RawSourceRetentionDays=0 (дефолт, не передається явно) —
+        # регресійний захист: точна попередня поведінка вже підтверджена
+        # вище (OrchestratorRetryUploadsWithoutDuplicatesThenCleansSources
+        # викликає БЕЗ -RawSourceRetentionDays і бачить SourcesDeleted=1).
+
+        # --- N>0, джерело МОЛОДШЕ N днів: лишається локально попри повний success.
+        $taGraceYoung = Join-Path $traceArchiveTestRoot "grace-young\Trace"
+        [void](New-Item -ItemType Directory -Path $taGraceYoung -Force)
+        $taGraceYoungFile = Join-Path $taGraceYoung 'TraceSRV_20260901_090000.out'
+        [IO.File]::WriteAllText($taGraceYoungFile, 'grace young')
+        (Get-Item -LiteralPath $taGraceYoungFile).LastWriteTime = (Get-Date).AddDays(-1)
+        $taGraceYoungSession = New-BRAVOSelfTestFakeBazaSession
+        $taGraceYoungResult = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -RawSourceRetentionDays $grace
+        } $taGraceYoung $traceArchive7za $traceArchiveAddParams $traceArchivePassword $taGraceYoungSession 'trace' 7
+        Test-BRAVOCondition -Condition (
+            [int]$taGraceYoungResult.Uploaded -eq 1 -and
+            [int]$taGraceYoungResult.Errors -eq 0 -and
+            [int]$taGraceYoungResult.SourcesDeleted -eq 0 -and
+            [int]$taGraceYoungResult.SourcesRetainedForGrace -eq 1 -and
+            (Test-Path -LiteralPath $taGraceYoungFile)
+        ) -Name 'TraceArchive/RawSourceGraceRetainsYoungVerifiedSource' -Failure "джерело молодше grace-періоду має лишатись локально попри повний success (архів+SFTP+верифікація); факт: deleted=$($taGraceYoungResult.SourcesDeleted) retained=$($taGraceYoungResult.SourcesRetainedForGrace)"
+
+        # --- N>0, джерело СТАРШЕ N днів: видаляється як завжди.
+        $taGraceOld = Join-Path $traceArchiveTestRoot "grace-old\Trace"
+        [void](New-Item -ItemType Directory -Path $taGraceOld -Force)
+        $taGraceOldFile = Join-Path $taGraceOld 'TraceSRV_20260801_090000.out'
+        [IO.File]::WriteAllText($taGraceOldFile, 'grace old')
+        (Get-Item -LiteralPath $taGraceOldFile).LastWriteTime = (Get-Date).AddDays(-30)
+        $taGraceOldSession = New-BRAVOSelfTestFakeBazaSession
+        $taGraceOldResult = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -RawSourceRetentionDays $grace
+        } $taGraceOld $traceArchive7za $traceArchiveAddParams $traceArchivePassword $taGraceOldSession 'trace' 7
+        Test-BRAVOCondition -Condition (
+            [int]$taGraceOldResult.Uploaded -eq 1 -and
+            [int]$taGraceOldResult.Errors -eq 0 -and
+            [int]$taGraceOldResult.SourcesDeleted -eq 1 -and
+            [int]$taGraceOldResult.SourcesRetainedForGrace -eq 0 -and
+            -not (Test-Path -LiteralPath $taGraceOldFile)
+        ) -Name 'TraceArchive/RawSourceGraceDeletesOldVerifiedSource' -Failure "джерело старше grace-періоду має видалятись як завжди, попри встановлений RawSourceRetentionDays; факт: deleted=$($taGraceOldResult.SourcesDeleted) retained=$($taGraceOldResult.SourcesRetainedForGrace)"
+
+        # ===== PR #136 review (P2-7): persisted completion state для
+        # RawSourceGraceDays — без нього КОЖЕН прогін під час grace-вікна
+        # re-verify+re-upload той самий незмінний daily-архів. =====
+
+        # --- A: незмінний архів+джерело -> другий прогін НЕ викликає SFTP взагалі.
+        $taP7SkipDir = Join-Path $traceArchiveTestRoot "grace-completion-skip\Trace"
+        [void](New-Item -ItemType Directory -Path $taP7SkipDir -Force)
+        $taP7SkipFile = Join-Path $taP7SkipDir 'TraceSRV_20260901_090000.out'
+        [IO.File]::WriteAllText($taP7SkipFile, 'grace completion skip')
+        (Get-Item -LiteralPath $taP7SkipFile).LastWriteTime = (Get-Date).AddDays(-1)
+        $taP7SkipStatePath = Join-Path $traceArchiveTestRoot 'grace-completion-skip\state.json'
+        $taP7SkipSession1 = New-BRAVOSelfTestFakeBazaSession
+        $taP7SkipResult1 = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace, $statePath)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $taP7SkipDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword $taP7SkipSession1 'trace' 7 $taP7SkipStatePath
+        Test-BRAVOCondition -Condition (
+            [int]$taP7SkipResult1.Uploaded -eq 1 -and
+            [int]$taP7SkipResult1.SourcesRetainedForGrace -eq 1 -and
+            @($taP7SkipSession1.State.PutFilesCalledFor).Count -eq 2 -and
+            (Test-Path -LiteralPath $taP7SkipStatePath)
+        ) -Name 'TraceArchive/GraceCompletionFirstRunUploadsAndPersistsState' -Failure "перший прогін має реально вивантажити і створити completion-state; факт: uploaded=$($taP7SkipResult1.Uploaded) putCalls=$(@($taP7SkipSession1.State.PutFilesCalledFor).Count) stateExists=$(Test-Path -LiteralPath $taP7SkipStatePath)"
+
+        # R4-3 (PR #136, четверте коло review): -SeedRemoteState симулює
+        # той самий реальний SFTP-сервер, до якого щоночі підключається
+        # НОВА WinSCP.Session — без цього жива remote-перевірка
+        # (Test-BRAVOTraceRemoteArchivePublicationCurrent) завжди хибно
+        # провалювалась би на "порожньому" фейковому сервері.
+        $taP7SkipSession2 = New-BRAVOSelfTestFakeBazaSession -SeedRemoteState $taP7SkipSession1.State
+        $taP7SkipResult2 = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace, $statePath)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $taP7SkipDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword $taP7SkipSession2 'trace' 7 $taP7SkipStatePath
+        Test-BRAVOCondition -Condition (
+            [int]$taP7SkipResult2.Uploaded -eq 0 -and
+            [int]$taP7SkipResult2.Errors -eq 0 -and
+            [int]$taP7SkipResult2.SourcesRetainedForGrace -eq 1 -and
+            @($taP7SkipSession2.State.PutFilesCalledFor).Count -eq 0 -and
+            (Test-Path -LiteralPath $taP7SkipFile)
+        ) -Name 'TraceArchive/GraceCompletionSecondRunSkipsRepublishWhenUnchanged' -Failure "другий прогін без жодної зміни НЕ повинен викликати SFTP PutFiles знову; факт: uploaded=$($taP7SkipResult2.Uploaded) putCalls=$(@($taP7SkipSession2.State.PutFilesCalledFor).Count) errors=$($taP7SkipResult2.Errors)"
+
+        # --- A2 (P2, PR #136 review r3943997861): пошкоджений/видалений
+        # sidecar (.sha512) НЕ повинен трактуватись як "усе ще актуально" —
+        # Test-BRAVOTraceGraceCompletionCurrent мусить перевіряти й sidecar,
+        # інакше опублікований .mdz лишався б з "мертвим" .sha512 назавжди
+        # (skip-шлях ніколи не викликає Update-BRAVOTraceDailyArchive, який
+        # єдиний вміє полагодити sidecar через Test-BRAVOTraceArchiveSidecarCurrent).
+        $taP7SidecarArchive = Get-ChildItem -LiteralPath $taP7SkipDir -Filter '*.mdz' | Select-Object -First 1
+        [IO.File]::WriteAllText("$($taP7SidecarArchive.FullName).sha512", 'corrupted sidecar content')
+        $taP7SkipSession3 = New-BRAVOSelfTestFakeBazaSession -SeedRemoteState $taP7SkipSession2.State
+        $taP7SkipResult3 = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace, $statePath)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $taP7SkipDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword $taP7SkipSession3 'trace' 7 $taP7SkipStatePath
+        Test-BRAVOCondition -Condition (
+            [int]$taP7SkipResult3.Uploaded -eq 1 -and
+            [int]$taP7SkipResult3.Errors -eq 0 -and
+            @($taP7SkipSession3.State.PutFilesCalledFor).Count -eq 2 -and
+            (Test-BRAVOTraceArchiveSidecarCurrent -ArchivePath $taP7SidecarArchive.FullName -SidecarPath "$($taP7SidecarArchive.FullName).sha512")
+        ) -Name 'TraceArchive/GraceCompletionCorruptedSidecarTriggersReprocessAndRepair' -Failure "пошкоджений sidecar має ЗАПУСТИТИ повторну обробку (і полагодити sidecar), а не помилковий skip; факт: uploaded=$($taP7SkipResult3.Uploaded) putCalls=$(@($taP7SkipSession3.State.PutFilesCalledFor).Count) errors=$($taP7SkipResult3.Errors)"
+
+        # --- A3 (R3-2, PR #136 третє коло review): зміна RemoteDirectory під
+        # час grace-вікна МАЄ інвалідувати skip, попри незмінний архів/
+        # джерело/sidecar — інакше запис "опубліковано" стосувався б уже
+        # неактуального призначення.
+        $taP7SkipSession4 = New-BRAVOSelfTestFakeBazaSession -SeedRemoteState $taP7SkipSession3.State
+        $taP7SkipResult4 = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace, $statePath)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $taP7SkipDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword $taP7SkipSession4 'trace2' 7 $taP7SkipStatePath
+        Test-BRAVOCondition -Condition (
+            [int]$taP7SkipResult4.Uploaded -eq 1 -and
+            [int]$taP7SkipResult4.Errors -eq 0 -and
+            @($taP7SkipSession4.State.PutFilesCalledFor).Count -eq 2
+        ) -Name 'TraceArchive/GraceCompletionRemoteDirectoryChangeTriggersReprocess' -Failure "зміна RemoteDirectory ('trace'->'trace2') має ЗАПУСТИТИ повторну обробку, а не помилковий skip на старе призначення; факт: uploaded=$($taP7SkipResult4.Uploaded) putCalls=$(@($taP7SkipSession4.State.PutFilesCalledFor).Count) errors=$($taP7SkipResult4.Errors)"
+
+        # --- A4 (R3-2): зміна SFTP-акаунта (DestinationIdentity) під час
+        # grace-вікна МАЄ інвалідувати skip так само, як зміна каталогу.
+        $taP7SkipSession5 = New-BRAVOSelfTestFakeBazaSession -SeedRemoteState $taP7SkipSession4.State
+        $taP7SkipResult5 = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace, $statePath, $destId)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -DestinationIdentity $destId -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $taP7SkipDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword $taP7SkipSession5 'trace2' 7 $taP7SkipStatePath 'newuser@newhost'
+        Test-BRAVOCondition -Condition (
+            [int]$taP7SkipResult5.Uploaded -eq 1 -and
+            [int]$taP7SkipResult5.Errors -eq 0 -and
+            @($taP7SkipSession5.State.PutFilesCalledFor).Count -eq 2
+        ) -Name 'TraceArchive/GraceCompletionSftpAccountChangeTriggersReprocess' -Failure "зміна SFTP-акаунта (DestinationIdentity) має ЗАПУСТИТИ повторну обробку, а не помилковий skip на старий акаунт; факт: uploaded=$($taP7SkipResult5.Uploaded) putCalls=$(@($taP7SkipSession5.State.PutFilesCalledFor).Count) errors=$($taP7SkipResult5.Errors)"
+
+        # --- A5 (R3-2): підтвердження round-trip — та сама (нова) пара
+        # RemoteDirectory/DestinationIdentity вдруге поспіль ЗНОВУ дає skip
+        # (нова ідентичність коректно персистується, а не завжди forces reprocess).
+        $taP7SkipSession6 = New-BRAVOSelfTestFakeBazaSession -SeedRemoteState $taP7SkipSession5.State
+        $taP7SkipResult6 = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace, $statePath, $destId)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -DestinationIdentity $destId -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $taP7SkipDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword $taP7SkipSession6 'trace2' 7 $taP7SkipStatePath 'newuser@newhost'
+        Test-BRAVOCondition -Condition (
+            [int]$taP7SkipResult6.Uploaded -eq 0 -and
+            [int]$taP7SkipResult6.Errors -eq 0 -and
+            @($taP7SkipSession6.State.PutFilesCalledFor).Count -eq 0
+        ) -Name 'TraceArchive/GraceCompletionStableAfterDestinationChangeRecorded' -Failure "новий запис (trace2/newuser@newhost) має коректно персистуватись і давати skip на наступному незмінному прогоні; факт: uploaded=$($taP7SkipResult6.Uploaded) putCalls=$(@($taP7SkipSession6.State.PutFilesCalledFor).Count) errors=$($taP7SkipResult6.Errors)"
+
+        # --- A6/A7/A8 (R4-1, PR #136 четверте коло review): гранулярні
+        # зміни ОДНОГО компонента ідентичності (порт/host/login) по черзі —
+        # кожна ОКРЕМО має інвалідувати skip, а не лише повна заміна рядка.
+        # Продовжуємо той самий ланцюг (baseline після A5 = 'newuser@newhost').
+        $taP7SkipSession7 = New-BRAVOSelfTestFakeBazaSession -SeedRemoteState $taP7SkipSession6.State
+        $taP7SkipResult7 = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace, $statePath, $destId)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -DestinationIdentity $destId -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $taP7SkipDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword $taP7SkipSession7 'trace2' 7 $taP7SkipStatePath 'newuser@newhost:2222'
+        Test-BRAVOCondition -Condition (
+            [int]$taP7SkipResult7.Uploaded -eq 1 -and
+            [int]$taP7SkipResult7.Errors -eq 0 -and
+            @($taP7SkipSession7.State.PutFilesCalledFor).Count -eq 2
+        ) -Name 'TraceArchive/GraceCompletionSftpPortChangeTriggersReprocess' -Failure "зміна SFTP-порту (newuser@newhost -> newuser@newhost:2222) має ЗАПУСТИТИ повторну обробку; факт: uploaded=$($taP7SkipResult7.Uploaded) putCalls=$(@($taP7SkipSession7.State.PutFilesCalledFor).Count) errors=$($taP7SkipResult7.Errors)"
+
+        $taP7SkipSession8 = New-BRAVOSelfTestFakeBazaSession -SeedRemoteState $taP7SkipSession7.State
+        $taP7SkipResult8 = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace, $statePath, $destId)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -DestinationIdentity $destId -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $taP7SkipDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword $taP7SkipSession8 'trace2' 7 $taP7SkipStatePath 'newuser@differenthost:2222'
+        Test-BRAVOCondition -Condition (
+            [int]$taP7SkipResult8.Uploaded -eq 1 -and
+            [int]$taP7SkipResult8.Errors -eq 0 -and
+            @($taP7SkipSession8.State.PutFilesCalledFor).Count -eq 2
+        ) -Name 'TraceArchive/GraceCompletionSftpHostChangeTriggersReprocess' -Failure "зміна SFTP-host (newhost -> differenthost, порт і login незмінні) має ЗАПУСТИТИ повторну обробку; факт: uploaded=$($taP7SkipResult8.Uploaded) putCalls=$(@($taP7SkipSession8.State.PutFilesCalledFor).Count) errors=$($taP7SkipResult8.Errors)"
+
+        $taP7SkipSession9 = New-BRAVOSelfTestFakeBazaSession -SeedRemoteState $taP7SkipSession8.State
+        $taP7SkipResult9 = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace, $statePath, $destId)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -DestinationIdentity $destId -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $taP7SkipDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword $taP7SkipSession9 'trace2' 7 $taP7SkipStatePath 'differentuser@differenthost:2222'
+        Test-BRAVOCondition -Condition (
+            [int]$taP7SkipResult9.Uploaded -eq 1 -and
+            [int]$taP7SkipResult9.Errors -eq 0 -and
+            @($taP7SkipSession9.State.PutFilesCalledFor).Count -eq 2
+        ) -Name 'TraceArchive/GraceCompletionSftpLoginChangeTriggersReprocess' -Failure "зміна SFTP-login (newuser -> differentuser, host і порт незмінні) має ЗАПУСТИТИ повторну обробку; факт: uploaded=$($taP7SkipResult9.Uploaded) putCalls=$(@($taP7SkipSession9.State.PutFilesCalledFor).Count) errors=$($taP7SkipResult9.Errors)"
+
+        # --- A9: незмінна (повна, з портом) ідентичність -> стабільний skip.
+        $taP7SkipSession10 = New-BRAVOSelfTestFakeBazaSession -SeedRemoteState $taP7SkipSession9.State
+        $taP7SkipResult10 = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace, $statePath, $destId)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -DestinationIdentity $destId -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $taP7SkipDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword $taP7SkipSession10 'trace2' 7 $taP7SkipStatePath 'differentuser@differenthost:2222'
+        Test-BRAVOCondition -Condition (
+            [int]$taP7SkipResult10.Uploaded -eq 0 -and
+            [int]$taP7SkipResult10.Errors -eq 0 -and
+            @($taP7SkipSession10.State.PutFilesCalledFor).Count -eq 0
+        ) -Name 'TraceArchive/GraceCompletionUnchangedFullIdentityStaysStable' -Failure "повністю незмінна ідентичність (host+port+login+directory) має ДАВАТИ skip; факт: uploaded=$($taP7SkipResult10.Uploaded) putCalls=$(@($taP7SkipSession10.State.PutFilesCalledFor).Count) errors=$($taP7SkipResult10.Errors)"
+
+        # ============================================================
+        # R4-3 (PR #136, четверте коло review): пряме unit-тестування
+        # Test-BRAVOTraceRemoteArchivePublicationCurrent — persisted
+        # local-стан САМ ПО СОБІ недостатній без живої SFTP-перевірки.
+        # ============================================================
+        $rvDir = Join-Path $traceArchiveTestRoot 'remote-verify'
+        [void](New-Item -ItemType Directory -Path $rvDir -Force)
+        $rvArchivePath = Join-Path $rvDir 'Trace_20260910.mdz'
+        $rvSidecarPath = "$rvArchivePath.sha512"
+        [IO.File]::WriteAllText($rvArchivePath, 'remote verify archive content')
+        [IO.File]::WriteAllText($rvSidecarPath, 'remote verify sidecar content')
+        $rvArchiveLength = (Get-Item -LiteralPath $rvArchivePath).Length
+        $rvSidecarLength = (Get-Item -LiteralPath $rvSidecarPath).Length
+        $rvEntry = @{
+            remoteDirectory = 'trace'
+            remoteFinalPath = "/trace/$([System.IO.Path]::GetFileName($rvArchivePath))"
+            remoteSize      = [int64]$rvArchiveLength
+        }
+
+        # (i) Remote-архів і sidecar існують з очікуваними розмірами -> Current=true.
+        $rvGoodSession = New-BRAVOSelfTestFakeBazaSession
+        $rvGoodSession.CreateDirectory('/trace')
+        [void]$rvGoodSession.PutFiles($rvArchivePath, $rvEntry.remoteFinalPath, $false, (New-Object WinSCP.TransferOptions))
+        [void]$rvGoodSession.PutFiles($rvSidecarPath, "/trace/$([System.IO.Path]::GetFileName($rvSidecarPath))", $false, (New-Object WinSCP.TransferOptions))
+        $rvGoodResult = & $traceArchiveModule {
+            param($s, $e, $sc)
+            Test-BRAVOTraceRemoteArchivePublicationCurrent -Session $s -Entry ([pscustomobject]$e) -SidecarPath $sc
+        } $rvGoodSession $rvEntry $rvSidecarPath
+        Test-BRAVOCondition -Condition ($rvGoodResult.Current -eq $true) `
+            -Name 'TraceArchive/RemoteVerifyValidArchiveAndSidecarAllowsSkip' `
+            -Failure "коректний remote-архів+sidecar мають давати Current=true; факт: Current=$($rvGoodResult.Current) Reason=$($rvGoodResult.Reason)"
+
+        # (ii) Remote-архів видалено -> Current=false, джерело НЕ видаляється.
+        $rvMissingSession = New-BRAVOSelfTestFakeBazaSession
+        $rvMissingResult = & $traceArchiveModule {
+            param($s, $e, $sc)
+            Test-BRAVOTraceRemoteArchivePublicationCurrent -Session $s -Entry ([pscustomobject]$e) -SidecarPath $sc
+        } $rvMissingSession $rvEntry $rvSidecarPath
+        Test-BRAVOCondition -Condition ($rvMissingResult.Current -eq $false -and -not [string]::IsNullOrWhiteSpace($rvMissingResult.Reason)) `
+            -Name 'TraceArchive/RemoteVerifyMissingArchiveBlocksSkip' `
+            -Failure "видалений remote-архів має давати Current=false з непорожньою причиною; факт: Current=$($rvMissingResult.Current) Reason=$($rvMissingResult.Reason)"
+
+        # (iii) Remote-архів має неправильний розмір -> Current=false.
+        $rvBadSizeSession = New-BRAVOSelfTestFakeBazaSession
+        $rvBadSizeSession.CreateDirectory('/trace')
+        [void]$rvBadSizeSession.PutFiles($rvArchivePath, $rvEntry.remoteFinalPath, $false, (New-Object WinSCP.TransferOptions))
+        $rvBadSizeSession.State.RemoteSizes[$rvEntry.remoteFinalPath] = [int64]1
+        [void]$rvBadSizeSession.PutFiles($rvSidecarPath, "/trace/$([System.IO.Path]::GetFileName($rvSidecarPath))", $false, (New-Object WinSCP.TransferOptions))
+        $rvBadSizeResult = & $traceArchiveModule {
+            param($s, $e, $sc)
+            Test-BRAVOTraceRemoteArchivePublicationCurrent -Session $s -Entry ([pscustomobject]$e) -SidecarPath $sc
+        } $rvBadSizeSession $rvEntry $rvSidecarPath
+        Test-BRAVOCondition -Condition ($rvBadSizeResult.Current -eq $false) `
+            -Name 'TraceArchive/RemoteVerifyWrongArchiveSizeBlocksSkip' `
+            -Failure "невірний розмір remote-архіву має давати Current=false; факт: Current=$($rvBadSizeResult.Current) Reason=$($rvBadSizeResult.Reason)"
+
+        # (iv) Remote-sidecar відсутній -> Current=false.
+        $rvNoSidecarSession = New-BRAVOSelfTestFakeBazaSession
+        $rvNoSidecarSession.CreateDirectory('/trace')
+        [void]$rvNoSidecarSession.PutFiles($rvArchivePath, $rvEntry.remoteFinalPath, $false, (New-Object WinSCP.TransferOptions))
+        $rvNoSidecarResult = & $traceArchiveModule {
+            param($s, $e, $sc)
+            Test-BRAVOTraceRemoteArchivePublicationCurrent -Session $s -Entry ([pscustomobject]$e) -SidecarPath $sc
+        } $rvNoSidecarSession $rvEntry $rvSidecarPath
+        Test-BRAVOCondition -Condition ($rvNoSidecarResult.Current -eq $false) `
+            -Name 'TraceArchive/RemoteVerifyMissingSidecarBlocksSkip' `
+            -Failure "відсутній remote-sidecar має давати Current=false; факт: Current=$($rvNoSidecarResult.Current) Reason=$($rvNoSidecarResult.Reason)"
+
+        # (v) Remote-sidecar має неправильний розмір -> Current=false.
+        $rvBadSidecarSizeSession = New-BRAVOSelfTestFakeBazaSession
+        $rvBadSidecarSizeSession.CreateDirectory('/trace')
+        [void]$rvBadSidecarSizeSession.PutFiles($rvArchivePath, $rvEntry.remoteFinalPath, $false, (New-Object WinSCP.TransferOptions))
+        [void]$rvBadSidecarSizeSession.PutFiles($rvSidecarPath, "/trace/$([System.IO.Path]::GetFileName($rvSidecarPath))", $false, (New-Object WinSCP.TransferOptions))
+        $rvBadSidecarSizeSession.State.RemoteSizes["/trace/$([System.IO.Path]::GetFileName($rvSidecarPath))"] = [int64]1
+        $rvBadSidecarSizeResult = & $traceArchiveModule {
+            param($s, $e, $sc)
+            Test-BRAVOTraceRemoteArchivePublicationCurrent -Session $s -Entry ([pscustomobject]$e) -SidecarPath $sc
+        } $rvBadSidecarSizeSession $rvEntry $rvSidecarPath
+        Test-BRAVOCondition -Condition ($rvBadSidecarSizeResult.Current -eq $false) `
+            -Name 'TraceArchive/RemoteVerifyWrongSidecarSizeBlocksSkip' `
+            -Failure "невірний розмір remote-sidecar має давати Current=false; факт: Current=$($rvBadSidecarSizeResult.Current) Reason=$($rvBadSidecarSizeResult.Reason)"
+
+        # (vi) SFTP-виклик кидає виняток (наприклад, обрив з'єднання) -> Current=false, без пробросу винятку назовні.
+        $rvThrowSession = New-Object psobject
+        $rvThrowSession | Add-Member -MemberType ScriptMethod -Name FileExists -Value { param($p) throw "simulated SFTP transport failure" }
+        $rvThrowCaught = $false
+        try {
+            $rvThrowResult = & $traceArchiveModule {
+                param($s, $e, $sc)
+                Test-BRAVOTraceRemoteArchivePublicationCurrent -Session $s -Entry ([pscustomobject]$e) -SidecarPath $sc
+            } $rvThrowSession $rvEntry $rvSidecarPath
+        } catch {
+            $rvThrowCaught = $true
+        }
+        Test-BRAVOCondition -Condition (-not $rvThrowCaught -and $rvThrowResult.Current -eq $false) `
+            -Name 'TraceArchive/RemoteVerifySftpExceptionFailsClosedWithoutThrow' `
+            -Failure "провал SFTP-виклику під час перевірки має повернути Current=false, а не прокинути виняток назовні; факт: threw=$rvThrowCaught Current=$($rvThrowResult.Current)"
+
+        # (vii) Оркестраторний рівень: SFTP-сесія недоступна цього прогону
+        # (credentials/host-key-mismatch тощо -> $Session = $null у
+        # production) -> кешований запис НЕ підтверджується, skip
+        # неможливий (fail-safe), джерело НЕ видаляється цього прогону.
+        $rvNoSessionDir = Join-Path $traceArchiveTestRoot "remote-verify-nosession\Trace"
+        [void](New-Item -ItemType Directory -Path $rvNoSessionDir -Force)
+        $rvNoSessionFile = Join-Path $rvNoSessionDir 'TraceSRV_20260911_090000.out'
+        [IO.File]::WriteAllText($rvNoSessionFile, 'remote verify no session')
+        (Get-Item -LiteralPath $rvNoSessionFile).LastWriteTime = (Get-Date).AddDays(-1)
+        $rvNoSessionStatePath = Join-Path $traceArchiveTestRoot 'remote-verify-nosession\state.json'
+        $rvNoSessionSession1 = New-BRAVOSelfTestFakeBazaSession
+        [void](& $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace, $statePath)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $rvNoSessionDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword $rvNoSessionSession1 'trace' 7 $rvNoSessionStatePath)
+        $rvNoSessionResult2 = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $rd, $grace, $statePath)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $null -RemoteDirectory $rd -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $rvNoSessionDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword 'trace' 7 $rvNoSessionStatePath
+        Test-BRAVOCondition -Condition (
+            [int]$rvNoSessionResult2.SourcesDeleted -eq 0 -and
+            [int]$rvNoSessionResult2.UploadsDeferred -eq 1 -and
+            (Test-Path -LiteralPath $rvNoSessionFile)
+        ) -Name 'TraceArchive/RemoteVerifyNoSessionThisRunNeverDeletesSource' `
+            -Failure "без SFTP-сесії цього прогону (credentials/host-key недоступні) джерело НЕ повинно видалятись, навіть попри валідний кешований запис; факт: deleted=$($rvNoSessionResult2.SourcesDeleted) deferred=$($rvNoSessionResult2.UploadsDeferred) sourceExists=$(Test-Path -LiteralPath $rvNoSessionFile)"
+
+        # --- B: тампер stored-розміру в state -> reprocess (safe fallback), не помилковий skip.
+        $taP7StaleDir = Join-Path $traceArchiveTestRoot "grace-completion-stale\Trace"
+        [void](New-Item -ItemType Directory -Path $taP7StaleDir -Force)
+        $taP7StaleFile = Join-Path $taP7StaleDir 'TraceSRV_20260902_090000.out'
+        [IO.File]::WriteAllText($taP7StaleFile, 'grace completion stale')
+        (Get-Item -LiteralPath $taP7StaleFile).LastWriteTime = (Get-Date).AddDays(-1)
+        $taP7StaleStatePath = Join-Path $traceArchiveTestRoot 'grace-completion-stale\state.json'
+        $taP7StaleSession1 = New-BRAVOSelfTestFakeBazaSession
+        & $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace, $statePath)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $taP7StaleDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword $taP7StaleSession1 'trace' 7 $taP7StaleStatePath | Out-Null
+        # Зовнішнє тамперування stored-розміру джерела (симулює
+        # розсинхронізований/застарілий маркер) — БЕЗ канонічного
+        # Write-BRAVOTraceGraceCompletionState, навмисно "брудний" запис.
+        $taP7StaleJson = Get-Content -LiteralPath $taP7StaleStatePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $taP7StaleJson.entries.'20260902'.sources[0].size = 999999
+        [IO.File]::WriteAllText($taP7StaleStatePath, ($taP7StaleJson | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding($false)))
+        $taP7StaleSession2 = New-BRAVOSelfTestFakeBazaSession -SeedRemoteState $taP7StaleSession1.State
+        $taP7StaleResult2 = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace, $statePath)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $taP7StaleDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword $taP7StaleSession2 'trace' 7 $taP7StaleStatePath
+        Test-BRAVOCondition -Condition (
+            [int]$taP7StaleResult2.Uploaded -eq 1 -and
+            [int]$taP7StaleResult2.Errors -eq 0 -and
+            @($taP7StaleSession2.State.PutFilesCalledFor).Count -eq 2
+        ) -Name 'TraceArchive/GraceCompletionMismatchedStateTriggersSafeReprocess' -Failure "розбіжність stored-розміру джерела з реальним файлом має ЗАПУСТИТИ повторну повну обробку (fail-safe), а не помилковий skip; факт: uploaded=$($taP7StaleResult2.Uploaded) putCalls=$(@($taP7StaleSession2.State.PutFilesCalledFor).Count)"
+
+        # --- C: невідома/пошкоджена схема state -> fail-safe reprocess, без падіння.
+        $taP7CorruptDir = Join-Path $traceArchiveTestRoot "grace-completion-corrupt\Trace"
+        [void](New-Item -ItemType Directory -Path $taP7CorruptDir -Force)
+        $taP7CorruptFile = Join-Path $taP7CorruptDir 'TraceSRV_20260903_090000.out'
+        [IO.File]::WriteAllText($taP7CorruptFile, 'grace completion corrupt')
+        (Get-Item -LiteralPath $taP7CorruptFile).LastWriteTime = (Get-Date).AddDays(-1)
+        $taP7CorruptStatePath = Join-Path $traceArchiveTestRoot 'grace-completion-corrupt\state.json'
+        [void](New-Item -ItemType Directory -Path (Split-Path -Path $taP7CorruptStatePath -Parent) -Force)
+        [IO.File]::WriteAllText($taP7CorruptStatePath, '{ not valid json !!', (New-Object Text.UTF8Encoding($false)))
+        $taP7CorruptSession = New-BRAVOSelfTestFakeBazaSession
+        $taP7CorruptResult = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace, $statePath)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $taP7CorruptDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword $taP7CorruptSession 'trace' 7 $taP7CorruptStatePath
+        Test-BRAVOCondition -Condition (
+            [int]$taP7CorruptResult.Uploaded -eq 1 -and
+            [int]$taP7CorruptResult.Errors -eq 0 -and
+            @($taP7CorruptSession.State.PutFilesCalledFor).Count -eq 2
+        ) -Name 'TraceArchive/GraceCompletionCorruptSchemaFailsSafeWithoutCrashing' -Failure "пошкоджений/невідомий schemaVersion state-файлу не повинен кидати виняток і має трактуватись як 'стану немає' (повна обробка); факт: uploaded=$($taP7CorruptResult.Uploaded) errors=$($taP7CorruptResult.Errors)"
+
+        # --- D: завершення grace видаляє джерело БЕЗ повторного upload, і чистить state-запис.
+        #
+        # ВАЖЛИВО: тут НЕ можна повторно застосувати техніку "зістарити
+        # LastWriteTime заднім числом" (як у RawSourceGraceDeletesOldVerifiedSource
+        # вище) — Test-BRAVOTraceGraceCompletionCurrent коректно (за
+        # дизайном P2-7) трактує БУДЬ-ЯКУ зміну LastWriteTimeUtc як зміну
+        # identity джерела => недовіру до кешованого state => повну
+        # повторну обробку (реальний upload). У продакшн-роботі
+        # LastWriteTime джерела НІКОЛИ не змінюється — спливає лише
+        # Get-Date. Тому тут grace-межу перетинаємо СПРАВЖНІМ плином
+        # часу (Start-Sleep) при grace=1 день і початковому LastWriteTime,
+        # виставленому щільно ПІД межею (день мінус 2с) — без жодної
+        # подальшої мутації LastWriteTime.
+        $taP7ExpireDir = Join-Path $traceArchiveTestRoot "grace-completion-expire\Trace"
+        [void](New-Item -ItemType Directory -Path $taP7ExpireDir -Force)
+        $taP7ExpireFile = Join-Path $taP7ExpireDir 'TraceSRV_20260904_090000.out'
+        [IO.File]::WriteAllText($taP7ExpireFile, 'grace completion expire')
+        (Get-Item -LiteralPath $taP7ExpireFile).LastWriteTime = (Get-Date).AddDays(-1).AddSeconds(2)
+        $taP7ExpireStatePath = Join-Path $traceArchiveTestRoot 'grace-completion-expire\state.json'
+        $taP7ExpireSession1 = New-BRAVOSelfTestFakeBazaSession
+        $taP7ExpireResult1 = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace, $statePath)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $taP7ExpireDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword $taP7ExpireSession1 'trace' 1 $taP7ExpireStatePath
+        Test-BRAVOCondition -Condition (
+            [int]$taP7ExpireResult1.SourcesRetainedForGrace -eq 1 -and
+            (Test-Path -LiteralPath $taP7ExpireFile)
+        ) -Name 'TraceArchive/GraceCompletionExpirySetupRetainsWithinWindow' `
+            -Failure "передумова тесту: джерело щільно під grace-межею має лишитись на цьому кроці; факт: retained=$($taP7ExpireResult1.SourcesRetainedForGrace) exists=$(Test-Path -LiteralPath $taP7ExpireFile)"
+        # Реальний плин часу (не мутація LastWriteTime) переносить те саме
+        # немодифіковане джерело за grace-межу (1 день).
+        Start-Sleep -Seconds 3
+        $taP7ExpireSession2 = New-BRAVOSelfTestFakeBazaSession -SeedRemoteState $taP7ExpireSession1.State
+        $taP7ExpireResult2 = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $grace, $statePath)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -RawSourceRetentionDays $grace -GraceCompletionStatePath $statePath
+        } $taP7ExpireDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword $taP7ExpireSession2 'trace' 1 $taP7ExpireStatePath
+        $taP7ExpireJsonAfter = Get-Content -LiteralPath $taP7ExpireStatePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Test-BRAVOCondition -Condition (
+            [int]$taP7ExpireResult2.SourcesDeleted -eq 1 -and
+            [int]$taP7ExpireResult2.SourcesRetainedForGrace -eq 0 -and
+            @($taP7ExpireSession2.State.PutFilesCalledFor).Count -eq 0 -and
+            (-not (Test-Path -LiteralPath $taP7ExpireFile)) -and
+            ($null -eq $taP7ExpireJsonAfter.entries.PSObject.Properties['20260904'])
+        ) -Name 'TraceArchive/GraceCompletionExpiryDeletesWithoutReuploadAndClearsState' -Failure "завершення grace має видалити джерело БЕЗ повторного PutFiles і прибрати запис зі state; факт: deleted=$($taP7ExpireResult2.SourcesDeleted) putCalls=$(@($taP7ExpireSession2.State.PutFilesCalledFor).Count) stateHasEntry=$($null -ne $taP7ExpireJsonAfter.entries.PSObject.Properties['20260904'])"
+
+        # --- E: RawSourceGraceDays=0 -> completion state НІКОЛИ не створюється (попередня поведінка).
+        $taP7ZeroDir = Join-Path $traceArchiveTestRoot "grace-completion-zero\Trace"
+        [void](New-Item -ItemType Directory -Path $taP7ZeroDir -Force)
+        $taP7ZeroFile = Join-Path $taP7ZeroDir 'TraceSRV_20260905_090000.out'
+        [IO.File]::WriteAllText($taP7ZeroFile, 'grace completion zero')
+        (Get-Item -LiteralPath $taP7ZeroFile).LastWriteTime = (Get-Date).AddDays(-1)
+        $taP7ZeroStatePath = Join-Path $traceArchiveTestRoot 'grace-completion-zero\state.json'
+        $taP7ZeroSession = New-BRAVOSelfTestFakeBazaSession
+        $taP7ZeroResult = & $traceArchiveModule {
+            param($d, $z, $ap, $p, $s, $rd, $statePath)
+            Invoke-BRAVOTraceArchiveMaintenance -TraceDirectory $d -SevenZipPath $z -AddParameters $ap `
+                -ArchivePassword $p -CommandTimeoutSeconds 600 -IntegrityTimeoutSeconds 600 `
+                -Session $s -RemoteDirectory $rd -RawSourceRetentionDays 0 -GraceCompletionStatePath $statePath
+        } $taP7ZeroDir $traceArchive7za $traceArchiveAddParams $traceArchivePassword $taP7ZeroSession 'trace' $taP7ZeroStatePath
+        Test-BRAVOCondition -Condition (
+            [int]$taP7ZeroResult.SourcesDeleted -eq 1 -and
+            -not (Test-Path -LiteralPath $taP7ZeroStatePath)
+        ) -Name 'TraceArchive/GraceCompletionInertWhenRawSourceGraceDaysIsZero' -Failure "RawSourceRetentionDays=0 (дефолт) має видаляти джерело негайно, як раніше, і НІКОЛИ не створювати completion-state, навіть якщо шлях переданий; факт: deleted=$($taP7ZeroResult.SourcesDeleted) stateExists=$(Test-Path -LiteralPath $taP7ZeroStatePath)"
+
+        # --- Legacy-конфіг без ключа: BRAVO_CONFIG_LOADER нормалізує в 0 (StrictMode-безпечно).
+        Test-BRAVOCondition -Condition (
+            $traceArchiveScriptText.Contains('$RAW_SOURCE_GRACE_DAYS = if ($MaintenanceConfig.Retention -is [System.Collections.IDictionary] -and') -and
+            $traceArchiveScriptText.Contains('$MaintenanceConfig.Retention.Contains("RawSourceGraceDays")')
+        ) -Name 'TraceArchive/RawSourceGraceDaysLegacyConfigDefaultsToZero' -Failure "RAW_SOURCE_GRACE_DAYS має захисно читатись через Contains-патерн (легасі-конфіг без ключа -> 0), а не прямим доступом під StrictMode"
 
         # ===== Узагальнений backlog: довільні basename (усі *.out) =====
         $taGenericBacklogDir = Join-Path $traceArchiveTestRoot "backlog-generic\Trace"
@@ -546,6 +1100,162 @@ function Complete-BRAVOProcessOutputCapture { BRAVO.Compatibility\Complete-BRAVO
             $taDryRunText.Contains("Get-BRAVOTraceArchiveBacklog") -and
             $taDryRunText.Contains('CompressedLogDeletionEnabled')
         ) -Name 'TraceArchive/DryRunPlansTracePipelineReadOnly' -Failure "BRAVO_DRY_RUN має PLAN-рядки Trace (джерела/would update/would upload/would delete) на КАНОНІЧНІЙ Get-BRAVOTraceArchiveBacklog і показує стан CompressedLogDeletionEnabled"
+
+        # ===== Порожні legacy каталоги-дати видаляються негайно, незалежно
+        # від віку; непорожні лишаються недоторканими для звичайного
+        # age-gated Compress-OldData-шляху (регресія 2026-09, LIMS-TOP) =====
+        $taEmptyDirRoot = Join-Path $traceArchiveTestRoot 'EmptyDirCleanup'
+        [void](New-Item -ItemType Directory -Path $taEmptyDirRoot -Force)
+        try {
+            # 0 каталогів-дат: no-op, без помилок.
+            $taEmptyNone = & $traceArchiveModule { param($p) Get-BRAVOEmptyLogDateDirectories -Path $p } $taEmptyDirRoot
+            Test-BRAVOCondition -Condition (@($taEmptyNone).Count -eq 0) `
+                -Name 'TraceArchive/EmptyDateDirNoneIsNoop' `
+                -Failure "0 каталогів-дат має повертати порожній масив; отримано: $(@($taEmptyNone).Count)"
+
+            # 1 порожній каталог-дата — з навмисно СВІЖИМ CreationTime, щоб
+            # довести відсутність age-gate: видаляється незалежно від віку.
+            $taEmptyFreshDir = Join-Path $taEmptyDirRoot '2026-09-01'
+            [void](New-Item -ItemType Directory -Path $taEmptyFreshDir -Force)
+            & $traceArchiveModule { param($p) Remove-BRAVOEmptyLogDateDirectories -Path $p -Label 'SelfTest' } $taEmptyDirRoot
+            Test-BRAVOCondition -Condition (-not (Test-Path -LiteralPath $taEmptyFreshDir)) `
+                -Name 'TraceArchive/EmptyDateDirDeletedRegardlessOfAge' `
+                -Failure "порожній каталог-дата має видалятись негайно, незалежно від віку; факт: existst=$(Test-Path -LiteralPath $taEmptyFreshDir)"
+
+            # 1 непорожній каталог-дата (молодий) — не чіпається.
+            $taEmptyYoungNonEmptyDir = Join-Path $taEmptyDirRoot '2026-09-02'
+            [void](New-Item -ItemType Directory -Path $taEmptyYoungNonEmptyDir -Force)
+            [IO.File]::WriteAllText((Join-Path $taEmptyYoungNonEmptyDir 'traceBIS_000001.out'), 'stray', (New-Object Text.UTF8Encoding($false)))
+            & $traceArchiveModule { param($p) Remove-BRAVOEmptyLogDateDirectories -Path $p -Label 'SelfTest' } $taEmptyDirRoot
+            Test-BRAVOCondition -Condition (
+                (Test-Path -LiteralPath $taEmptyYoungNonEmptyDir) -and
+                (Test-Path -LiteralPath (Join-Path $taEmptyYoungNonEmptyDir 'traceBIS_000001.out'))
+            ) -Name 'TraceArchive/NonEmptyYoungDateDirUntouched' `
+                -Failure "непорожній молодий каталог-дата не повинен видалятись пустотним шляхом; факт: dirExists=$(Test-Path -LiteralPath $taEmptyYoungNonEmptyDir)"
+
+            # 1 непорожній каталог-дата (старий, за retention) — теж не
+            # чіпається пустотним шляхом; це завдання наявного
+            # Get-BRAVOExpiredLogDateDirectories/Compress-OldData, без змін.
+            $taEmptyOldNonEmptyDir = Join-Path $taEmptyDirRoot '2026-08-01'
+            [void](New-Item -ItemType Directory -Path $taEmptyOldNonEmptyDir -Force)
+            [IO.File]::WriteAllText((Join-Path $taEmptyOldNonEmptyDir 'traceBIS_000001.out'), 'stray-old', (New-Object Text.UTF8Encoding($false)))
+            (Get-Item -LiteralPath $taEmptyOldNonEmptyDir).CreationTime = (Get-Date).AddDays(-30)
+            & $traceArchiveModule { param($p) Remove-BRAVOEmptyLogDateDirectories -Path $p -Label 'SelfTest' } $taEmptyDirRoot
+            $taEmptyOldExpired = & $traceArchiveModule { param($p) Get-BRAVOExpiredLogDateDirectories -Path $p -RetentionDays 14 } $taEmptyDirRoot
+            Test-BRAVOCondition -Condition (
+                (Test-Path -LiteralPath $taEmptyOldNonEmptyDir) -and
+                @(@($taEmptyOldExpired) | Where-Object { $_.Name -eq '2026-08-01' }).Count -eq 1
+            ) -Name 'TraceArchive/NonEmptyOldDateDirRemainsForAgeGatedPath' `
+                -Failure "непорожній старий каталог-дата не повинен видалятись пустотним шляхом і має лишатись видимим для Get-BRAVOExpiredLogDateDirectories (Compress-OldData); факт: dirExists=$(Test-Path -LiteralPath $taEmptyOldNonEmptyDir)"
+        } finally {
+            Remove-Item -LiteralPath $taEmptyDirRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+
+        # ===== PR #136 review (P2-2/P2-3): best-effort enumeration та
+        # структурований cleanup-результат =====
+        # EnumerateFileSystemInfos() може кинути виняток (ACL, зникнення
+        # каталогу паралельним процесом) — БЕЗ per-candidate try/catch це
+        # вилітало б з усього Get-BRAVOEmptyLogDateDirectories назовні й
+        # перетворювало best-effort cleanup на critical failure всього
+        # Maintenance. Два "реалістичних" підходи емпірично відкинуто
+        # окремими репро на цьому середовищі self-test: Deny-ACL (навіть
+        # Deny FullControl) НЕ блокує enumerate для локального
+        # адміністратора тут, а reparse-точки (mklink /J)
+        # Get-BRAVODirectories взагалі відфільтровує на вході (ніколи не
+        # стають candidate). Натомість — $script:taP2VanishAfterDiscoveryPath
+        # (гак у test-only Get-BRAVODirectories-стабі вище): синхронно й
+        # детерміновано видаляє candidate ПІСЛЯ реального сканування
+        # каталогу, але ДО per-candidate EnumerateFileSystemInfos() —
+        # відтворює РЕАЛЬНИЙ DirectoryNotFoundException без потоків/сну.
+        $taP2Root = Join-Path $traceArchiveTestRoot 'P2EnumerationSafety'
+        [void](New-Item -ItemType Directory -Path $taP2Root -Force)
+        $taP2VanishingDir = Join-Path $taP2Root '2026-09-03'
+        $taP2ValidEmptyDir = Join-Path $taP2Root '2026-09-04'
+        [void](New-Item -ItemType Directory -Path $taP2VanishingDir -Force)
+        [void](New-Item -ItemType Directory -Path $taP2ValidEmptyDir -Force)
+        try {
+            # Get-BRAVOEmptyLogDateDirectories: candidate, що зникає між
+            # скануванням і enumeration, НЕ потрапляє в результат
+            # (непідтверджена порожнеча — не видаляти), валідний
+            # candidate обробляється штатно.
+            $taP2GetResult = @(& $traceArchiveModule {
+                param($p, $l, $vanishPath)
+                $script:taP2VanishAfterDiscoveryPath = $vanishPath
+                try { Get-BRAVOEmptyLogDateDirectories -Path $p -Label $l }
+                finally { $script:taP2VanishAfterDiscoveryPath = $null }
+            } $taP2Root 'P2Test' $taP2VanishingDir)
+            Test-BRAVOCondition -Condition (
+                $taP2GetResult.Count -eq 1 -and
+                $taP2GetResult[0].Name -eq '2026-09-04' -and
+                (-not (Test-Path -LiteralPath $taP2VanishingDir))
+            ) -Name 'TraceArchive/EmptyDateDirEnumerationErrorSkipsCandidateNotOthers' `
+                -Failure "candidate, що зник між скануванням і enumeration, не повинен потрапляти в результат, а валідний порожній сусід — має; отримано: $($taP2GetResult.Name -join ', ')"
+
+            # Відновлюємо candidate для наступного (Remove-) виклику —
+            # той сам відтворює той самий сценарій зникнення заново.
+            [void](New-Item -ItemType Directory -Path $taP2VanishingDir -Force)
+
+            # Remove-BRAVOEmptyLogDateDirectories: структурований результат
+            # (P2-3) — 1 валідний candidate видалено, зниклий/непідтверджений
+            # не намагається видалятись повторно (і вже відсутній на диску).
+            $taP2RemoveResult = & $traceArchiveModule {
+                param($p, $l, $vanishPath)
+                $script:taP2VanishAfterDiscoveryPath = $vanishPath
+                try { Remove-BRAVOEmptyLogDateDirectories -Path $p -Label $l }
+                finally { $script:taP2VanishAfterDiscoveryPath = $null }
+            } $taP2Root 'P2Test' $taP2VanishingDir
+            Test-BRAVOCondition -Condition (
+                $taP2RemoveResult.CandidateCount -eq 1 -and
+                $taP2RemoveResult.DeletedCount -eq 1 -and
+                $taP2RemoveResult.DeletedPaths.Count -eq 1 -and
+                (-not (Test-Path -LiteralPath $taP2ValidEmptyDir)) -and
+                (-not (Test-Path -LiteralPath $taP2VanishingDir))
+            ) -Name 'TraceArchive/RemoveEmptyDateDirReturnsStructuredResultAndSkipsUnconfirmed' `
+                -Failure "структурований результат мусить показувати CandidateCount=1/DeletedCount=1 (лише валідний candidate); факт: Candidate=$($taP2RemoveResult.CandidateCount) Deleted=$($taP2RemoveResult.DeletedCount) vanishedExists=$(Test-Path -LiteralPath $taP2VanishingDir) validExists=$(Test-Path -LiteralPath $taP2ValidEmptyDir)"
+
+            # P2-2/P2-3: повний структурований контракт розрізняє
+            # DiscoveredCandidates (2: зниклий + валідний)/ConfirmedEmpty
+            # (1)/Deleted (1)/EnumerationWarnings (1, зниклий)/
+            # DeletionWarnings (0, видалення валідного пройшло без
+            # помилок) — обидва типи warnings НЕ змішуються в один
+            # недиференційований лічильник.
+            Test-BRAVOCondition -Condition (
+                $taP2RemoveResult.DiscoveredCandidates -eq 2 -and
+                $taP2RemoveResult.ConfirmedEmpty -eq 1 -and
+                $taP2RemoveResult.Deleted -eq 1 -and
+                $taP2RemoveResult.EnumerationWarnings -eq 1 -and
+                $taP2RemoveResult.DeletionWarnings -eq 0 -and
+                $taP2RemoveResult.WarningCount -eq 1
+            ) -Name 'TraceArchive/RemoveEmptyDateDirDistinguishesEnumerationFromDeletionWarnings' `
+                -Failure "результат має розрізняти DiscoveredCandidates/ConfirmedEmpty/Deleted/EnumerationWarnings/DeletionWarnings; факт: Discovered=$($taP2RemoveResult.DiscoveredCandidates) Confirmed=$($taP2RemoveResult.ConfirmedEmpty) Deleted=$($taP2RemoveResult.Deleted) EnumWarn=$($taP2RemoveResult.EnumerationWarnings) DelWarn=$($taP2RemoveResult.DeletionWarnings)"
+        } finally {
+            Remove-Item -LiteralPath $taP2Root -Recurse -Force -ErrorAction SilentlyContinue
+        }
+
+        # P2-3: якщо ЄДИНОЮ реальною роботою циклу очистки було видалення
+        # вже спорожнілого legacy-каталогу-дати, підсумковий статус НЕ
+        # повинен бути SKIPPED/«даних для очищення немає» — Maintenance
+        # тепер враховує DeletedCount у $hasDataToClean і в Details.
+        Test-BRAVOCondition -Condition (
+            $traceArchiveScriptText.Contains('$emptyLogDateDirDeletedCount = 0') -and
+            $traceArchiveScriptText -match (
+                '(?s)\$hasDataToClean = \$hasDataToClean -or.*?\(\$emptyLogDateDirDeletedCount -gt 0\)'
+            ) -and
+            $traceArchiveScriptText.Contains("`$cleanupDetailParts += `"порожніх legacy-каталогів видалено: `$emptyLogDateDirDeletedCount`"")
+        ) -Name 'TraceArchive/EmptyDateDirDeletionCountsTowardCleanupSummary' `
+            -Failure 'Maintenance мусить враховувати DeletedCount видалення порожніх legacy-каталогів у $hasDataToClean і в тексті Details підсумку очистки — інакше цикл, що реально видалив каталоги, звітує SKIPPED'
+
+        # P2-2/P2-3: обидва типи best-effort warnings (enumeration/
+        # deletion) мають окремо потрапляти в текст Details підсумку
+        # очистки — раніше $emptyLogDateDirWarningCount накопичувався,
+        # але НІКОЛИ не показувався оператору.
+        Test-BRAVOCondition -Condition (
+            $traceArchiveScriptText.Contains('$emptyLogDateDirEnumerationWarningCount = 0') -and
+            $traceArchiveScriptText.Contains('$emptyLogDateDirDeletionWarningCount = 0') -and
+            $traceArchiveScriptText.Contains("`$cleanupDetailParts += `"не вдалося підтвердити порожнечу каталогів: `$emptyLogDateDirEnumerationWarningCount`"") -and
+            $traceArchiveScriptText.Contains("`$cleanupDetailParts += `"не вдалося видалити порожні каталоги: `$emptyLogDateDirDeletionWarningCount`"")
+        ) -Name 'TraceArchive/EmptyDateDirWarningsSurfacedInCleanupSummary' `
+            -Failure 'Обидва типи best-effort warnings (enumeration/deletion) мають зʼявлятись у тексті Details підсумку очистки, а не лише мовчки накопичуватись'
 
         # Trace обробляється ВИКЛЮЧНО Maintenance: жодного окремого
         # Scheduled Task для Trace (ТЗ §43).

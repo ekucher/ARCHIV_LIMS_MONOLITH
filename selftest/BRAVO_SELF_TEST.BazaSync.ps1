@@ -27,13 +27,40 @@
                 [string[]]$FailOnRelativePaths = @(),
                 [switch]$AllTransfersFail,
                 [switch]$MoveFileShouldFail,
-                [switch]$RemoveFilesShouldFail
+                [switch]$RemoveFilesShouldFail,
+                # R4-3 (PR #136, четверте коло review): опційне повторне
+                # використання "серверного" стану (RemoteSizes/
+                # KnownRemoteDirs) від ПОПЕРЕДНЬОЇ фейкової сесії — реальний
+                # SFTP-сервер переживає між окремими нічними прогонами
+                # Maintenance, кожен з яких відкриває СВОЮ WinSCP.Session;
+                # без цього кожна нова тестова сесія моделювала б "порожній"
+                # сервер, що не знає про файли, завантажені попередньою
+                # сесією, і жива remote-перевірка (Test-BRAVOTraceRemote-
+                # ArchivePublicationCurrent) завжди хибно провалювалась би.
+                # Не передано (усі наявні виклик-площини) -> точно стара
+                # поведінка, нуль різниці: свіжий порожній Hashtable/HashSet.
+                [AllowNull()]$SeedRemoteState
             )
+            # ПРИМІТКА (PS 5.1): `if(){}else{}` як значення прямо всередині
+            # @{} hashtable-літералу для HashSet[string] розгортає
+            # односимвольний HashSet у скалярний рядок (той самий клас
+            # pipeline-unwrap багу, що @(List[object]) — HashSet, на
+            # відміну від Hashtable, не отримує спеціального PowerShell-
+            # захисту від enumerate-розгортання). Явні проміжні змінні
+            # (простий присвоєння властивості, без capture через
+            # statement-результат) зберігають референс без розгортання.
+            if ($null -ne $SeedRemoteState) {
+                $seededKnownRemoteDirs = $SeedRemoteState.KnownRemoteDirs
+                $seededRemoteSizes = $SeedRemoteState.RemoteSizes
+            } else {
+                $seededKnownRemoteDirs = New-Object System.Collections.Generic.HashSet[string]
+                $seededRemoteSizes = @{}
+            }
             $state = [pscustomobject]@{
                 PutFilesCallCount = 0
                 PutFilesCalledFor = New-Object System.Collections.Generic.List[string]
-                KnownRemoteDirs = New-Object System.Collections.Generic.HashSet[string]
-                RemoteSizes = @{}
+                KnownRemoteDirs = $seededKnownRemoteDirs
+                RemoteSizes = $seededRemoteSizes
                 MoveFileCalls = New-Object System.Collections.Generic.List[string]
                 RemoveFilesCalls = New-Object System.Collections.Generic.List[string]
                 FileExistsCalledFor = New-Object System.Collections.Generic.List[string]

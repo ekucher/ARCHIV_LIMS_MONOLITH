@@ -611,3 +611,52 @@ function Get-BRAVOCanonicalDiscoverySettings {
         }
     }
 }
+
+# R3-4 (PR #136, третє коло review): ЄДИНА canonical "чи потрібні SFTP-
+# креденшели" формула. До цього фіксу ідентичний вираз (SFTP.Enabled AND
+# (ArchiveUpload OR ScheduledSftpSyncRequired OR backupMonitoring.SFTP.Enabled))
+# був незалежно продубльований у BRAVO_DRY_RUN.ps1 (двічі),
+# BRAVO_CREDENTIALS_SETUP.ps1 (Resolve-RequestedComponents) і
+# BRAVO.Configurator.Credentials.psm1 (Get-BRAVOConfiguratorCredentialRequirement) —
+# жодне з чотирьох місць не враховувало нові own-log upload тумблери,
+# додані окремо в componentSettings.SFTP. Тепер усі чотири викликають цю
+# функцію замість власної копії виразу.
+function Test-BRAVOSftpCredentialsRequired {
+    <#
+    .SYNOPSIS
+        Canonical предикат "чи потрібні SFTP-креденшелі" за поточною
+        Effective-топологією.
+    .DESCRIPTION
+        Master-вимикач AND будь-яка з дестинацій/фіч, що фактично
+        використовують SFTP: ArchiveUpload, MaintenanceLogUploadEnabled,
+        ArchiveLogUploadEnabled (обидва — opt-in вивантаження власних
+        логів, PR #136), запланована BAZA-синхронізація або Health SFTP-
+        моніторинг.
+        Приймає ВЖЕ нормалізовані булеві значення (а не сирі config-
+        об'єкти) навмисно: різні виклик-площини історично по-різному
+        приводять "чи увімкнено" до bool (BRAVO_DRY_RUN.ps1 —
+        толерантний Test-SettingEnabled для рядкових значень;
+        BRAVO_CREDENTIALS_SETUP.ps1/Configurator — прямий [bool] на вже
+        canonical-нормалізованих Effective-полях). Ця функція centralize
+        лише КОМБІНАТОРИКУ (яка саме дестинація вимагає SFTP), а не
+        політику приведення типів кожного виклик-площини — так кожен
+        caller зберігає свій уже перевірений спосіб нормалізації.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][bool]$SftpEnabled,
+        [Parameter(Mandatory = $true)][bool]$ArchiveUploadEnabled,
+        [Parameter(Mandatory = $true)][bool]$MaintenanceLogUploadEnabled,
+        [Parameter(Mandatory = $true)][bool]$ArchiveLogUploadEnabled,
+        [Parameter(Mandatory = $true)][bool]$ScheduledSftpSyncRequired,
+        [Parameter(Mandatory = $true)][bool]$BackupMonitoringSftpEnabled
+    )
+
+    return $SftpEnabled -and (
+        $ArchiveUploadEnabled -or
+        $MaintenanceLogUploadEnabled -or
+        $ArchiveLogUploadEnabled -or
+        $ScheduledSftpSyncRequired -or
+        $BackupMonitoringSftpEnabled
+    )
+}

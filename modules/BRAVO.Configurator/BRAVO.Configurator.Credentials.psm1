@@ -39,14 +39,30 @@ function Get-BRAVOConfiguratorCredentialRequirement {
     $storage = $EffectiveConfig.storageEffective
     $bazaSync = $EffectiveConfig.bazaSyncEffective
     $backupMonitoring = $EffectiveConfig.backupMonitoring
+    # componentSettings — новий (R3-4) необов'язковий вхід: під
+    # Set-StrictMode звернення до відсутньої властивості (і до властивості
+    # НА $null-значенні) кидає виняток, а не повертає $null. Існуючі
+    # виклик-площини/фікстури, побудовані до R3-4 (звужені сценарії, що не
+    # стосуються own-log toggles), не зобов'язані передавати це поле —
+    # безпечний дефолт (обидва own-log-тумблери = вимкнено) зберігає їхню
+    # сумісність без потреби оновлювати кожну.
+    $componentSettings = if ($EffectiveConfig.PSObject.Properties['componentSettings']) {
+        $EffectiveConfig.componentSettings
+    } else {
+        [pscustomobject]@{ SFTP = [pscustomobject]@{ MaintenanceLogUploadEnabled = $false; ArchiveLogUploadEnabled = $false } }
+    }
 
-    # SFTP: master AND (ArchiveUpload OR будь-який заплановий BAZA SFTP sync
-    # OR Health SFTP-моніторинг) — ідентично Resolve-RequestedComponents.
-    $sftpRequired = [bool]$storage.SFTP.Enabled -and (
-        [bool]$storage.SFTP.ArchiveUpload -or
-        [bool]$bazaSync.ScheduledSftpSyncRequired -or
-        [bool]$backupMonitoring.SFTP.Enabled
-    )
+    # SFTP: canonical Test-BRAVOSftpCredentialsRequired (R3-4, PR #136
+    # третє коло review) — master AND (ArchiveUpload OR own-log upload
+    # toggles OR запланований BAZA SFTP sync OR Health SFTP-моніторинг),
+    # ідентично Resolve-RequestedComponents/BRAVO_DRY_RUN.ps1.
+    $sftpRequired = Test-BRAVOSftpCredentialsRequired `
+        -SftpEnabled ([bool]$storage.SFTP.Enabled) `
+        -ArchiveUploadEnabled ([bool]$storage.SFTP.ArchiveUpload) `
+        -MaintenanceLogUploadEnabled ([bool]$componentSettings.SFTP.MaintenanceLogUploadEnabled) `
+        -ArchiveLogUploadEnabled ([bool]$componentSettings.SFTP.ArchiveLogUploadEnabled) `
+        -ScheduledSftpSyncRequired ([bool]$bazaSync.ScheduledSftpSyncRequired) `
+        -BackupMonitoringSftpEnabled ([bool]$backupMonitoring.SFTP.Enabled)
     # SMB: storageEffective.SMB.ArchiveCopy вже є (master AND child) —
     # окремо перевіряти SMB.Enabled не потрібно.
     $smbRequired = [bool]$storage.SMB.ArchiveCopy
