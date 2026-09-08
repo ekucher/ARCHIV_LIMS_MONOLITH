@@ -467,6 +467,23 @@ function Write-BRAVOSelfTestTimingSummary {
 function Complete-BRAVOSelfTestReport {
     Complete-BRAVOSelfTestActiveSuiteSpan
 
+    # P2 fix (review comment 3962649933): стабільний end-boundary для
+    # "Total wall-clock". До цього фіксу stopwatch лишався running аж до
+    # моменту, коли Write-BRAVOSelfTestTimingSummary нижче читала його
+    # Elapsed — тобто інтервал включав header/status rendering вище
+    # (Initialize-BRAVOConsole, Write-BRAVOFinalSummaryHeader тощо), що
+    # робило межу нестабільною й залежною від швидкості самого рендерингу
+    # консолі, а не від реальної роботи self-test. Зупиняємо/фіксуємо
+    # ОДРАЗУ після закриття останнього suite span — усі assertions вже
+    # завершені на цей момент (Test-BRAVOCondition на нормальному
+    # report-шляху більше не викликається) — і ДО будь-якого report
+    # rendering. IsRunning-guard: Complete-BRAVOSelfTestReport викликається
+    # на двох шляхах (Phase-0-FAIL short-circuit і нормальний FULL final
+    # шлях) — ідемпотентно, без створення нового Stopwatch і без restart.
+    if ($script:selfTestTotalStopwatch.IsRunning) {
+        $script:selfTestTotalStopwatch.Stop()
+    }
+
     # SELF-TEST Console UX: один resolved exit code — і для operator summary,
     # і для реального завершення процесу (Complete-BRAVOHelperLog нижче).
     # Ніколи не обчислюється повторно після паузи (той самий інваріант, що
@@ -17583,6 +17600,95 @@ function Remove-BRAVOSelfTestFixtureDirectory {
             -Name "Framework/Phase0FailStopsDomains.Cleanup" `
             -Failure "не вдалося видалити TEMP fixture-каталог '$tempRoot': $($cleanupResult.ErrorMessage)"
     }
+}
+
+# Framework/TotalStopwatchBoundaryIsStable (P2 fix, review comment
+# 3962649933): доводить стабільну end-boundary "Total wall-clock" двома
+# незалежними доказами.
+#
+# (а) Структурний/порядковий доказ на РЕАЛЬНОМУ тілі Complete-
+# BRAVOSelfTestReport (AST-екстракція, а не крихкий full-file regex —
+# Complete-BRAVOSelfTestActiveSuiteSpan/Initialize-BRAVOConsole як імена
+# зустрічаються в файлі багаторазово, тому порівняння позицій має
+# відбуватися ВСЕРЕДИНІ витягнутого тіла самої функції, не в усьому
+# файлі): виклик закриття останнього suite span передує stop/snapshot
+# total stopwatch, який своєю чергою передує першому виклику report
+# rendering (Initialize-BRAVOConsole) і виклику Write-
+# BRAVOSelfTestTimingSummary. Complete-BRAVOSelfTestReport напряму НЕ
+# викликається цим regression-ом (вона завершується exit'ом через
+# Complete-BRAVOHelperLog — викликати її тут означало б перервати сам
+# self-test), тому інтеграційна поведінка доводиться структурно, а не
+# виконанням.
+#
+# (б) Динамічний доказ на ІЗОЛЬОВАНОМУ синтетичному Stopwatch (короткі
+# 30ms-паузи, не секундні sleep): Stop() дійсно фіксує Elapsed —
+# значення не зростає після зупинки, повторний Stop() ідемпотентний
+# (той самий контракт, що IsRunning-guard у продакшн-коді вище).
+& {
+    $boundaryProbeTokens = $null
+    $boundaryProbeErrors = $null
+    $boundaryProbeAst = [Management.Automation.Language.Parser]::ParseFile(
+        $PSCommandPath,
+        [ref]$boundaryProbeTokens,
+        [ref]$boundaryProbeErrors
+    )
+    $reportFunctionAst = $boundaryProbeAst.FindAll(
+        {
+            param($candidate)
+            $candidate -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $candidate.Name -eq 'Complete-BRAVOSelfTestReport'
+        },
+        $true
+    ) | Select-Object -First 1
+    # Коментарі (у т.ч. описовий коментар самого цього P2-фіксу вище
+    # реальних рядків коду) НАВМИСНО виключаються перед пошуком позицій:
+    # пояснювальна проза функції називає ці самі імена в оповідальному
+    # порядку, що НЕ збігається з фізичним порядком реальних рядків коду
+    # — без цього фільтра порівняння позицій хибно провалювалося б.
+    $reportFunctionRawText = if ($null -ne $reportFunctionAst) { $reportFunctionAst.Extent.Text } else { '' }
+    $reportFunctionText = (
+        ($reportFunctionRawText -split "`n") |
+            Where-Object { $_ -notmatch '^\s*#' }
+    ) -join "`n"
+
+    $suiteSpanClosePos = $reportFunctionText.IndexOf('Complete-BRAVOSelfTestActiveSuiteSpan')
+    $stopwatchStopPos = $reportFunctionText.IndexOf('$script:selfTestTotalStopwatch.Stop()')
+    $consoleInitPos = $reportFunctionText.IndexOf('Initialize-BRAVOConsole')
+    $timingSummaryCallPos = $reportFunctionText.IndexOf('Write-BRAVOSelfTestTimingSummary')
+
+    Test-BRAVOCondition `
+        -Condition (
+            $null -ne $reportFunctionAst -and
+            $suiteSpanClosePos -ge 0 -and
+            $stopwatchStopPos -gt $suiteSpanClosePos -and
+            $consoleInitPos -gt $stopwatchStopPos -and
+            $timingSummaryCallPos -gt $consoleInitPos
+        ) `
+        -Name "Framework/TotalStopwatchBoundaryIsStable.StructuralOrder" `
+        -Failure ("фізичний порядок у Complete-BRAVOSelfTestReport порушено: " +
+            "suiteSpanClose@$suiteSpanClosePos, stopwatchStop@$stopwatchStopPos, " +
+            "consoleInit@$consoleInitPos, timingSummaryCall@$timingSummaryCallPos " +
+            "(кожен наступний має бути СТРОГО більшим за попередній)")
+
+    $frozenProbe = [Diagnostics.Stopwatch]::StartNew()
+    Start-Sleep -Milliseconds 30
+    $frozenProbe.Stop()
+    $elapsedRightAfterStop = $frozenProbe.Elapsed.TotalMilliseconds
+    Start-Sleep -Milliseconds 30
+    $elapsedAfterDelay = $frozenProbe.Elapsed.TotalMilliseconds
+    # Ідемпотентність: повторний Stop() (той самий IsRunning-guard, що й
+    # у продакшн-коді) не повинен ані кидати, ані змінювати Elapsed.
+    if ($frozenProbe.IsRunning) { $frozenProbe.Stop() }
+    $elapsedAfterSecondStop = $frozenProbe.Elapsed.TotalMilliseconds
+
+    Test-BRAVOCondition `
+        -Condition (
+            $elapsedAfterDelay -eq $elapsedRightAfterStop -and
+            $elapsedAfterSecondStop -eq $elapsedRightAfterStop
+        ) `
+        -Name "Framework/TotalStopwatchBoundaryIsStable.DynamicFrozenElapsed" `
+        -Failure ("Elapsed зупиненого Stopwatch не лишився стабільним: right-after-stop=$elapsedRightAfterStop " +
+            "after-delay=$elapsedAfterDelay after-second-stop=$elapsedAfterSecondStop")
 }
 
 # Framework/BootstrapIntegrityCheckedBeforeManifestCoveredImports (P1-A
