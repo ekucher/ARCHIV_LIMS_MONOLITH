@@ -56,23 +56,61 @@ $root = if ($PSCommandPath) {
 # після цього блоку в scope файлу недоступна — і не потрібна: Phase 0
 # нижче повторно використовує ЦЕЙ результат, не викликаючи перевірку
 # вдруге.
-$script:selfTestBootstrapRuntimeManifest = & {
-    . (Join-Path $root "BRAVO_RUNTIME_GUARD.ps1")
-    Test-BRAVORuntimeManifestIntegrity `
-        -RuntimeRoot $root `
-        -ManifestPath (Join-Path $root "RUNTIME_MANIFEST.json") `
-        -Mode Enforce
+$script:selfTestBootstrapRuntimeManifest = $null
+$bootstrapIntegrityExceptionMessage = $null
+try {
+    $script:selfTestBootstrapRuntimeManifest = & {
+        . (Join-Path $root "BRAVO_RUNTIME_GUARD.ps1")
+        Test-BRAVORuntimeManifestIntegrity `
+            -RuntimeRoot $root `
+            -ManifestPath (Join-Path $root "RUNTIME_MANIFEST.json") `
+            -Mode Enforce
+    }
+} catch {
+    # PR #138 review (P2, comment 3960029509): сам guard-скан ([IO.Directory]::
+    # GetFiles(...AllDirectories) для unknown-scripts-перевірки) може кинути
+    # реальний .NET terminating-виняток (UnauthorizedAccessException/
+    # IOException/PathTooLongException/SecurityException тощо) НЕЗАЛЕЖНО
+    # від $ErrorActionPreference (яка тут ще навіть не встановлена в 'Stop').
+    # Без цього try/catch такий виняток пройшов би крізь бутстрап
+    # НЕОБРОБЛЕНИМ — сирий PowerShell error dump замість контрольованого
+    # SELF-TEST FAILED. Причина НЕ маскується: реальне повідомлення виключення
+    # потрапляє у fail-path нижче дослівно.
+    $bootstrapIntegrityExceptionMessage = $_.Exception.Message
 }
 
-if (-not $script:selfTestBootstrapRuntimeManifest.IsValid) {
+if ($null -ne $bootstrapIntegrityExceptionMessage) {
+    # Security exception до звичайного rich-reporting шляху — той самий
+    # dependency-free fail path, що й для IsValid=false нижче: HelperLogging/
+    # Console НЕ імпортуються (їхня цілісність так і не була підтверджена).
+    Write-Host ("[FAIL] RuntimeManifest/RepositoryManifestMatchesRuntime: bootstrap integrity scan failed: " +
+        "$bootstrapIntegrityExceptionMessage") -ForegroundColor Red
+    Write-Host "SELF-TEST FAILED: 1" -ForegroundColor Red
+    exit 1
+}
+
+# Null-safe: якщо б `& { ... }` повернув $null БЕЗ винятку (не мало б
+# статись за поточною реалізацією Test-BRAVORuntimeManifestIntegrity, яка
+# завжди повертає PSObject або кидає — але перевірка тут дешева).
+# `$null -eq ...` ПЕРШИМ у `-or` (short-circuit) — `.IsValid` на $null під
+# Set-StrictMode 2.0 кидає PropertyNotFoundException (підтверджено
+# емпірично), тому порядок операндів тут критичний, а не стилістичний.
+# Будь-який із двох випадків трактується як провал цілісності, а не як
+# мовчазний PASS.
+if ($null -eq $script:selfTestBootstrapRuntimeManifest -or -not $script:selfTestBootstrapRuntimeManifest.IsValid) {
     # Security exception до звичайного rich-reporting шляху: HelperLogging
     # і Console САМІ входять до маніфесту, тому НЕ імпортуються тут —
     # інакше потенційно підмінений код виконався б заради "красивого"
     # звіту. Мінімальний dependency-free fail path: лише Write-Host і
     # non-zero exit, без Complete-BRAVOHelperLog/Wait-BRAVOManualExit/
     # BRAVO.Console.
+    $bootstrapIntegrityInvalidMessage = if ($null -ne $script:selfTestBootstrapRuntimeManifest) {
+        $script:selfTestBootstrapRuntimeManifest.Message
+    } else {
+        'Test-BRAVORuntimeManifestIntegrity не повернула результат'
+    }
     Write-Host ("[FAIL] RuntimeManifest/RepositoryManifestMatchesRuntime: RUNTIME_MANIFEST.json не відповідає комплекту " +
-        "(запустіть ci\Update-BRAVORuntimeManifest.ps1 -Apply): $($script:selfTestBootstrapRuntimeManifest.Message)") -ForegroundColor Red
+        "(запустіть ci\Update-BRAVORuntimeManifest.ps1 -Apply): $bootstrapIntegrityInvalidMessage") -ForegroundColor Red
     Write-Host "SELF-TEST FAILED: 1" -ForegroundColor Red
     exit 1
 }
@@ -17436,6 +17474,89 @@ try {
         }
         if ([IO.File]::Exists($sentinelPath)) {
             [IO.File]::Delete($sentinelPath)
+        }
+    }
+}
+
+# Framework/BootstrapIntegrityScanExceptionIsControlled (P2 regression,
+# review comment 3960029509): bounded TEMP-копія (Copy-BRAVOSelfTestManifestFixtureFiles)
+# з навмисно підміненим BRAVO_RUNTIME_GUARD.ps1 — дописаний `throw`
+# спрацьовує ПРИ самому дот-сорсингу, ще ДО того, як Test-
+# BRAVORuntimeManifestIntegrity взагалі викликається (той самий клас
+# збою, що реальний [IO.Directory]::GetFiles(...AllDirectories) міг би
+# кинути: UnauthorizedAccessException/IOException/PathTooLongException/
+# SecurityException тощо). Доводить, що дочірній бутстрап-try/catch
+# перетворює це на контрольований SELF-TEST FAILED з реальним
+# повідомленням винятку, а не на сирий необроблений PowerShell error
+# dump. Working tree (реальний BRAVO_RUNTIME_GUARD.ps1) НЕ чіпається —
+# лише TEMP-копія.
+& {
+    $tempRoot = Join-Path $env:TEMP ("BRAVO_SELFTEST_BOOTSTRAPTHROW_{0}" -f [guid]::NewGuid().ToString("N"))
+    try {
+        [void][IO.Directory]::CreateDirectory($tempRoot)
+        Copy-BRAVOSelfTestManifestFixtureFiles -SourceRoot $root -DestinationRoot $tempRoot
+
+        $guardPath = Join-Path $tempRoot "BRAVO_RUNTIME_GUARD.ps1"
+        $guardOriginalText = [IO.File]::ReadAllText($guardPath, [Text.Encoding]::UTF8)
+        $guardPayload = "`r`nthrow 'synthetic bootstrap integrity exception (P2 regression fixture)'`r`n"
+        [IO.File]::WriteAllText($guardPath, ($guardOriginalText + $guardPayload), (New-Object Text.UTF8Encoding($true)))
+        # RUNTIME_MANIFEST.json у TEMP-копії НАВМИСНО лишається
+        # ОРИГІНАЛЬНИМ (незміненим): підмінений guard теж робить хеш
+        # BRAVO_RUNTIME_GUARD.ps1 таким, що не збігається з маніфестом,
+        # але `throw` спрацьовує РАНІШЕ — під час самого дот-сорсингу,
+        # усередині дочірнього bootstrap-scriptblock-у, ДО того, як
+        # порівняння хешів взагалі відбулося б. Це цілить саме шлях "сам
+        # guard-скан кинув виняток", а не вже покритий Framework/
+        # Phase0FailStopsDomains шлях "маніфест не сходиться".
+
+        $childOutput = & powershell.exe -NoProfile -File (Join-Path $tempRoot 'BRAVO_SELF_TEST.ps1') -NoPause 2>&1
+        $childExitCode = $LASTEXITCODE
+        $childOutputText = ($childOutput | Out-String)
+        $childHelperLogDirExists = [IO.Directory]::Exists((Join-Path $tempRoot 'LOGS\HELPERS'))
+
+        Test-BRAVOCondition `
+            -Condition ($childExitCode -ne 0) `
+            -Name "Framework/BootstrapIntegrityScanExceptionIsControlled.ExitCode" `
+            -Failure "дочірній self-test із guard-throw має завершуватись non-zero; фактично: $childExitCode"
+        Test-BRAVOCondition `
+            -Condition $childOutputText.Contains('SELF-TEST FAILED') `
+            -Name "Framework/BootstrapIntegrityScanExceptionIsControlled.SummaryEmitted" `
+            -Failure "дочірній прогін не надрукував стандартний machine-readable SELF-TEST FAILED маркер"
+        Test-BRAVOCondition `
+            -Condition $childOutputText.Contains('synthetic bootstrap integrity exception') `
+            -Name "Framework/BootstrapIntegrityScanExceptionIsControlled.ExceptionMessagePreserved" `
+            -Failure "реальне повідомлення винятку guard-скану не потрапило у [FAIL]-рядок — причина замаскована"
+        Test-BRAVOCondition `
+            -Condition (
+                -not $childOutputText.Contains('CategoryInfo') -and
+                -not $childOutputText.Contains('FullyQualifiedErrorId') -and
+                -not $childOutputText.Contains('At line:')
+            ) `
+            -Name "Framework/BootstrapIntegrityScanExceptionIsControlled.NoUncontrolledTerminationDump" `
+            -Failure "дочірній прогін надрукував сирий PowerShell error dump (CategoryInfo/FullyQualifiedErrorId/At line) замість контрольованого [FAIL]"
+        # HelperLogging НЕ імпортований/виконаний: Start-BRAVOHelperLog
+        # (якби виконався) завжди друкує "Лог допоміжного скрипта: ..."
+        # (QuietConsole тут не передається) і створює LOGS\HELPERS —
+        # відсутність ОБОХ ознак доводить, що бутстрап зупинився до
+        # Import-Module HelperLogging. Console-import фізично ПІЗНІШЕ за
+        # HelperLogging-import у тому самому лінійному бутстрапі
+        # (Framework/BootstrapIntegrityCheckedBeforeManifestCoveredImports
+        # вище) — той самий early-exit гарантовано блокує й його.
+        Test-BRAVOCondition `
+            -Condition (
+                -not $childOutputText.Contains('Лог допоміжного скрипта:') -and
+                -not $childHelperLogDirExists
+            ) `
+            -Name "Framework/BootstrapIntegrityScanExceptionIsControlled.HelperLoggingNeverExecuted" `
+            -Failure "BRAVO.HelperLogging виконався попри провал bootstrap integrity scan: ConsoleMessage=$($childOutputText.Contains('Лог допоміжного скрипта:')) LOGS\HELPERS exists=$childHelperLogDirExists"
+    } catch {
+        Test-BRAVOCondition `
+            -Condition $false `
+            -Name "Framework/BootstrapIntegrityScanExceptionIsControlled.FixtureExecution" `
+            -Failure "не вдалося виконати isolated bootstrap-exception regression fixture (setup/copy/tamper/child-launch): $($_.Exception.Message)"
+    } finally {
+        if (Test-Path -LiteralPath $tempRoot) {
+            [IO.Directory]::Delete($tempRoot, $true)
         }
     }
 }
