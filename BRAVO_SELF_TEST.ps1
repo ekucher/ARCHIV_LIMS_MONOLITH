@@ -10,6 +10,17 @@ param(
     [switch]$NoPause
 )
 
+# P0 fail-fast/telemetry (PR #138 review): dependency-free секундомір,
+# запущений одразу після параметр-байндингу — ДО Start-BRAVOHelperLog і
+# ДО будь-якого Import-Module. "Total wall-clock" у фінальному звіті
+# документується як час від найранішньої можливої точки бутстрапу; якщо
+# секундомір стартує ПІСЛЯ module discovery/лог-ініціалізації (яка на
+# повільних системах може бути нетривіальною), метрика систематично
+# занижує реальний час — саме це знайшов review. LeadDurationMs першого
+# Test-BRAVOCondition-виклику природно поглине цей bootstrap-час — це
+# очікувано і корисно (видно повільний старт), не дефект.
+$script:selfTestTotalStopwatch = [Diagnostics.Stopwatch]::StartNew()
+
 $helperLoggingPath = Join-Path $PSScriptRoot "modules\BRAVO.HelperLogging\BRAVO.HelperLogging.psd1"
 Import-Module -Name $helperLoggingPath -ErrorAction Stop
 # Start-BRAVOHelperLog повертає canonical шлях журналу — той самий, що й
@@ -40,12 +51,12 @@ $script:failures = New-Object System.Collections.ArrayList
 $script:passCount = 0
 $script:selfTestConfigRoot = $null
 
-# P0 fail-fast/telemetry (BRAVO SELF_TEST P0 DESIGN — FINAL): один глобальний
-# wall-clock секундомір від найранішньої можливої точки бутстрапу до початку
-# фінального звіту. TOTAL у підсумку НІКОЛИ не обчислюється як сума
-# suite-таблиці нижче (framework/reporting overhead між межами suite —
-# очікувана, видима розбіжність, не помилка підрахунку).
-$script:selfTestTotalStopwatch = [Diagnostics.Stopwatch]::StartNew()
+# P0 fail-fast/telemetry (BRAVO SELF_TEST P0 DESIGN — FINAL): $script:
+# selfTestTotalStopwatch вже запущено значно раніше (одразу після
+# param()-байндингу, ДО Start-BRAVOHelperLog/Import-Module — PR #138
+# review). TOTAL у підсумку НІКОЛИ не обчислюється як сума suite-таблиці
+# нижче (framework/reporting overhead між межами suite — очікувана,
+# видима розбіжність, не помилка підрахунку).
 
 # Per-suite wall-clock accumulator: Suite-ім'я -> накопичена мілісекунди.
 # 'Root (inline)' — не одна суцільна ділянка, а СУМА всіх проміжків
@@ -17165,6 +17176,22 @@ try {
         ) `
         -Name "Framework/Phase0FailStopsDomains.NoUncontrolledException" `
         -Failure "пошкоджений RUNTIME_MANIFEST.json спричинив необроблений виняток у manifest-derived Phase0-коді замість контрольованого fail-closed звіту"
+} catch {
+    # PR #138 review (P2-A): при активному $ErrorActionPreference='Stop'
+    # будь-яка помилка ІНФРАСТРУКТУРИ самого fixture (Copy-Item на
+    # непрочитному/заблокованому top-level елементі, TEMP create/write
+    # failure, збій запуску дочірнього процесу) раніше була терміную-
+    # чою — минала весь зовнішній try/catch файлу (цей блок living OUTSIDE
+    # головного try, всередині лише мав finally) і завершувала SELF_TEST
+    # без SELF-TEST FAILED/Complete-BRAVOSelfTestReport/резолвленого exit
+    # code. Перетворюємо інфраструктурний збій САМОГО fixture у звичайний
+    # Test-BRAVOCondition FAIL — не маскуємо причину (повне
+    # $_.Exception.Message у Failure), не re-throw, гарантовано
+    # продовжуємо до стандартного report-шляху нижче.
+    Test-BRAVOCondition `
+        -Condition $false `
+        -Name "Framework/Phase0FailStopsDomains.FixtureExecution" `
+        -Failure "не вдалося виконати isolated Phase0 regression fixture (setup/copy/child-launch): $($_.Exception.Message)"
 } finally {
     if (Test-Path -LiteralPath $phase0FailStopsDomainsTempRoot) {
         [IO.Directory]::Delete($phase0FailStopsDomainsTempRoot, $true)
@@ -17203,6 +17230,24 @@ Test-BRAVOCondition `
 # Test-BRAVOCondition береться AST-екстракцією з ЦЬОГО Ж файлу (не ручна
 # копія-дублікат) — гарантує, що ізольований fixture тестує байт-у-байт
 # ту саму реалізацію, що працює в проді.
+#
+# КРИТИЧНО (знайдено власною targeted-перевіркою, ширше за P2-B review):
+# New-Module -ScriptBlock, що визначає функцію з ІМЕНЕМ, яке вже існує
+# у сесії (тут — САМЕ Test-BRAVOCondition, єдиний call site з-поміж 97,
+# що екстрагує САМ assertion-engine), матеріалізує свою копію в
+# Function:-drive і ПОВНІСТЮ ЗАМІЩУЄ оригінал для БУДЬ-ЯКОГО подальшого
+# "голого" виклику Test-BRAVOCondition в ГОЛОВНОМУ процесі — емпірично
+# підтверджено: без відновлення нижче наступні виклики
+# "Framework/TimingDoesNotAlterResult"/"TimingCapturesInterval" друкували
+# б [PASS] у консоль (Write-Host не залежить від scope), але писали б у
+# $script:passCount/$script:failures/$script:testTimings ДИНАМІЧНОГО
+# МОДУЛЯ (порожні на той момент), а не в реальні лічильники головного
+# self-test — тобто ці 2 framework-тести взагалі не впливали б на
+# підсумковий PASS/FAIL. Тому: (1) захопити оригінальний ScriptBlock ДО
+# створення модуля, (2) відновити його одразу ПІСЛЯ виклику `& $module {}`,
+# ДО будь-якого подальшого голого виклику Test-BRAVOCondition.
+$realTestBRAVOConditionScriptBlock = (Get-Item -Path function:Test-BRAVOCondition).ScriptBlock
+
 $timingProbeSourceText = [IO.File]::ReadAllText($PSCommandPath, [Text.Encoding]::UTF8)
 $timingProbeModule = New-BRAVOSelfTestRuntimeModule -SourceText $timingProbeSourceText -FunctionNames @('Test-BRAVOCondition')
 $timingProbeResult = & $timingProbeModule {
@@ -17238,6 +17283,13 @@ $timingProbeResult = & $timingProbeModule {
     }
 }
 
+# Відновлення ОДРАЗУ після виклику модуля, ДО будь-якого подальшого
+# голого Test-BRAVOCondition в цьому файлі — інакше наступні 2 assert-и
+# (і будь-який код, доданий пізніше нижче) мовчки писали б у
+# $script:-простір ДИНАМІЧНОГО модуля, а не в реальні лічильники
+# головного self-test (емпірично підтверджений клас дефекту, див. вище).
+Set-Item -Path function:Test-BRAVOCondition -Value $realTestBRAVOConditionScriptBlock -Force
+
 Test-BRAVOCondition `
     -Condition (
         $timingProbeResult.PassCount -eq 1 -and
@@ -17271,6 +17323,31 @@ Test-BRAVOCondition `
     ) `
     -Name "Framework/TimingCapturesInterval" `
     -Failure "Lead/Assertion/Interval або Suite-атрибуція некоректні для ізольованих assertion-записів"
+
+# PR #138 review (P2-B, 2 threads — той самий technical finding): цей
+# timing-probe модуль створюється (і автоматично реєструється в
+# $script:BRAVOSelfTestOwnedRuntimeModules — New-BRAVOSelfTestRuntimeModule,
+# L253-260) ПІСЛЯ єдиного Clear-BRAVOSelfTestOwnedRuntimeModules вище
+# (L17052) і ПІСЛЯ leak-перевірок Isolation/*, тобто без цього явного
+# другого виклику PSModuleInfo-об'єкт лишався б зареєстрованим/незвільненим.
+# Function:-drive на цей момент уже коректний (Set-Item відновив оригінал
+# одразу після виклику модуля вище) — Clear-BRAVOSelfTestOwnedRuntimeModules
+# нижче безпечно НЕ чіпає відновлену функцію (її поточний ModuleName вже
+# не збігається з ownerModuleName) і лише звільняє сам PSModuleInfo
+# (Remove-Module). Використовуємо ТОЙ САМИЙ canonical cleanup-механізм,
+# не окрему саморобну реалізацію.
+Clear-BRAVOSelfTestOwnedRuntimeModules
+
+$timingProbeLeakedCommand = Get-Command -Name 'Test-BRAVOCondition' -All -ErrorAction SilentlyContinue |
+    Where-Object { $_.ModuleName -eq $timingProbeModule.Name }
+$timingProbeCurrentModuleName = (Get-Command -Name 'Test-BRAVOCondition' -ErrorAction SilentlyContinue).ModuleName
+Test-BRAVOCondition `
+    -Condition (
+        $null -eq $timingProbeLeakedCommand -and
+        [string]::IsNullOrEmpty($timingProbeCurrentModuleName)
+    ) `
+    -Name "Framework/TimingProbeModuleCleanedUp" `
+    -Failure "timing-probe динамічний модуль '$($timingProbeModule.Name)' лишив Test-BRAVOCondition-fixture активним у Function:-drive і/або не відновив оригінальну (не module-owned) функцію; поточний ModuleName='$timingProbeCurrentModuleName'"
 
 if (-not [string]::IsNullOrWhiteSpace([string]$script:selfTestConfigRoot) -and
     [IO.Directory]::Exists($script:selfTestConfigRoot)) {
