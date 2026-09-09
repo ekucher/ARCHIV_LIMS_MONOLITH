@@ -34,9 +34,15 @@ Completed in Foundation:
   across `BRAVO_SETUP.ps1`, Task Scheduler task definitions, and
   `BRAVO_CONFIGURATOR.ps1`;
 - compatibility projection for legacy consumers;
-- post-merge security-invariant re-validation (an effective
-  configuration that weakens a security-critical setting through
-  `BRAVO.local.config` is rejected, not silently accepted).
+- post-merge security-invariant re-validation
+  (`Test-BRAVOEffectiveSecurityInvariants` in `BRAVO_CONFIG_LOADER.ps1`):
+  under the default `Enforce` policy, an effective configuration that
+  weakens a security-critical setting through `BRAVO.local.config` is
+  rejected, not silently accepted; the supported `Warn` mode
+  (`BRAVO_RUNTIME_INTEGRITY_MODE=Warn`) and the explicit
+  `BRAVO_ALLOW_WEAKENED_SECURITY=1` override both warn and continue
+  instead of rejecting, and are not corner cases to gloss over — an
+  operator running either mode is not getting unconditional rejection.
 
 Effective precedence today:
 
@@ -171,12 +177,19 @@ The v2 parser must:
 7. fail closed on any unsupported syntax;
 8. allow no cmdlets;
 9. allow no function calls;
-10. allow no variable/environment references;
+10. allow no variable/environment references, **except** the three
+    PowerShell intrinsic literal constants `$true`, `$false`, and
+    `$null` — these are required to represent Boolean and nullable
+    configuration values, and must be recognized explicitly by
+    AST/token identity as literal DATA values, never resolved from
+    session/environment state. All other variable forms remain
+    rejected: `$env:...`, `$global:...`, `$script:...`, `$local:...`,
+    arbitrary `$foo`, `${...}`, and any other variable reference;
 11. allow no arbitrary expressions.
 
 Today's `CheckRestrictedLanguage` + `& $scriptBlock` pattern used for
 `BRAVO.local.config` gives useful precedent toward points 8–10 (no
-cmdlets, no function/command calls, no variable/environment
+cmdlets, no function/command calls, no arbitrary variable/environment
 references) but does **not** prove points 7 or 11, and **violates
 point 4**:
 
@@ -266,6 +279,23 @@ Operator-facing documentation (`README.md`, `BRAVO_SETUP.md`,
 - legacy and v2 must produce an equivalent effective configuration on
   control fixtures during the transition window.
 
+### Legacy/v2 security boundary during transition
+
+While the loader accepts both formats during the migration window, the
+two paths must stay strictly separated:
+
+- a v2-shaped file (`configSchemaVersion: 2`) is only ever parsed and
+  extracted as DATA — it is never invoked as code, including when it
+  fails validation;
+- a file using the legacy format uses only the existing, already-
+  reviewed legacy compatibility path (today's executable
+  `BRAVO.config` / restricted-language-then-invoke
+  `BRAVO.local.config`);
+- an invalid or malformed v2 file **fails closed** — it is rejected,
+  and must never be silently retried through the legacy executable
+  path. A file does not become executable merely because its v2
+  parsing failed.
+
 ### Schema v2
 
 - explicit `configSchemaVersion: 2` marker, validated on load;
@@ -293,10 +323,25 @@ Operator-facing documentation (`README.md`, `BRAVO_SETUP.md`,
 ### Updater preservation
 
 - an in-place update/upgrade of the toolkit must never silently
-  overwrite, discard, or corrupt `BRAVO.config.local` (or, during the
-  transition window, `BRAVO.local.config`);
-- this must be covered by an explicit regression case, not just
-  documented as an expectation.
+  overwrite, discard, or corrupt either v2 override file —
+  `BRAVO.config` (site/deployment override) or `BRAVO.config.local`
+  (machine-local override) — nor, during the transition window, the
+  legacy `BRAVO.local.config`. Both v2 files are user-owned override
+  layers, not package-provided content, and the package must never
+  reset them to shipped defaults on update;
+- a legacy executable `BRAVO.config` must never be silently replaced
+  by a packaged v2 `BRAVO.config` before backup/migration/compatibility
+  handling has safely dealt with it — an update must not overwrite a
+  site's existing configuration file merely because the package ships
+  a new default file;
+- this must be covered by explicit regression cases, not just
+  documented as an expectation, including at minimum:
+  1. a v2 `BRAVO.config` survives an update unchanged;
+  2. a v2 `BRAVO.config.local` survives an update unchanged;
+  3. a legacy `BRAVO.local.config` survives the transition/update
+     unchanged until explicitly migrated;
+  4. a legacy executable `BRAVO.config` is never silently replaced by
+     a package-provided v2 file.
 
 ### Regression / Definition-of-Done requirements
 
@@ -321,6 +366,10 @@ following must exist and pass:
   it contains syntactically-plausible PowerShell beyond literal data —
   i.e. proving property 4 of the safe parser requirement, not just
   that invalid syntax is rejected;
+- fail-closed-no-fallback proof: a test demonstrating that a file
+  declaring `configSchemaVersion: 2` that fails v2 validation is
+  rejected outright and never silently falls back to the legacy
+  executable loader;
 - updater preservation acceptance (does not require real-server
   acceptance to be documented as "done" for the code-level regression,
   but real-server acceptance is required before this is described as
@@ -329,20 +378,34 @@ following must exist and pass:
 ### Recommended PR split
 
 Mirrors the P0 Foundation precedent (PR A/B/C) in spirit, but adds a
-dedicated migration PR and separates the safe parser from the loader
-cutover so the highest-risk piece (never invoking untrusted config
-text) can be reviewed and tested in isolation before anything depends
-on it.
+dedicated migration PR, separates the safe parser from the loader
+cutover, and splits "v2 becomes available" from "legacy is finally
+removed" into two separately-gated stages — so the highest-risk pieces
+(never invoking untrusted config text, and stranding an unmigrated
+installation) can each be reviewed and tested in isolation before
+anything depends on them.
 
 **Ordering constraint (why migration comes before cutover):** an
 existing installation may still have an executable legacy `BRAVO.config`
-at the moment any of these PRs lands. If the production loader is cut
-over to the v2-only declarative parser (PR C below) before a supported
-migration path exists, that installation's legacy `BRAVO.config` would
-fail to load with no available conversion route — a merged, released
-intermediate state that stops working for existing deployments. The
-migration/compatibility work must therefore be available *before* the
-production loader cutover, not after it.
+at the moment any of these PRs lands. If the production loader stopped
+accepting the legacy format (final cutover, see PR E below) before a
+supported migration path exists, that installation's legacy
+`BRAVO.config` would fail to load with no available conversion route —
+a merged, released intermediate state that stops working for existing
+deployments. The migration/compatibility work must therefore be
+available *before* the final cutover, not after it.
+
+**Migration availability is not migration completion:** shipping PR B
+makes a migration path *available*; it does not prove any specific
+deployed installation has actually run it. A direct upgrade to a
+release containing PR C or later can still encounter a server whose
+primary configuration file is the legacy executable `BRAVO.config`,
+regardless of how long PR B has existed. The loader must therefore
+continue to accept and correctly load the legacy format itself,
+through explicit format/schema detection, for as long as the migration
+window is open — until the separately-gated final cutover (PR E)
+removes legacy support, not merely because conversion tooling exists
+upstream.
 
 **PR A — Safe declarative AST/data parser**
 
@@ -367,44 +430,86 @@ production loader cutover, not after it.
   language-`BRAVO.local.config` path in this PR;
 - result: by the end of this PR, every installation that will later be
   cut over already has a supported, tested way to produce a valid v2
-  configuration pair before PR C makes v2 the only path the loader
-  accepts.
+  configuration pair before PR C introduces the v2 load path, and
+  well before PR E's final cutover removes legacy support entirely.
 
-**PR C — Loader cutover + schema v2 + `BRAVO.config.local`**
+**PR C — v2 loader introduction (dual-format, not a v2-only cutover)**
 
-- production loader switches to the PR A non-executing parser for the
-  v2 path;
-- DATA-only `BRAVO.config` (v2 format);
-- canonical `BRAVO.config.local`;
+- production loader gains a non-executing v2 declarative load path
+  (via the PR A parser) *in addition to*, not instead of, the existing
+  legacy load path — this PR introduces v2 support, it does not remove
+  legacy support;
+- explicit, deterministic format/schema detection selects the v2
+  parser for a v2-shaped file and the existing legacy path for an
+  unconverted installation — the loader does not assume every
+  installation has migrated merely because PR B shipped a migration
+  tool;
+- DATA-only `BRAVO.config` (v2 format) and canonical
+  `BRAVO.config.local` become valid, recognized inputs;
 - `configSchemaVersion = 2`;
-- `DEFAULT < BRAVO.config < BRAVO.config.local` precedence;
-- schema validation (unknown keys/types fail closed);
+- `DEFAULT < BRAVO.config < BRAVO.config.local` precedence for
+  installations already on v2;
+- schema validation (unknown keys/types fail closed) for v2 input;
 - re-proves array-replace, explicit `@()`, and the `ExcludedDrives`
   default on the new load path;
-- safe to land because PR B already shipped the migration path — an
-  installation still on legacy executable `BRAVO.config` has a
-  supported, already-available conversion route before this cutover
-  reaches it, instead of after.
+- **fail-closed rule:** a file that declares itself v2
+  (`configSchemaVersion: 2`) but fails v2 validation must be rejected
+  outright — it must never silently fall back to the legacy executable
+  loader. Format selection is explicit and deterministic; a v2 parse
+  failure is never treated as "try legacy instead";
+- legacy executable `BRAVO.config` / restricted-language
+  `BRAVO.local.config` remain supported through the loader's legacy
+  path during the migration window — PR C does not make v2 "the only
+  accepted loader path"; that is a separate, later gate (see PR E).
 
-**PR D — Updater / docs / final Definition-of-Done closure**
+**PR D — Updater preservation + migration adoption/gating + docs/DoD prep**
 
-- updater preservation regression;
+- updater preservation regression (see "Updater preservation" above —
+  covers `BRAVO.config`, `BRAVO.config.local`, and legacy
+  `BRAVO.local.config`);
 - operator-facing documentation updated to describe v2 as available
   (not yet as the only supported path);
-- final regression matrix completed;
+- final regression matrix completed, including the non-invocation
+  proof and the fail-closed-no-fallback-on-invalid-v2 case;
+- a documented, testable mechanism for confirming migration adoption —
+  for example a combination of: confirmed conversion state, an updater
+  preflight that safely migrates before activating the new runtime, a
+  fail-safe automatic migration using the non-executing migration
+  parser, or an explicit deployment/migration marker with rollback;
 - real-server acceptance scheduled separately per repository
   validation policy;
+- `ROADMAP.md` P3.1 remains IN PROGRESS after this PR — dual-format
+  support is complete and adoption-tracking exists, but the legacy
+  executable loader has not yet been removed.
+
+**PR E — Final legacy-loader removal / v2-only production cutover**
+
+- production runtime stops accepting the legacy executable
+  `BRAVO.config` / restricted-language `BRAVO.local.config` load path
+  entirely;
+- may land only after the PR D migration/updater adoption-tracking
+  gate is satisfied and regression-tested — simply having the
+  migration executable on disk (PR B) or the dual-format loader
+  (PR C) is not sufficient justification on its own;
+- after this PR, production runtime must never execute `BRAVO.config`
+  or `BRAVO.config.local` as PowerShell code, and no legacy load path
+  remains;
 - `ROADMAP.md` P3.1 only moves to DONE after this PR.
 
-Do not combine the loader cutover (PR C) with the parser foundation
-(PR A) in one change — that would make the highest-risk piece (parser
-correctness/non-invocation) harder to review in isolation from the
-lower-risk piece (schema/precedence wiring). Do not combine the loader
-cutover (PR C) with the migration/compatibility work (PR B) either —
+Do not combine the v2 loader introduction (PR C) with the parser
+foundation (PR A) in one change — that would make the highest-risk
+piece (parser correctness/non-invocation) harder to review in
+isolation from the lower-risk piece (schema/precedence wiring). Do not
+combine PR C with the migration/compatibility work (PR B) either —
 combining them would re-create the same unsafe intermediate state this
 ordering is meant to avoid, by making it impossible to ship the
 migration path as an independently verifiable, already-available step
-before the cutover depends on it.
+before v2 support depends on it. Do not combine the migration/
+adoption-gating work (PR D) with the final legacy-loader removal
+(PR E) either — collapsing them would remove the separately-testable
+adoption gate this split exists to provide, and would make "migration
+tooling exists" indistinguishable from "this installation has
+migrated," which is exactly the conflation this document must avoid.
 
 Each PR should independently pass the narrowest relevant self-test
 subset plus a full `BRAVO_SELF_TEST.ps1` run before merge, and must be
