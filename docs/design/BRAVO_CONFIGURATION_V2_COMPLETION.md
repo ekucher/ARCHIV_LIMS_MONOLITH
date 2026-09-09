@@ -64,19 +64,29 @@ This means, precisely:
 - the text is compiled to a `ScriptBlock`;
 - `CheckRestrictedLanguage` with **empty** allowed-command and
   allowed-variable lists validates that the block contains no cmdlet
-  calls, no function calls, no variable/environment references, and
-  no arbitrary expressions — only literal data;
+  calls, no function calls, and no variable/environment references —
+  those are rejected before the block is ever invoked;
+- **this is NOT a literal-only guarantee.** PowerShell's restricted
+  data-language grammar still permits some expression forms even with
+  empty allow-lists (for example arithmetic and range-style
+  expressions). Because the validated `ScriptBlock` is subsequently
+  invoked, any such permitted expression is *evaluated*, not merely
+  extracted as a literal;
 - **the validated `ScriptBlock` is then invoked** (`& $localOverrideScript`)
   to produce the hashtable.
 
-So today's contract is: **restricted-language / data-shaped input,
+So today's contract is: **restricted-language / data-shaped input —
+no commands, no functions, no variable/environment references —
 validated before evaluation, but the validated `ScriptBlock` is still
-invoked.** This is not the same guarantee as "parse without ever
-executing" — it is a strong, narrow, empty-allowlist restricted
+invoked, and the restricted grammar it accepts is not limited to pure
+literals.** This is not the same guarantee as "parse without ever
+executing" and it is not equivalent to an explicit literal-only AST
+whitelist — it is a strong, narrow, empty-allowlist restricted
 execution, not a non-executing AST-only extraction. It is a real and
-effective control (arbitrary code is rejected before it can run), but
-it is architecturally different from the Configuration v2 target
-below, and this document must not blur that distinction.
+effective control (arbitrary command/function/variable use is
+rejected before it can run), but it is architecturally different from
+the Configuration v2 target below, and this document must not blur
+that distinction.
 
 ## Remaining gaps (what Config v2 still requires)
 
@@ -165,13 +175,31 @@ The v2 parser must:
 11. allow no arbitrary expressions.
 
 Today's `CheckRestrictedLanguage` + `& $scriptBlock` pattern used for
-`BRAVO.local.config` satisfies points 7–11 (it rejects anything beyond
-literal data) but **violates point 4** — it still invokes the
-validated block. It is not, itself, the Configuration v2 parser
-target; it is the precedent that proves the restricted-language
-validation half of the approach works, and the v2 work is to replace
-the "validate then invoke" step with "parse/extract without invoking"
-(point 1–3).
+`BRAVO.local.config` gives useful precedent toward points 8–10 (no
+cmdlets, no function/command calls, no variable/environment
+references) but does **not** prove points 7 or 11, and **violates
+point 4**:
+
+- point 4 (never invoke) — **violated**: the validated block is
+  invoked (`& $localOverrideScript`);
+- point 7 (fail closed on any unsupported syntax, via the v2 parser's
+  own literal/data-node whitelist) — **not proven** by this mechanism;
+  `CheckRestrictedLanguage` enforces PowerShell's own restricted-
+  language grammar, not a v2-specific fail-closed literal-AST
+  whitelist;
+- point 11 (no arbitrary expressions) — **not proven**: as noted
+  above, the restricted grammar still permits some expression forms
+  (e.g. arithmetic/range expressions), and those are evaluated on
+  invocation.
+
+It is not, itself, the Configuration v2 parser target, and it must
+not be described as already satisfying the full 7–11 contract. It is
+precedent that the no-command/no-function/no-variable restriction
+half of the approach works; the v2 work is to additionally (a)
+replace "validate then invoke" with "parse/extract without invoking"
+(points 1–4) and (b) add an explicit fail-closed literal/data-node
+whitelist that rejects arbitrary expression forms outright (points 7
+and 11), not merely rely on PowerShell's restricted-language grammar.
 
 A true non-executing AST-only precedent already exists elsewhere in
 this codebase, for a narrower purpose:
@@ -304,7 +332,17 @@ Mirrors the P0 Foundation precedent (PR A/B/C) in spirit, but adds a
 dedicated migration PR and separates the safe parser from the loader
 cutover so the highest-risk piece (never invoking untrusted config
 text) can be reviewed and tested in isolation before anything depends
-on it:
+on it.
+
+**Ordering constraint (why migration comes before cutover):** an
+existing installation may still have an executable legacy `BRAVO.config`
+at the moment any of these PRs lands. If the production loader is cut
+over to the v2-only declarative parser (PR C below) before a supported
+migration path exists, that installation's legacy `BRAVO.config` would
+fail to load with no available conversion route — a merged, released
+intermediate state that stops working for existing deployments. The
+migration/compatibility work must therefore be available *before* the
+production loader cutover, not after it.
 
 **PR A — Safe declarative AST/data parser**
 
@@ -315,23 +353,38 @@ on it:
 - no production loader cutover yet — existing `BRAVO.config` /
   `BRAVO.local.config` behavior is unchanged by this PR.
 
-**PR B — Loader cutover + schema v2 + `BRAVO.config.local`**
+**PR B — Migration / compatibility preparation**
 
-- loader cutover to the PR A parser for the new v2 path;
+- migration entrypoint (`BRAVO_CONFIG_MIGRATE.ps1` or the repository's
+  canonical equivalent);
+- legacy executable `BRAVO.config` → v2 DATA-only conversion path;
+- `BRAVO.local.config` → `BRAVO.config.local` conversion path;
+- dry-run, backup, rollback;
+- legacy-vs-v2 equivalence tests on control fixtures;
+- exercises the PR A parser against real/representative legacy input
+  without cutting the *production* loader over to it — the production
+  loader still uses today's executable-`BRAVO.config`/restricted-
+  language-`BRAVO.local.config` path in this PR;
+- result: by the end of this PR, every installation that will later be
+  cut over already has a supported, tested way to produce a valid v2
+  configuration pair before PR C makes v2 the only path the loader
+  accepts.
+
+**PR C — Loader cutover + schema v2 + `BRAVO.config.local`**
+
+- production loader switches to the PR A non-executing parser for the
+  v2 path;
 - DATA-only `BRAVO.config` (v2 format);
 - canonical `BRAVO.config.local`;
 - `configSchemaVersion = 2`;
 - `DEFAULT < BRAVO.config < BRAVO.config.local` precedence;
 - schema validation (unknown keys/types fail closed);
 - re-proves array-replace, explicit `@()`, and the `ExcludedDrives`
-  default on the new load path.
-
-**PR C — Migration**
-
-- legacy migration entrypoint;
-- `BRAVO.local.config` → `BRAVO.config.local` transition;
-- dry-run, backup, rollback;
-- legacy-vs-v2 equivalence tests.
+  default on the new load path;
+- safe to land because PR B already shipped the migration path — an
+  installation still on legacy executable `BRAVO.config` has a
+  supported, already-available conversion route before this cutover
+  reaches it, instead of after.
 
 **PR D — Updater / docs / final Definition-of-Done closure**
 
@@ -343,14 +396,25 @@ on it:
   validation policy;
 - `ROADMAP.md` P3.1 only moves to DONE after this PR.
 
-Do not combine the loader cutover (PR B) with the parser foundation
+Do not combine the loader cutover (PR C) with the parser foundation
 (PR A) in one change — that would make the highest-risk piece (parser
 correctness/non-invocation) harder to review in isolation from the
-lower-risk piece (schema/precedence wiring).
+lower-risk piece (schema/precedence wiring). Do not combine the loader
+cutover (PR C) with the migration/compatibility work (PR B) either —
+combining them would re-create the same unsafe intermediate state this
+ordering is meant to avoid, by making it impossible to ship the
+migration path as an independently verifiable, already-available step
+before the cutover depends on it.
 
 Each PR should independently pass the narrowest relevant self-test
-subset plus a full `BRAVO_SELF_TEST.ps1` run before merge, consistent
-with `.claude/rules/04-testing-validation.md`.
+subset plus a full `BRAVO_SELF_TEST.ps1` run before merge, and must be
+green on the full required-check set before merge to `developer`/
+`master` — `RELEASE_POLICY.md` (branch-protection section) lists the
+current required checks: "Parser / BOM / JSON", "PSScriptAnalyzer",
+"BRAVO_SELF_TEST.ps1", "Secret scanning (gitleaks)", "GitGuardian
+Security Checks". (Do not cite `.claude/rules/*` here — that directory
+is a local, untracked agent-tooling convention, not a committed
+repository policy a contributor checking out this commit can read.)
 
 ## Final target contract (for reference — not yet fully implemented)
 

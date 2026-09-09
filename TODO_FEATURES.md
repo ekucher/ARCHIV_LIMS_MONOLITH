@@ -83,8 +83,16 @@ backlog-нотатки; канонічний поточний пріоритет
       validated `ScriptBlock` усе ще ВИКОНУЄТЬСЯ (`& $scriptBlock`);
       це не те саме, що цільовий non-executing AST-only parser
       Config v2 (`docs/design/BRAVO_CONFIGURATION_V2_COMPLETION.md`).
-- [x] Security invariants перевіряються після merge і блокують
-      послаблення захисту — реалізовано й покрито self-test.
+- [x] Security invariants перевіряються після merge
+      (`Test-BRAVOEffectiveSecurityInvariants`, `BRAVO_CONFIG_LOADER.ps1`):
+      у стандартному `Enforce`-режимі (дефолт) послаблення ЕФЕКТИВНОЇ
+      конфігурації (`backupConsistency.Mode`/`toolIntegritySettings.Mode`)
+      блокує запуск (`throw`). `BRAVO_RUNTIME_INTEGRITY_MODE=Warn`
+      попереджає й продовжує виконання; явний
+      `BRAVO_ALLOW_WEAKENED_SECURITY=1` теж попереджає й продовжує —
+      обидва це задокументована, свідома, тимчасова поведінка, а не
+      прогалина. Не описувати як "блокує в усіх режимах" — механізм і
+      self-test-покриття (включно з `Warn`/override-шляхом) реалізовані.
 - [ ] Legacy vs config v2 еквівалентність — N/A, доки Config v2 формату
       не існує; PLANNED як частина migration-етапу.
 - [ ] Міграція (dry-run/backup/rollback) — **не реалізована**;
@@ -98,11 +106,21 @@ backlog-нотатки; канонічний поточний пріоритет
       `BRAVO_MAINTENANCE.ps1` і scheduler-контракт працюють через один
       canonical loader pipeline (`BRAVO_CONFIG_LOADER.ps1` +
       `modules/BRAVO.Configuration/`).
-- [x] Документація містить точний шлях, ACL-нотатки та відновлення для
-      **поточного** `BRAVO.local.config` (README.md, `BRAVO_SETUP.md`,
-      OPERATIONS.md). Еквівалентна документація для v2
-      `BRAVO.config.local` буде додана разом із самим v2-форматом, не
-      раніше.
+- [ ] Документація вказує точний шлях **поточного** `BRAVO.local.config`
+      (README.md, `BRAVO_SETUP.md`, OPERATIONS.md), але це неповний
+      criterion. Наявна ACL-настанова (README.md, "RuntimeRoot для
+      production-завдань має бути захищений ACL") описує захист
+      `RuntimeRoot` загалом, а не саме `BRAVO.local.config` конкретно;
+      окремої процедури backup/recovery для цього файлу немає. Крім
+      того, підтримуваний явний `-ConfigPath` дозволяє тримати override
+      поза `RuntimeRoot` — для цього сценарію ACL-охоплення й поготів
+      відсутнє. Критерій лишається OPEN, доки операторська документація
+      не опише: (1) як захистити `BRAVO.local.config` окремо від
+      загального `RuntimeRoot` ACL; (2) backup-процедуру; (3)
+      recovery/restore-процедуру; (4) сценарій зовнішнього ConfigRoot
+      (явний `-ConfigPath` поза `RuntimeRoot`). Еквівалентна документація
+      для v2 `BRAVO.config.local` буде додана разом із самим v2-форматом,
+      не раніше.
 
 Повний перелік залишкових Config v2 gaps і рекомендований PR-split —
 `docs/design/BRAVO_CONFIGURATION_V2_COMPLETION.md`.
