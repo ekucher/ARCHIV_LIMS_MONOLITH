@@ -17332,15 +17332,23 @@ function Remove-BRAVOSelfTestFixtureDirectory {
     if ([string]::IsNullOrWhiteSpace($Path)) {
         return $result
     }
+    # P2 fix (review comment 3963533899/3963533905): [IO.Directory]::Exists
+    # НЕ використовується як precheck — на ACL-заблокованому/недоступному
+    # каталозі Exists() повертає $false (НЕ кидає), тому precheck хибно
+    # звітував би Success=$true без жодної спроби видалення, маскуючи
+    # реальний access-denied. Сама спроба видалення — authoritative:
+    # DirectoryNotFoundException (каталог дійсно відсутній) — єдиний
+    # випадок, що трактується як success; будь-який інший filesystem-
+    # виняток (UnauthorizedAccessException/IOException/...) — контрольований
+    # provал з реальним повідомленням.
     try {
-        if (-not [IO.Directory]::Exists($Path)) {
-            return $result
-        }
         if ($null -ne $DeleteAction) {
             & $DeleteAction
         } else {
             [IO.Directory]::Delete($Path, $true)
         }
+        return $result
+    } catch [System.IO.DirectoryNotFoundException] {
         return $result
     } catch {
         $result.Success = $false
@@ -17362,8 +17370,14 @@ function Remove-BRAVOSelfTestFixtureDirectory {
 # записується як реальний cleanup FAIL у $script:failures — регресія
 # перевіряє САМ helper, а не імітує провал продакшн-фікстури.
 & {
-    $cleanupProbeRoot = Join-Path $env:TEMP ("BRAVO_SELFTEST_CLEANUPPROBE_{0}" -f [guid]::NewGuid().ToString("N"))
+    # P2 fix (review comment 3963533902): root variable ініціалізується
+    # ДО try (StrictMode-safe для finally нижче), а сама побудова шляху
+    # (GetTempPath/Join-Path) відбувається ВСЕРЕДИНІ try — щоб виняток
+    # від резолюції TEMP-шляху потрапляв у стандартний catch/report-шлях,
+    # а не термінував self-test до Complete-BRAVOSelfTestReport.
+    $cleanupProbeRoot = ''
     try {
+        $cleanupProbeRoot = Join-Path ([IO.Path]::GetTempPath()) ("BRAVO_SELFTEST_CLEANUPPROBE_{0}" -f [guid]::NewGuid().ToString("N"))
         [void][IO.Directory]::CreateDirectory($cleanupProbeRoot)
         $syntheticMessage = 'synthetic fixture cleanup failure (Framework/FixtureCleanupFailureIsControlled)'
         $probeResult = Remove-BRAVOSelfTestFixtureDirectory -Path $cleanupProbeRoot -DeleteAction {
@@ -17386,6 +17400,80 @@ function Remove-BRAVOSelfTestFixtureDirectory {
             -Condition $true `
             -Name "Framework/FixtureCleanupFailureIsControlled.LiveAssertionStillUsable" `
             -Failure "Test-BRAVOCondition недоступний/пошкоджений одразу після контрольованого cleanup-провалу"
+
+        # P2 fix (review comment 3963533899/3963533905): гарантовано
+        # відсутній каталог (unique GUID-суфікс під вже створеним
+        # $cleanupProbeRoot, ніколи не створюється) — доводить, що
+        # Remove-BRAVOSelfTestFixtureDirectory повертає Success=$true
+        # через реальну спробу видалення (DirectoryNotFoundException),
+        # а НЕ через Directory.Exists-precheck (якого більше немає).
+        $missingProbePath = Join-Path $cleanupProbeRoot ("MISSING_{0}" -f [guid]::NewGuid().ToString("N"))
+        $missingProbeResult = Remove-BRAVOSelfTestFixtureDirectory -Path $missingProbePath
+        Test-BRAVOCondition `
+            -Condition (
+                $null -ne $missingProbeResult -and
+                $missingProbeResult.Success -eq $true -and
+                $null -eq $missingProbeResult.ErrorMessage
+            ) `
+            -Name "Framework/FixtureCleanupFailureIsControlled.MissingDirectoryIsSuccess" `
+            -Failure "Remove-BRAVOSelfTestFixtureDirectory на гарантовано відсутньому каталозі мала повернути Success=`$true/ErrorMessage=`$null; фактично Success=$($missingProbeResult.Success) ErrorMessage='$($missingProbeResult.ErrorMessage)'"
+
+        # P2 fix (review comment 3963533899/3963533905): ACL-style
+        # синтетичний UnauthorizedAccessException (той самий клас
+        # винятку, що реальний Directory.Delete на ACL-заблокованому
+        # каталозі кидає) — на каталозі, що РЕАЛЬНО існує
+        # ($cleanupProbeRoot). Раніше Directory.Exists-precheck НЕ кидає
+        # на ACL-denied шляху (повертає $false), тому без цього фіксу
+        # такий сценарій хибно звітував би Success=$true без спроби
+        # видалення. Доводить: access-denied трактується як controlled
+        # failure, не як success.
+        $accessDeniedMessage = 'synthetic access denied (Framework/FixtureCleanupFailureIsControlled, review 3963533899/3963533905)'
+        $accessDeniedProbeResult = Remove-BRAVOSelfTestFixtureDirectory -Path $cleanupProbeRoot -DeleteAction {
+            throw [UnauthorizedAccessException]::new($accessDeniedMessage)
+        }.GetNewClosure()
+        Test-BRAVOCondition `
+            -Condition ($null -ne $accessDeniedProbeResult -and $accessDeniedProbeResult.Success -eq $false) `
+            -Name "Framework/FixtureCleanupFailureIsControlled.AccessDeniedIsControlledFailure" `
+            -Failure "Remove-BRAVOSelfTestFixtureDirectory мала повернути Success=`$false при синтетичному UnauthorizedAccessException, а не Success=`$true/re-throw"
+        Test-BRAVOCondition `
+            -Condition ($null -ne $accessDeniedProbeResult -and $accessDeniedProbeResult.ErrorMessage -eq $accessDeniedMessage) `
+            -Name "Framework/FixtureCleanupFailureIsControlled.AccessDeniedMessagePreserved" `
+            -Failure "реальне повідомлення синтетичного UnauthorizedAccessException не збереглося у ErrorMessage; фактично: '$($accessDeniedProbeResult.ErrorMessage)'"
+
+        # P2 fix (review comment 3963533899/3963533905): структурний
+        # доказ (AST-екстракція ТІЛА функції, не крихкий full-file grep —
+        # ім'я 'Directory]::Exists'/'Test-Path' могло б трапитись у
+        # коментарях/інших функціях файлу), що production-helper більше
+        # НЕ містить pre-delete existence-gate.
+        $helperProbeTokens = $null
+        $helperProbeErrors = $null
+        $helperProbeAst = [Management.Automation.Language.Parser]::ParseFile(
+            $PSCommandPath,
+            [ref]$helperProbeTokens,
+            [ref]$helperProbeErrors
+        )
+        $helperFunctionAst = $helperProbeAst.FindAll(
+            {
+                param($candidate)
+                $candidate -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $candidate.Name -eq 'Remove-BRAVOSelfTestFixtureDirectory'
+            },
+            $true
+        ) | Select-Object -First 1
+        $helperFunctionRawText = if ($null -ne $helperFunctionAst) { $helperFunctionAst.Extent.Text } else { '' }
+        $helperFunctionCodeText = (
+            ($helperFunctionRawText -split "`n") |
+                Where-Object { $_ -notmatch '^\s*#' }
+        ) -join "`n"
+        Test-BRAVOCondition `
+            -Condition (
+                $null -ne $helperFunctionAst -and
+                $helperFunctionCodeText -notmatch 'Directory\]::Exists' -and
+                $helperFunctionCodeText -notmatch 'Directory\.Exists' -and
+                $helperFunctionCodeText -notmatch 'Test-Path'
+            ) `
+            -Name "Framework/FixtureCleanupFailureIsControlled.NoDirectoryExistsPrecheck" `
+            -Failure "тіло Remove-BRAVOSelfTestFixtureDirectory (поза коментарями) досі містить Directory.Exists/Test-Path pre-delete existence-gate"
     } catch {
         Test-BRAVOCondition `
             -Condition $false `
@@ -17407,6 +17495,80 @@ function Remove-BRAVOSelfTestFixtureDirectory {
     }
 }
 
+# Framework/FixtureTempRootSetupIsControlled (P2 fix, review comment
+# 3963533902): структурний/порядковий доказ (AST-екстракція, не крихкий
+# full-file regex — '$env:TEMP' трапляється у ІНШИХ, не пов'язаних із
+# цим PR коментарях файлу, тому перевірка обмежена ЛИШЕ тілом кожного
+# з п'яти PR-added `& { ... }` fixture-блоків нижче) для КОЖНОГО з них:
+# (а) root-змінна(і) більше НЕ залежать напряму від $env:TEMP;
+# (б) сама побудова шляху (GetTempPath/Join-Path) фізично відбувається
+# ВСЕРЕДИНІ guarded `try` цього ж fixture-блоку, а не до нього — інакше
+# виняток резолюції TEMP-шляху (наприклад, TEMP unset/invalid у
+# restricted service/SYSTEM-середовищі) термінував би self-test до
+# Complete-BRAVOSelfTestReport.
+& {
+    $tempRootProbeTokens = $null
+    $tempRootProbeErrors = $null
+    $tempRootProbeAst = [Management.Automation.Language.Parser]::ParseFile(
+        $PSCommandPath,
+        [ref]$tempRootProbeTokens,
+        [ref]$tempRootProbeErrors
+    )
+    # Унікальний literal-маркер кожного з п'яти PR-added fixture-блоків —
+    # той самий підхід, що ідентифікує КОНКРЕТНИЙ `& { ... }` вузол AST
+    # серед десятків інших top-level scriptblock-виразів у файлі.
+    $fixtureRootMarkers = @(
+        'BRAVO_SELFTEST_CLEANUPPROBE_',
+        'BRAVO_SELFTEST_BOOTSTRAPINVALID_',
+        'BRAVO_SELFTEST_PHASE0ONLY_',
+        'BRAVO_SELFTEST_TAMPER_',
+        'BRAVO_SELFTEST_BOOTSTRAPTHROW_'
+    )
+    $allScriptBlockExpressions = $tempRootProbeAst.FindAll(
+        { param($candidate) $candidate -is [Management.Automation.Language.ScriptBlockExpressionAst] },
+        $true
+    )
+    foreach ($fixtureRootMarker in $fixtureRootMarkers) {
+        # Пошук за маркер+'{0}' (реальний Join-Path format-string
+        # усередині fixture-коду), а НЕ голим маркером: цей же голий
+        # маркер-рядок дослівно перелічений вище у $fixtureRootMarkers
+        # (масив-літерал), і без суфіксу '{0}' Sort-Object за найменшою
+        # довжиною хибно обрав би САМ ЦЕЙ regression-блок (коротший за
+        # реальні fixture-блоки) замість справжнього fixture для
+        # КОЖНОГО маркера.
+        $matchingBlocks = @(
+            $allScriptBlockExpressions | Where-Object { $_.Extent.Text.Contains($fixtureRootMarker + '{0}') }
+        )
+        # Найменший (innermost) збіг — сам fixture-блок, а не якийсь
+        # ширший об'ємлюючий вузол, що теж випадково містить цей текст.
+        $fixtureBlockAst = $matchingBlocks | Sort-Object { $_.Extent.Text.Length } | Select-Object -First 1
+        $fixtureRawText = if ($null -ne $fixtureBlockAst) { $fixtureBlockAst.Extent.Text } else { '' }
+        $fixtureCodeText = (
+            ($fixtureRawText -split "`n") |
+                Where-Object { $_ -notmatch '^\s*#' }
+        ) -join "`n"
+
+        Test-BRAVOCondition `
+            -Condition (
+                $null -ne $fixtureBlockAst -and
+                -not $fixtureCodeText.Contains('$env:TEMP')
+            ) `
+            -Name "Framework/FixtureTempRootSetupIsControlled.NoEnvTempDependency[$fixtureRootMarker]" `
+            -Failure "fixture-блок з маркером '$fixtureRootMarker' (поза коментарями) досі напряму залежить від `$env:TEMP замість [IO.Path]::GetTempPath()"
+
+        $tryOpenPos = $fixtureCodeText.IndexOf('try {')
+        $rootResolutionPos = $fixtureCodeText.IndexOf('GetTempPath')
+        Test-BRAVOCondition `
+            -Condition (
+                $null -ne $fixtureBlockAst -and
+                $tryOpenPos -ge 0 -and
+                $rootResolutionPos -gt $tryOpenPos
+            ) `
+            -Name "Framework/FixtureTempRootSetupIsControlled.RootResolutionInsideTry[$fixtureRootMarker]" `
+            -Failure "fixture-блок з маркером '$fixtureRootMarker': побудова root-шляху (GetTempPath/Join-Path) має відбуватися ВСЕРЕДИНІ guarded try, а не до нього; tryOpenPos=$tryOpenPos rootResolutionPos=$rootResolutionPos"
+    }
+}
+
 # Framework/BootstrapInvalidManifestFailsClosed (P2 regression, review
 # comment 3960370672): ІЗОЛЬОВАНА коротка перевірка ЛИШЕ bootstrap-рівня
 # fail-closed поведінки. Раніше цей сценарій (пошкоджений
@@ -17420,9 +17582,13 @@ function Remove-BRAVOSelfTestFixtureDirectory {
 # ОКРЕМО нижче (Framework/Phase0FailStopsDomains), де bootstrap integrity
 # свідомо лишається VALID.
 & {
-    $tempRoot = Join-Path $env:TEMP ("BRAVO_SELFTEST_BOOTSTRAPINVALID_{0}" -f [guid]::NewGuid().ToString("N"))
+    # P2 fix (review comment 3963533902): root variable ініціалізується
+    # ДО try (StrictMode-safe для finally нижче), а сама побудова шляху
+    # (GetTempPath/Join-Path) відбувається ВСЕРЕДИНІ try.
+    $tempRoot = ''
     $cleanupResult = $null
     try {
+        $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("BRAVO_SELFTEST_BOOTSTRAPINVALID_{0}" -f [guid]::NewGuid().ToString("N"))
         [void][IO.Directory]::CreateDirectory($tempRoot)
         Copy-BRAVOSelfTestManifestFixtureFiles -SourceRoot $root -DestinationRoot $tempRoot
 
@@ -17522,9 +17688,13 @@ function Remove-BRAVOSelfTestFixtureDirectory {
 # Синтетичний файл ніколи не потрапляє у working tree чи у repository
 # RUNTIME_MANIFEST.json — лише у цю ізольовану TEMP-копію.
 & {
-    $tempRoot = Join-Path $env:TEMP ("BRAVO_SELFTEST_PHASE0ONLY_{0}" -f [guid]::NewGuid().ToString("N"))
+    # P2 fix (review comment 3963533902): root variable ініціалізується
+    # ДО try (StrictMode-safe для finally нижче), а сама побудова шляху
+    # (GetTempPath/Join-Path) відбувається ВСЕРЕДИНІ try.
+    $tempRoot = ''
     $cleanupResult = $null
     try {
+        $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("BRAVO_SELFTEST_PHASE0ONLY_{0}" -f [guid]::NewGuid().ToString("N"))
         [void][IO.Directory]::CreateDirectory($tempRoot)
         Copy-BRAVOSelfTestManifestFixtureFiles -SourceRoot $root -DestinationRoot $tempRoot
 
@@ -17749,10 +17919,15 @@ function Remove-BRAVOSelfTestFixtureDirectory {
 # script-scope (жорсткий PowerShell-ліміт 4096 змінних на flat-файл
 # такого розміру, емпірично підтверджено реальним FULL-прогоном).
 & {
-    $tempRoot = Join-Path $env:TEMP ("BRAVO_SELFTEST_TAMPER_{0}" -f [guid]::NewGuid().ToString("N"))
-    $sentinelPath = Join-Path $env:TEMP ("BRAVO_SELFTEST_TAMPER_SENTINEL_{0}.txt" -f [guid]::NewGuid().ToString("N"))
+    # P2 fix (review comment 3963533902): обидві root-змінні
+    # ініціалізуються ДО try (StrictMode-safe для finally нижче), а сама
+    # побудова шляхів (GetTempPath/Join-Path) відбувається ВСЕРЕДИНІ try.
+    $tempRoot = ''
+    $sentinelPath = ''
     $cleanupResult = $null
     try {
+        $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("BRAVO_SELFTEST_TAMPER_{0}" -f [guid]::NewGuid().ToString("N"))
+        $sentinelPath = Join-Path ([IO.Path]::GetTempPath()) ("BRAVO_SELFTEST_TAMPER_SENTINEL_{0}.txt" -f [guid]::NewGuid().ToString("N"))
         [void][IO.Directory]::CreateDirectory($tempRoot)
         Copy-BRAVOSelfTestManifestFixtureFiles -SourceRoot $root -DestinationRoot $tempRoot
 
@@ -17834,9 +18009,13 @@ function Remove-BRAVOSelfTestFixtureDirectory {
 # dump. Working tree (реальний BRAVO_RUNTIME_GUARD.ps1) НЕ чіпається —
 # лише TEMP-копія.
 & {
-    $tempRoot = Join-Path $env:TEMP ("BRAVO_SELFTEST_BOOTSTRAPTHROW_{0}" -f [guid]::NewGuid().ToString("N"))
+    # P2 fix (review comment 3963533902): root variable ініціалізується
+    # ДО try (StrictMode-safe для finally нижче), а сама побудова шляху
+    # (GetTempPath/Join-Path) відбувається ВСЕРЕДИНІ try.
+    $tempRoot = ''
     $cleanupResult = $null
     try {
+        $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("BRAVO_SELFTEST_BOOTSTRAPTHROW_{0}" -f [guid]::NewGuid().ToString("N"))
         [void][IO.Directory]::CreateDirectory($tempRoot)
         Copy-BRAVOSelfTestManifestFixtureFiles -SourceRoot $root -DestinationRoot $tempRoot
 
