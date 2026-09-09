@@ -1,63 +1,66 @@
-# BRAVO Configuration v2 — completion status and remaining scope
+# BRAVO Configuration v2 — статус завершення та обсяг робіт, що залишилися
 
-> **TARGET / NOT YET FULLY IMPLEMENTED.** This document describes the
-> remaining work required to close FEAT-001 (`TODO_FEATURES.md`) /
-> P3.1 (`ROADMAP.md`). It is a status and scope reference, not an
-> implementation ticket, and it is intentionally shorter than a full
-> implementation spec. It does not authorize any code change on its
-> own.
+> **ЦІЛЬОВИЙ ДОКУМЕНТ / ЩЕ НЕ ПОВНІСТЮ РЕАЛІЗОВАНО.** Цей документ описує
+> обсяг робіт, що залишився для закриття FEAT-001 (`TODO_FEATURES.md`) /
+> P3.1 (`ROADMAP.md`). Це довідник статусу й обсягу, а не тікет на
+> реалізацію, і він навмисно коротший за повну специфікацію реалізації.
+> Сам по собі він не авторизує жодних змін коду.
 
-## Current state (verified against `developer`)
+## Поточний стан (перевірено відносно `developer`)
 
-P0 Configuration Foundation is completed and merged into `developer`
+P0 Configuration Foundation завершено та змерджено в `developer`
 (`docs/design/BRAVO_CONFIGURATION_FOUNDATION_DESIGN.md`, CHANGELOG.md
 "Не випущено (developer)" → "P0 Configuration Foundation (PR B/C)").
 
-Completed in Foundation:
+Завершено у Foundation:
 
-- canonical built-in defaults (`Get-BRAVODefaultConfiguration`);
-- deterministic deep merge (`Merge-BRAVOConfiguration`) — recursive
-  hashtable merge, **arrays fully replace the default array (not
-  merged element-by-element)**, and **an explicit empty array `@()`
-  is already accepted as a valid, intentional override** — verified
-  directly in `modules/BRAVO.Configuration/BRAVO.Configuration.psm1`
-  (merge-engine comments and array-handling branch);
-- `maintenanceSettings.Limits.ExcludedDrives` default is **already**
-  `@()` in the canonical built-in defaults — verified in the same
-  module;
-- raw configuration resolution (`Resolve-BRAVORawConfiguration`);
-- derivation extraction (`Resolve-BRAVOConfigurationDerivation`) —
-  discovery/derivation runs after merge, not before;
-- optional `BRAVO.config` (no-config pipeline works from built-in
-  defaults + `BRAVO.local.config` alone);
-- explicit `-ConfigPath` vs AUTO intent contract, consistently applied
-  across `BRAVO_SETUP.ps1`, Task Scheduler task definitions, and
-  `BRAVO_CONFIGURATOR.ps1`;
-- compatibility projection for legacy consumers;
-- post-merge security-invariant re-validation
-  (`Test-BRAVOEffectiveSecurityInvariants` in `BRAVO_CONFIG_LOADER.ps1`):
-  under the default `Enforce` policy, an effective configuration that
-  weakens a security-critical setting through `BRAVO.local.config` is
-  rejected, not silently accepted; the supported `Warn` mode
-  (`BRAVO_RUNTIME_INTEGRITY_MODE=Warn`) and the explicit
-  `BRAVO_ALLOW_WEAKENED_SECURITY=1` override both warn and continue
-  instead of rejecting, and are not corner cases to gloss over — an
-  operator running either mode is not getting unconditional rejection.
+- канонічні вбудовані значення за замовчуванням
+  (`Get-BRAVODefaultConfiguration`);
+- детермінований глибокий мердж (`Merge-BRAVOConfiguration`) —
+  рекурсивний мердж хештаблиць, **масиви повністю замінюють масив за
+  замовчуванням (а не мерджаться поелементно)**, і **явний порожній
+  масив `@()` уже приймається як валідне, навмисне перевизначення** —
+  перевірено безпосередньо в
+  `modules/BRAVO.Configuration/BRAVO.Configuration.psm1` (коментарі
+  мердж-рушія та гілка обробки масивів);
+- значення за замовчуванням `maintenanceSettings.Limits.ExcludedDrives`
+  **вже** дорівнює `@()` у канонічних вбудованих значеннях за
+  замовчуванням — перевірено в тому ж модулі;
+- розв'язання сирої конфігурації (`Resolve-BRAVORawConfiguration`);
+- вилучення похідних значень (`Resolve-BRAVOConfigurationDerivation`) —
+  виявлення/похідні обчислення виконуються після мерджу, а не до
+  нього;
+- опціональний `BRAVO.config` (конвеєр без конфігурації працює лише зі
+  вбудованих значень за замовчуванням + `BRAVO.local.config`);
+- явний контракт наміру `-ConfigPath` проти AUTO, послідовно
+  застосований у `BRAVO_SETUP.ps1`, визначеннях завдань Task Scheduler
+  та `BRAVO_CONFIGURATOR.ps1`;
+- проєкція сумісності для застарілих (legacy) споживачів;
+- повторна перевірка інваріантів безпеки після мерджу
+  (`Test-BRAVOEffectiveSecurityInvariants` у `BRAVO_CONFIG_LOADER.ps1`):
+  за замовчуванням у режимі `Enforce` ефективна конфігурація, що
+  послаблює критичне для безпеки налаштування через
+  `BRAVO.local.config`, відхиляється, а не приймається мовчки;
+  підтримуваний режим `Warn` (`BRAVO_RUNTIME_INTEGRITY_MODE=Warn`) та
+  явне перевизначення `BRAVO_ALLOW_WEAKENED_SECURITY=1` обидва
+  попереджають і продовжують роботу замість відхилення, і це не
+  крайові випадки, які можна проігнорувати — оператор, що використовує
+  будь-який з цих режимів, не отримує безумовного відхилення.
 
-Effective precedence today:
+Ефективний пріоритет сьогодні:
 
 ```text
-DEFAULT < BRAVO.config (optional) < BRAVO.local.config (optional)
+DEFAULT < BRAVO.config (опціональний) < BRAVO.local.config (опціональний)
 ```
 
-`VERSION.json` currently declares `"configSchemaVersion": 1`.
+`VERSION.json` наразі декларує `"configSchemaVersion": 1`.
 
-### `BRAVO.local.config` today — restricted-language, but still evaluated
+### `BRAVO.local.config` сьогодні — restricted-language, але все ще виконується
 
-`BRAVO.local.config` is an optional data-shaped override file
-(dot-path → value hashtable). Its production loader, verified in
-`BRAVO_CONFIG_LOADER.ps1` (`Read-BRAVOLocalConfigurationOverrides`),
-does this:
+`BRAVO.local.config` — це опціональний файл перевизначень у форматі
+даних (хештаблиця шлях-через-крапку → значення). Його продакшн-
+завантажувач, перевірений у `BRAVO_CONFIG_LOADER.ps1`
+(`Read-BRAVOLocalConfigurationOverrides`), робить таке:
 
 ```powershell
 $localOverrideScript = [scriptblock]::Create($localOverrideText)
@@ -65,189 +68,203 @@ $localOverrideScript.CheckRestrictedLanguage([string[]]@(), [string[]]@(), $fals
 $localOverrideData = & $localOverrideScript
 ```
 
-This means, precisely:
+Це означає, точніше:
 
-- the text is compiled to a `ScriptBlock`;
-- `CheckRestrictedLanguage` with **empty** allowed-command and
-  allowed-variable lists validates that the block contains no cmdlet
-  calls, no function calls, and no variable/environment references —
-  those are rejected before the block is ever invoked;
-- **this is NOT a literal-only guarantee.** PowerShell's restricted
-  data-language grammar still permits some expression forms even with
-  empty allow-lists (for example arithmetic and range-style
-  expressions). Because the validated `ScriptBlock` is subsequently
-  invoked, any such permitted expression is *evaluated*, not merely
-  extracted as a literal;
-- **the validated `ScriptBlock` is then invoked** (`& $localOverrideScript`)
-  to produce the hashtable.
+- текст компілюється в `ScriptBlock`;
+- `CheckRestrictedLanguage` із **порожніми** списками дозволених команд
+  і дозволених змінних перевіряє, що блок не містить викликів cmdlet,
+  викликів функцій і звернень до змінних/середовища — вони
+  відхиляються ще до виклику блока;
+- **це НЕ гарантія «лише літерали».** Обмежена мова даних PowerShell
+  навіть із порожніми allow-списками все ще дозволяє деякі форми
+  виразів (наприклад, арифметичні та діапазонні вирази). Оскільки
+  перевірений `ScriptBlock` потім виконується, будь-який такий
+  дозволений вираз *обчислюється*, а не просто вилучається як
+  літерал;
+- **перевірений `ScriptBlock` після цього викликається**
+  (`& $localOverrideScript`) для отримання хештаблиці.
 
-So today's contract is: **restricted-language / data-shaped input —
-no commands, no functions, no variable/environment references —
-validated before evaluation, but the validated `ScriptBlock` is still
-invoked, and the restricted grammar it accepts is not limited to pure
-literals.** This is not the same guarantee as "parse without ever
-executing" and it is not equivalent to an explicit literal-only AST
-whitelist — it is a strong, narrow, empty-allowlist restricted
-execution, not a non-executing AST-only extraction. It is a real and
-effective control (arbitrary command/function/variable use is
-rejected before it can run), but it is architecturally different from
-the Configuration v2 target below, and this document must not blur
-that distinction.
+Отже, сьогоднішній контракт такий: **вхідні дані у форматі
+restricted-language / data-shaped — без команд, без функцій, без
+звернень до змінних/середовища — перевіряються перед виконанням, але
+перевірений `ScriptBlock` все одно викликається, і обмежена
+граматика, яку він приймає, не обмежена чистими літералами.** Це не
+та сама гарантія, що «парсити без жодного виконання», і це не
+еквівалентно явному literal-only AST-переліку дозволеного — це
+потужне, вузьке, обмежене порожніми allow-списками виконання, а не
+non-executing AST-only вилучення. Це реальний і ефективний контроль
+(довільне використання команд/функцій/змінних відхиляється ще до
+можливості виконання), але він архітектурно відрізняється від
+цільового варіанту Configuration v2 нижче, і цей документ не має
+розмивати цю відмінність.
 
-## Remaining gaps (what Config v2 still requires)
+## Прогалини, що залишилися (що ще потрібно для Config v2)
 
-`BRAVO.config` itself is **not yet** a data-only format. It remains a
-1300+ line executable PowerShell script (`param(ConfigRoot,
-RuntimeRoot)`, `$global:` assignments, literal hashtable blocks mixed
-with executable setup logic) — verified directly in `BRAVO.config`.
-Only the *local override* layer (`BRAVO.local.config`) is currently
-restricted-language/validated-before-invoke. The primary configuration
-file is not, and even the local-override reader still invokes the
-validated `ScriptBlock` rather than extracting data without ever
-running it.
+Сам `BRAVO.config` **ще не** є форматом лише даних (DATA-only). Це
+досі виконуваний PowerShell-скрипт на 1300+ рядків
+(`param(ConfigRoot, RuntimeRoot)`, присвоєння `$global:`, блоки
+літеральних хештаблиць, перемішані з виконуваною логікою
+налаштування) — перевірено безпосередньо в `BRAVO.config`. Лише шар
+*локальних перевизначень* (`BRAVO.local.config`) наразі має
+restricted-language / validated-before-invoke поведінку. Основний файл
+конфігурації — ні, і навіть читач локальних перевизначень все ще
+викликає перевірений `ScriptBlock`, замість того щоб вилучати дані,
+ніколи його не виконуючи.
 
-Not yet implemented:
+Ще не реалізовано:
 
-- a fully DATA-only `BRAVO.config` format (no `param()`, no
-  `$global:` assignment, no executable statements — literal data
-  only), read by a parser that never invokes it as code;
-- a true non-executing declarative parser (see "Safe declarative
-  parser requirement" below) — today's restricted-language-then-invoke
-  approach is a stepping stone, not the final target;
-- a canonical `BRAVO.config.local` file name/contract as the long-term
-  target machine-local override file (see naming note below — this
-  does not exist in the runtime today);
-- `configSchemaVersion = 2` and the schema/validation contract that
-  goes with it (unknown-key rejection, type validation) enforced
-  through the v2 declarative load path, with dedicated v2 regression
-  coverage — the underlying merge semantics (array replace, explicit
-  `@()`, the `ExcludedDrives` default) already exist in Foundation and
-  do not need to be reinvented, only carried through and re-proven on
-  the v2 load path;
-- a migration path from the current executable `BRAVO.config` /
-  restricted-language `BRAVO.local.config` pair to the v2 DATA-only
-  pair;
-- updater/upgrade preservation acceptance for the v2 format (an
-  update must not silently discard or corrupt a v2 local override);
-- the full Configuration v2 Definition-of-Done regression matrix
-  (unknown keys, type mismatch, array replacement, nullable values,
-  security-downgrade rejection, legacy-vs-v2 equivalence on control
-  fixtures) re-run against the v2 declarative load path specifically —
-  today's self-test already proves array-replace/explicit-`@()`/
-  security-downgrade for the *current* Foundation merge engine; what's
-  missing is proving the same contract survives the v2 parser/schema
-  cutover, not inventing the contract itself.
+- повністю DATA-only формат `BRAVO.config` (без `param()`, без
+  присвоєння `$global:`, без виконуваних інструкцій — лише
+  літеральні дані), що читається парсером, який ніколи не викликає
+  його як код;
+- справжній non-executing декларативний парсер (див. «Вимога до
+  безпечного декларативного парсера» нижче) — сьогоднішній підхід
+  «restricted-language, потім виконати» є проміжним щаблем, а не
+  кінцевою ціллю;
+- канонічна назва/контракт файлу `BRAVO.config.local` як
+  довгострокова цільова назва файлу машинно-локального перевизначення
+  (див. примітку про іменування нижче — цього файлу в рантаймі
+  сьогодні не існує);
+- `configSchemaVersion = 2` та пов'язаний з ним контракт
+  схеми/валідації (відхилення невідомих ключів, перевірка типів),
+  застосований через декларативний шлях завантаження v2, з окремим
+  регресійним покриттям для v2 — базова семантика мерджу (заміна
+  масивів, явний `@()`, значення за замовчуванням `ExcludedDrives`)
+  вже існує у Foundation, і її не потрібно вигадувати заново — лише
+  перенести та повторно довести на шляху завантаження v2;
+- шлях міграції з поточної пари «виконуваний `BRAVO.config` /
+  restricted-language `BRAVO.local.config`» до пари DATA-only v2;
+- прийняття збереження при оновленні/апгрейді (updater/upgrade
+  preservation) для формату v2 (оновлення не повинно мовчки знищувати
+  або пошкоджувати локальне перевизначення v2);
+- повна регресійна матриця Definition-of-Done для Configuration v2
+  (невідомі ключі, невідповідність типів, заміна масивів, значення, що
+  допускають null, відхилення пониження безпеки, еквівалентність
+  legacy-проти-v2 на контрольних фікстурах), повторно прогнана саме
+  проти декларативного шляху завантаження v2 — сьогоднішній self-test
+  уже доводить заміну масивів/явний `@()`/пониження безпеки для
+  *поточного* мердж-рушія Foundation; те, чого бракує — довести, що
+  той самий контракт переживає перехід на парсер/схему v2, а не
+  вигадати цей контракт заново.
 
-## Target architecture
+## Цільова архітектура
 
 ```text
-Built-in defaults      (canonical, complete, part of the package — not a file)
+Built-in defaults      (канонічні, повні, частина пакета — не файл)
     <
-BRAVO.config            (optional, DATA-only, site/deployment override, configSchemaVersion 2)
+BRAVO.config            (опціональний, DATA-only, перевизначення сайту/розгортання, configSchemaVersion 2)
     <
-BRAVO.config.local      (optional, DATA-only, machine-local override, highest precedence)
+BRAVO.config.local      (опціональний, DATA-only, машинно-локальне перевизначення, найвищий пріоритет)
 ```
 
-Built-in defaults are the canonical, complete product/package
-defaults — they are not "stored in `BRAVO.config`". `BRAVO.config` in
-the v2 target is an **optional site/deployment-level override** layer
-on top of those defaults, and `BRAVO.config.local` is a further
-**optional machine-local override** layer with the highest precedence.
-Do not describe target `BRAVO.config` as "package defaults", "the
-primary configuration layer", or "package-versioned primary
-configuration" — that would misrepresent where defaults actually live
-and blur the site/deployment vs machine-local distinction between the
-two override files.
+Вбудовані значення за замовчуванням — це канонічні, повні значення за
+замовчуванням продукту/пакета — вони не «зберігаються в
+`BRAVO.config`». `BRAVO.config` у цільовому варіанті v2 — це
+**опціональний шар перевизначення рівня сайту/розгортання** поверх
+цих значень за замовчуванням, а `BRAVO.config.local` — це додатковий
+**опціональний шар машинно-локального перевизначення** з найвищим
+пріоритетом. Не описуйте цільовий `BRAVO.config` як «значення за
+замовчуванням пакета», «основний шар конфігурації» чи «первинну
+конфігурацію, версійовану разом із пакетом» — це неправильно
+представляло б, де насправді зберігаються значення за замовчуванням,
+і розмивало б відмінність між рівнем сайту/розгортання та
+машинно-локальним рівнем між цими двома файлами перевизначень.
 
-Both configuration files are DATA, not CODE. The production runtime
-must not execute either file as a PowerShell script.
+Обидва файли конфігурації — це ДАНІ (DATA), а не КОД (CODE).
+Продакшн-рантайм не повинен виконувати жоден з цих файлів як
+PowerShell-скрипт.
 
-### Safe declarative parser requirement (target — not today's behavior)
+### Вимога до безпечного декларативного парсера (ціль — не сьогоднішня поведінка)
 
-The v2 parser must:
+Парсер v2 повинен:
 
-1. parse PowerShell text to AST / an equivalent declarative
-   representation;
-2. validate only allowed literal data structures;
-3. extract values as DATA;
-4. **never invoke the resulting configuration `ScriptBlock`**;
-5. never dot-source the configuration file;
-6. never use `& $scriptBlock` (or equivalent invocation) for
-   production Configuration v2 files;
-7. fail closed on any unsupported syntax;
-8. allow no cmdlets;
-9. allow no function calls;
-10. allow no variable/environment references, **except** the three
-    PowerShell intrinsic literal constants `$true`, `$false`, and
-    `$null` — these are required to represent Boolean and nullable
-    configuration values, and must be recognized explicitly by
-    AST/token identity as literal DATA values, never resolved from
-    session/environment state. All other variable forms remain
-    rejected: `$env:...`, `$global:...`, `$script:...`, `$local:...`,
-    arbitrary `$foo`, `${...}`, and any other variable reference;
-11. allow no arbitrary expressions.
+1. парсити текст PowerShell в AST / еквівалентне декларативне
+   представлення;
+2. валідувати лише дозволені структури літеральних даних;
+3. вилучати значення як ДАНІ;
+4. **ніколи не викликати результуючий `ScriptBlock` конфігурації**;
+5. ніколи не робити dot-source файлу конфігурації;
+6. ніколи не використовувати `& $scriptBlock` (або еквівалентний
+   виклик) для продакшн-файлів Configuration v2;
+7. відхиляти будь-який непідтримуваний синтаксис за принципом fail
+   closed;
+8. не дозволяти жодних cmdlet;
+9. не дозволяти жодних викликів функцій;
+10. не дозволяти звернень до змінних/середовища, **за винятком** трьох
+    внутрішніх літеральних констант PowerShell `$true`, `$false` та
+    `$null` — вони необхідні для представлення булевих та допускаючих
+    null значень конфігурації, і мають розпізнаватися явно за
+    ідентичністю AST/токена як літеральні ЗНАЧЕННЯ ДАНИХ, ніколи не
+    розв'язувані зі стану сесії/середовища. Усі інші форми змінних
+    залишаються відхиленими: `$env:...`, `$global:...`,
+    `$script:...`, `$local:...`, довільне `$foo`, `${...}` та будь-яке
+    інше звернення до змінної;
+11. не дозволяти довільних виразів.
 
-Today's `CheckRestrictedLanguage` + `& $scriptBlock` pattern used for
-`BRAVO.local.config` gives useful precedent toward points 8–10 (no
-cmdlets, no function/command calls, no arbitrary variable/environment
-references) but does **not** prove points 7 or 11, and **violates
-point 4**:
+Сьогоднішній підхід `CheckRestrictedLanguage` + `& $scriptBlock`, що
+використовується для `BRAVO.local.config`, дає корисний прецедент для
+пунктів 8–10 (без cmdlet, без викликів функцій/команд, без довільних
+звернень до змінних/середовища), але **не** доводить пункти 7 чи 11 і
+**порушує пункт 4**:
 
-- point 4 (never invoke) — **violated**: the validated block is
-  invoked (`& $localOverrideScript`);
-- point 7 (fail closed on any unsupported syntax, via the v2 parser's
-  own literal/data-node whitelist) — **not proven** by this mechanism;
-  `CheckRestrictedLanguage` enforces PowerShell's own restricted-
-  language grammar, not a v2-specific fail-closed literal-AST
-  whitelist;
-- point 11 (no arbitrary expressions) — **not proven**: as noted
-  above, the restricted grammar still permits some expression forms
-  (e.g. arithmetic/range expressions), and those are evaluated on
-  invocation.
+- пункт 4 (ніколи не викликати) — **порушено**: перевірений блок
+  викликається (`& $localOverrideScript`);
+- пункт 7 (fail closed на будь-якому непідтримуваному синтаксисі,
+  через власний перелік дозволених літералів/data-вузлів парсера v2)
+  — **не доведено** цим механізмом; `CheckRestrictedLanguage`
+  застосовує власну обмежену граматику мови PowerShell, а не
+  специфічний для v2 fail-closed перелік дозволених literal-AST;
+- пункт 11 (без довільних виразів) — **не доведено**: як зазначено
+  вище, обмежена граматика все ще дозволяє деякі форми виразів
+  (наприклад, арифметичні/діапазонні вирази), і вони обчислюються під
+  час виклику.
 
-It is not, itself, the Configuration v2 parser target, and it must
-not be described as already satisfying the full 7–11 contract. It is
-precedent that the no-command/no-function/no-variable restriction
-half of the approach works; the v2 work is to additionally (a)
-replace "validate then invoke" with "parse/extract without invoking"
-(points 1–4) and (b) add an explicit fail-closed literal/data-node
-whitelist that rejects arbitrary expression forms outright (points 7
-and 11), not merely rely on PowerShell's restricted-language grammar.
+Це не є, саме по собі, цільовим парсером Configuration v2, і його не
+слід описувати як такий, що вже задовольняє повний контракт пунктів
+7–11. Це прецедент, що доводить: половина підходу «без
+команд/без функцій/без змінних» працює; робота для v2 полягає в тому,
+щоб додатково (a) замінити «перевірити, потім викликати» на
+«парсити/вилучати без виклику» (пункти 1–4) і (b) додати явний
+fail-closed перелік дозволених літералів/data-вузлів, що відхиляє
+довільні форми виразів прямо (пункти 7 і 11), а не покладатися лише
+на обмежену граматику PowerShell.
 
-A true non-executing AST-only precedent already exists elsewhere in
-this codebase, for a narrower purpose:
-`Test-BRAVORuntimeSecuritySettings` (`BRAVO_RUNTIME_GUARD.ps1`) reads
-specific security-switch literals out of `BRAVO.config` via
-`[Management.Automation.Language.Parser]::ParseFile` — AST parsing —
-**without ever invoking `BRAVO.config`**, specifically because loading
-`BRAVO.config` as code would mean executing arbitrary PowerShell
-before the security check runs (see `SECURITY.md`, "Перемикачі
-безпеки"). That function only extracts a small fixed set of literal
-values for one purpose (pre-execution security-switch verification);
-it is not a general-purpose configuration reader. It demonstrates the
-non-invoking approach is already proven feasible in this codebase, not
-that Config v2 itself is already built.
+Справжній non-executing прецедент лише на основі AST уже існує в цій
+кодовій базі для вужчої мети: `Test-BRAVORuntimeSecuritySettings`
+(`BRAVO_RUNTIME_GUARD.ps1`) читає конкретні літерали перемикачів
+безпеки з `BRAVO.config` через
+`[Management.Automation.Language.Parser]::ParseFile` — парсинг AST —
+**ніколи не викликаючи `BRAVO.config`**, саме тому, що завантаження
+`BRAVO.config` як коду означало б виконання довільного PowerShell ще
+до запуску перевірки безпеки (див. `SECURITY.md`, «Перемикачі
+безпеки»). Ця функція вилучає лише невеликий фіксований набір
+літеральних значень для однієї мети (перевірка перемикачів безпеки
+перед виконанням); це не універсальний читач конфігурації. Вона
+демонструє, що підхід без виклику вже доведено здійсненним у цій
+кодовій базі, а не те, що сам Config v2 вже побудований.
 
-### `BRAVO.config` target (v2)
+### Ціль `BRAVO.config` (v2)
 
-- an optional, DATA-only **site/deployment override** on top of
-  built-in defaults — not where defaults are stored;
-- carries `configSchemaVersion: 2`;
-- remains optional (the no-config pipeline from built-in defaults
-  must keep working, as it does today).
+- опціональне, DATA-only **перевизначення рівня сайту/розгортання**
+  поверх вбудованих значень за замовчуванням — не місце, де
+  зберігаються значення за замовчуванням;
+- несе `configSchemaVersion: 2`;
+- залишається опціональним (конвеєр без конфігурації зі вбудованих
+  значень за замовчуванням має продовжувати працювати, як і сьогодні).
 
-### `BRAVO.config.local` target (v2)
+### Ціль `BRAVO.config.local` (v2)
 
-- an optional, DATA-only **machine-local override**, with the highest
-  precedence of the three layers;
-- dot-path → value (or equivalent structured v2 shape — exact shape is
-  part of the schema v2 design, not fixed by this document);
-- is the v2 successor to today's `BRAVO.local.config`, not a renaming
-  of it in place, and not merely "site-local" — it is specifically the
-  machine-local layer, distinct from the `BRAVO.config` site/deployment
-  layer above it.
+- опціональне, DATA-only **машинно-локальне перевизначення** з
+  найвищим пріоритетом серед трьох шарів;
+- шлях-через-крапку → значення (або еквівалентна структурована форма
+  v2 — точна форма є частиною дизайну схеми v2, а не фіксується цим
+  документом);
+- це наступник у v2 сьогоднішнього `BRAVO.local.config`, а не
+  перейменування його на місці, і не просто «локальне для сайту» —
+  це саме машинно-локальний шар, відмінний від шару рівня
+  сайту/розгортання `BRAVO.config` над ним.
 
-### Current vs target naming — do not confuse these
+### Поточне іменування проти цільового — не плутати
 
 ```text
 CURRENT (production today):
@@ -265,102 +282,153 @@ TARGET (Configuration v2, not yet implemented):
       v2 ships and a migration path is documented.
 ```
 
-Operator-facing documentation (`README.md`, `BRAVO_SETUP.md`,
-`OPERATIONS.md`) must not be changed to reference
-`BRAVO.config.local` as something an operator should create today.
+Операторська документація (`README.md`, `BRAVO_SETUP.md`,
+`OPERATIONS.md`) не повинна змінюватися так, щоб посилатися на
+`BRAVO.config.local` як на щось, що оператор має створювати сьогодні.
 
-### Legacy `BRAVO.local.config` transition
+### Перехід застарілого (legacy) `BRAVO.local.config`
 
-- `BRAVO.local.config` is not deleted the moment v2 ships; it remains
-  readable/supported for a migration window;
-- a migration procedure (dry-run, staged conversion — mirroring the
-  FEAT-001 target model in `TODO_FEATURES.md`) converts an existing
-  `BRAVO.local.config` into a staged, inactive `BRAVO.config.local`
-  candidate (see "Migration: conversion vs activation" below); backup
-  and rollback apply to the later activation transaction, not to
-  producing the staged candidate itself;
-- legacy and v2 must produce an equivalent effective configuration on
-  control fixtures during the transition window.
+- `BRAVO.local.config` не видаляється в момент випуску v2; він
+  залишається читабельним/підтримуваним на період переходу;
+- процедура міграції (dry-run, поетапна конвертація — за зразком
+  цільової моделі FEAT-001 у `TODO_FEATURES.md`) конвертує наявний
+  `BRAVO.local.config` у проміжний, неактивний кандидат
+  `BRAVO.config.local` (див. «Міграція: конвертація проти активації»
+  нижче); резервне копіювання та відкат стосуються пізнішої
+  транзакції активації, а не створення проміжного кандидата як
+  такого;
+- legacy та v2 повинні давати еквівалентну ефективну конфігурацію на
+  контрольних фікстурах протягом перехідного вікна.
 
-### Legacy/v2 security boundary during transition
+### Межа безпеки legacy/v2 під час переходу
 
-While the loader accepts both formats during the migration window, the
-two paths must stay strictly separated:
+Поки завантажувач приймає обидва формати протягом вікна міграції, ці
+два шляхи мають залишатися суворо розділеними:
 
-- a v2-shaped file (`configSchemaVersion: 2`) is only ever parsed and
-  extracted as DATA — it is never invoked as code, including when it
-  fails validation;
-- a file using the legacy format uses only the existing, already-
-  reviewed legacy compatibility path (today's executable
+- файл у форматі v2 (`configSchemaVersion: 2`) завжди лише парситься
+  й вилучається як ДАНІ — він ніколи не виконується як код, навіть
+  якщо не проходить валідацію;
+- файл у застарілому форматі використовує лише наявний, уже
+  перевірений шлях сумісності legacy (сьогоднішній виконуваний
   `BRAVO.config` / restricted-language-then-invoke
   `BRAVO.local.config`);
-- an invalid or malformed v2 file **fails closed** — it is rejected,
-  and must never be silently retried through the legacy executable
-  path. A file does not become executable merely because its v2
-  parsing failed.
+- недійсний або пошкоджений файл v2 **fail closed** — він
+  відхиляється, і ніколи не повинен мовчки повторно оброблятися через
+  виконуваний шлях legacy. Файл не стає виконуваним лише тому, що
+  його парсинг v2 зазнав невдачі.
 
-### Active configuration-set mode (format detection contract)
+### Активний режим набору конфігурації (контракт визначення формату)
 
-The loader may classify individual files, but before merging or
-invoking any layer it must determine **one coherent active
-configuration mode** for the installation. It must never
-independently choose legacy for one active layer and v2 for another
-and silently merge the mixed result.
+Завантажувач може класифікувати окремі файли, але перш ніж мерджити
+чи викликати будь-який шар, він повинен визначити **один узгоджений
+активний режим конфігурації** для інсталяції. Він ніколи не повинен
+незалежно обирати legacy для одного активного шару та v2 для іншого
+й мовчки мерджити змішаний результат.
 
-**Format detection is always non-executing.** Classifying
-`BRAVO.config` as legacy or v2 must never execute the file to
-discover its format — detection uses static inspection (e.g. an
-explicit `configSchemaVersion` marker found via AST/non-executing
-parse), consistent with the fail-closed rule above: an invalid v2
-file is never silently retried as legacy execution, and a file is
-never executed merely to determine what it is.
+**Визначення формату завжди non-executing.** Класифікація
+`BRAVO.config` як legacy чи v2 ніколи не повинна виконувати файл для
+виявлення його формату — визначення використовує статичний аналіз
+(наприклад, явний маркер `configSchemaVersion`, знайдений через
+AST/non-executing парсинг), узгоджено з правилом fail-closed вище:
+недійсний файл v2 ніколи мовчки не повторно обробляється як
+legacy-виконання, а файл ніколи не виконується лише для визначення
+того, чим він є.
 
-**Supported active modes:**
+**Матриця активного режиму та наміру (AUTO проти EXPLICIT).**
+Наведена нижче матриця містить окремий вимір **наміру** — AUTO
+(оператор не вказав явно `-ConfigPath`) проти EXPLICIT (оператор
+явно вказав `-ConfigPath <шлях>`). Канонічний інваріант: **EXPLICIT
+`-ConfigPath` означає, що явно вибраний основний файл ПОВИНЕН
+існувати.** Тому EXPLICIT + відсутній основний файл = FAIL CLOSED
+незалежно від наявності legacy-local / наявності v2-local /
+відсутності локального файлу. Режими з відсутнім основним файлом
+(лише built-in, лише legacy-local, лише v2-local) є валідними ТІЛЬКИ
+для наміру AUTO. Класифікація набору режимів ніколи не послаблює вже
+наявний контракт «мусить існувати» для EXPLICIT (цей наявний контракт
+уже перевірений в іншому місці репозиторію —
+`selftest/BRAVO_SELF_TEST.ConfigLoader.ps1` та `ConfigIntent.ps1` —
+цей документ не повинен йому суперечити).
 
-| # | `BRAVO.config` | `BRAVO.local.config` | `BRAVO.config.local` | Result | Precedence |
+**Підтримувані активні режими (намір AUTO, доки не вказано інше):**
+
+| # | `BRAVO.config` | `BRAVO.local.config` | `BRAVO.config.local` | Намір | Результат | Пріоритет |
+|---|---|---|---|---|---|---|
+| A | відсутній | відсутній | відсутній | AUTO | SUPPORTED — лише built-in (нейтрально до формату) | `DEFAULT` |
+| B | розпізнаний legacy | відсутній | відсутній | AUTO/EXPLICIT | SUPPORTED — LEGACY MODE | поточний пріоритет legacy, без змін |
+| C | розпізнаний legacy | присутній | відсутній | AUTO/EXPLICIT | SUPPORTED — LEGACY MODE | поточний пріоритет legacy, без змін протягом вікна міграції |
+| D | відсутній | присутній | відсутній | AUTO | SUPPORTED — LEGACY MODE (вже підтримуваний шлях built-in + локальне перевизначення) | `DEFAULT < BRAVO.local.config` |
+| E | валідний v2 | відсутній | відсутній | AUTO/EXPLICIT | SUPPORTED — V2 MODE | `DEFAULT < BRAVO.config` |
+| F | валідний v2 | відсутній | валідний v2 | AUTO/EXPLICIT | SUPPORTED — V2 MODE | `DEFAULT < BRAVO.config < BRAVO.config.local` |
+| G | відсутній | відсутній | валідний v2 | AUTO | SUPPORTED — V2 MODE (перевизначення рівня сайту залишається опціональним) | `DEFAULT < BRAVO.config.local` |
+
+**Заборонені комбінації для наміру EXPLICIT з відсутнім основним
+файлом — fail closed незалежно від стану локальних файлів:**
+
+| # | `BRAVO.config` | `BRAVO.local.config` | `BRAVO.config.local` | Намір | Результат |
 |---|---|---|---|---|---|
-| A | absent | absent | absent | SUPPORTED — built-in-only (format-neutral) | `DEFAULT` |
-| B | recognized legacy | absent | absent | SUPPORTED — LEGACY MODE | current legacy precedence, unchanged |
-| C | recognized legacy | present | absent | SUPPORTED — LEGACY MODE | current legacy precedence, unchanged during the migration window |
-| D | absent | present | absent | SUPPORTED — LEGACY MODE (already-supported built-in + local override path) | `DEFAULT < BRAVO.local.config` |
-| E | valid v2 | absent | absent | SUPPORTED — V2 MODE | `DEFAULT < BRAVO.config` |
-| F | valid v2 | absent | valid v2 | SUPPORTED — V2 MODE | `DEFAULT < BRAVO.config < BRAVO.config.local` |
-| G | absent | absent | valid v2 | SUPPORTED — V2 MODE (site-level override remains optional) | `DEFAULT < BRAVO.config.local` |
+| H | відсутній | відсутній | відсутній | EXPLICIT | FAIL CLOSED — явно вибраний основний шлях не існує |
+| I | відсутній | присутній | відсутній | EXPLICIT | FAIL CLOSED — явно вибраний основний шлях не існує, наявність legacy-local не рятує |
+| J | відсутній | відсутній | валідний v2 | EXPLICIT | FAIL CLOSED — явно вибраний основний шлях не існує, наявність v2-local не рятує |
 
-**Explicitly forbidden mixed modes — fail closed, no implicit precedence:**
+**Явно заборонені змішані режими — fail closed, без неявного
+пріоритету:**
 
-| Combination | Result |
+| Комбінація | Результат |
 |---|---|
-| legacy `BRAVO.config` + `BRAVO.config.local` | UNSUPPORTED MIXED MODE — FAIL CLOSED. Never execute the legacy primary and then merge a v2 local override. |
-| v2 `BRAVO.config` + `BRAVO.local.config` | UNSUPPORTED MIXED MODE — FAIL CLOSED. Never parse the v2 primary and then invoke a legacy local override. |
-| `BRAVO.local.config` + `BRAVO.config.local` both present | CONFLICT — FAIL CLOSED. There is no implicit "new filename wins", "legacy filename wins", or "newest file wins" rule; the operator/updater must explicitly complete migration or roll back. |
-| `BRAVO.config` claims v2 (`configSchemaVersion: 2`) but fails v2 validation | FAIL CLOSED — never falls back to legacy execution (see "Legacy/v2 security boundary during transition" above). |
-| `BRAVO.config` format is unknown/ambiguous | FAIL CLOSED. |
+| legacy `BRAVO.config` + `BRAVO.config.local` | UNSUPPORTED MIXED MODE — FAIL CLOSED. Ніколи не виконувати legacy-основний файл, а потім мерджити локальне перевизначення v2. |
+| v2 `BRAVO.config` + `BRAVO.local.config` | UNSUPPORTED MIXED MODE — FAIL CLOSED. Ніколи не парсити основний файл v2, а потім викликати legacy локальне перевизначення. |
+| одночасна наявність `BRAVO.local.config` і `BRAVO.config.local` | CONFLICT — FAIL CLOSED. Немає неявного правила «новіша назва файлу перемагає», «стара назва файлу перемагає» чи «найновіший файл перемагає»; оператор/updater повинен явно завершити міграцію або відкотитися. |
+| `BRAVO.config` декларує v2 (`configSchemaVersion: 2`), але не проходить валідацію v2 | FAIL CLOSED — ніколи не відкочується до legacy-виконання (див. «Межа безпеки legacy/v2 під час переходу» вище). |
+| формат `BRAVO.config` невідомий/неоднозначний | FAIL CLOSED. |
 
-`BRAVO.local.config` is the legacy-only machine-local filename during
-the transition window; `BRAVO.config.local` is the v2-only
-machine-local filename. If both are present this is a configuration
-**conflict**, not a precedence question — the two filenames are
-format-specific, not synonyms with an implicit tie-break.
+`BRAVO.local.config` — це назва файлу, специфічна лише для legacy
+машинно-локального рівня протягом перехідного вікна;
+`BRAVO.config.local` — це назва файлу, специфічна лише для v2
+машинно-локального рівня. Якщо присутні обидва — це конфігураційний
+**конфлікт**, а не питання пріоритету — ці дві назви файлів
+специфічні для формату, а не синоніми з неявним правилом розв'язання
+конфлікту.
 
-### Schema v2
+### Схема v2
 
-- explicit `configSchemaVersion: 2` marker, validated on load;
-- unknown keys fail validation (fail-closed, not warn-and-ignore);
-- invalid types fail validation;
-- arrays fully replace the corresponding default array — **already
-  the Foundation merge-engine behavior today**; schema v2 must carry
-  this through the new declarative load path and re-prove it, not
-  reimplement it;
-- an explicit empty array (`@()`) is a valid, intentional override —
-  **already accepted today** in the Foundation merge engine; schema
-  v2 must preserve this and add v2-load-path regression coverage;
-- `Limits.ExcludedDrives` default is `@()` — **already the built-in
-  default today**; schema v2 must not regress this.
+- явний маркер `configSchemaVersion: 2`, що перевіряється під час
+  завантаження;
+- невідомі ключі провалюють валідацію (fail-closed, а не
+  warn-and-ignore);
+- недійсні типи провалюють валідацію;
+- масиви повністю замінюють відповідний масив за замовчуванням — **вже
+  поведінка мердж-рушія Foundation сьогодні**; схема v2 повинна
+  перенести це через новий декларативний шлях завантаження й повторно
+  довести, а не реалізувати заново;
+- явний порожній масив (`@()`) є валідним, навмисним перевизначенням
+  — **уже приймається сьогодні** у мердж-рушії Foundation; схема v2
+  повинна зберегти це й додати регресійне покриття для шляху
+  завантаження v2;
+- значення за замовчуванням `Limits.ExcludedDrives` дорівнює `@()` —
+  **уже вбудоване значення за замовчуванням сьогодні**; схема v2 не
+  повинна це регресувати.
 
-### Migration: conversion vs activation
+### Канонічний конвеєр валідації v2
 
-Migration has two distinct stages that must not be conflated:
+Канонічний конвеєр валідації для конфігурації v2 (застосовується як
+під час поетапної конвертації у PR B, так і продакшн-завантажувачем
+у PR C — див. «Рекомендований розподіл PR» нижче):
+
+```text
+текст → PowerShell parse → строга валідація дозволеного синтаксису → non-executing вилучення ДАНИХ →
+валідація версії схеми → валідація невідомих ключів → валідація типів → мердж сирого шару →
+похідні обчислення → перевірка ефективних інваріантів безпеки
+```
+
+Поетапне стейджування кандидата в PR B повинно проходити всі етапи
+парсингу/схеми, застосовні до самостійного кандидата, перш ніж
+називати його validated; продакшн-завантажувач у PR C повинен
+викликати ту саму бібліотеку парсера/схеми — не другу, окрему
+реалізацію.
+
+### Міграція: конвертація проти активації
+
+Міграція має дві окремі стадії, які не можна змішувати:
 
 ```text
 CONVERSION:
@@ -370,71 +438,75 @@ ACTIVATION:
 staged v2 candidate -> active production v2 configuration
 ```
 
-**Conversion / staging (available starting PR B):**
+**Конвертація / стейджування (доступно починаючи з PR B):**
 
-- `BRAVO_CONFIG_MIGRATE.ps1` (or the equivalent canonical migration
-  entrypoint, per repository entrypoint conventions) converts only
-  explicitly-identified site-specific fields;
-- discovered/generated values never become permanent overrides through
-  migration;
-- the source legacy file(s) are read but never modified by conversion;
-- the converted candidate is written to an inactive staging
-  location — a pathname the current production loader does not
-  consume — never to the active `BRAVO.config` / `BRAVO.config.local`
-  production filenames;
-- the staged candidate is validated with the PR A non-executing parser
-  and compared against the legacy effective configuration for
-  equivalence before it is treated as a valid candidate;
-- a staged candidate may be discarded and regenerated at any time
-  without affecting the active installation; the pre-migration source
-  file is left untouched, not merely "preserved as a backup";
-- conversion alone never changes what the production loader reads.
+- `BRAVO_CONFIG_MIGRATE.ps1` (або еквівалентна канонічна точка входу
+  для міграції, згідно з конвенціями точок входу репозиторію)
+  конвертує лише явно ідентифіковані специфічні для сайту поля;
+- виявлені/згенеровані значення ніколи не стають постійними
+  перевизначеннями через міграцію;
+- вихідний(і) legacy-файл(и) читаються, але ніколи не змінюються
+  конвертацією;
+- сконвертований кандидат записується в неактивне місце стейджування
+  — шлях, який поточний продакшн-завантажувач не споживає — ніколи в
+  активні продакшн-назви файлів `BRAVO.config` / `BRAVO.config.local`;
+- проміжний кандидат валідується non-executing парсером PR A, тим
+  самим валідатором схеми (див. «Канонічний конвеєр валідації v2»
+  вище) і порівнюється з ефективною конфігурацією legacy на предмет
+  еквівалентності, перш ніж вважатися валідним кандидатом;
+- проміжний кандидат може бути відкинутий і перегенерований у
+  будь-який момент без впливу на активну інсталяцію; вихідний файл,
+  що передував міграції, залишається недоторканим, а не просто
+  «збереженим як резервна копія»;
+- сама конвертація ніколи не змінює те, що читає продакшн-завантажувач.
 
-**Activation (available starting PR D, explicitly gated — see
-"Migration activation and rollback" below):**
+**Активація (доступно починаючи з PR D, явно контрольована — див.
+«Активація міграції та відкат» нижче):**
 
-- promotes a validated staged candidate into the active configuration
-  at the effective active primary path (see "Effective active primary
-  path" below) — not necessarily the fixed `BRAVO.config` /
-  `BRAVO.config.local` filenames;
-- requires the PR C dual-format reader to already be present in the
-  running installation;
-- is a distinct, later, explicitly-gated operation — conversion alone
-  (PR B) grants no ability to activate;
-- the staged candidate metadata records enough identity to prevent
-  activation against the wrong target, at minimum: AUTO-vs-EXPLICIT
-  `-ConfigPath` intent, the exact resolved effective primary path, the
-  effective configuration directory, the legacy local path if present,
-  the target v2 local path if applicable, a source baseline/hash (or
-  equivalent drift identity), and a candidate identity/hash — exact
-  field names are an implementation detail, not fixed by this
-  document.
+- просуває валідованого проміжного кандидата в активну конфігурацію
+  за ефективним активним основним шляхом (див. «Ефективний активний
+  основний шлях» нижче) — не обов'язково за фіксованими назвами
+  файлів `BRAVO.config` / `BRAVO.config.local`;
+- вимагає, щоб двоформатний зчитувач PR C уже був присутній у
+  запущеній інсталяції;
+- є окремою, пізнішою, явно контрольованою операцією — сама
+  конвертація (PR B) не надає можливості активації;
+- метадані проміжного кандидата фіксують достатньо ідентифікаційної
+  інформації, щоб запобігти активації проти неправильної цілі, як
+  мінімум: намір AUTO-проти-EXPLICIT `-ConfigPath`, точний розв'язаний
+  ефективний основний шлях, ефективний каталог конфігурації, шлях
+  legacy-local за наявності, цільовий шлях v2-local за застосовності,
+  базову лінію джерела/хеш (або еквівалентну ідентичність дрейфу) та
+  ідентичність/хеш кандидата — точні назви полів є деталлю реалізації,
+  а не фіксуються цим документом.
 
-### Effective active primary path (AUTO vs EXPLICIT)
+### Ефективний активний основний шлях (AUTO проти EXPLICIT)
 
-Migration and activation must be defined in terms of the **effective
-active primary configuration path**, not an assumption that the
-primary is always `<ConfigRoot>\BRAVO.config`. The existing
-`-ConfigPath` AUTO/EXPLICIT contract (`BRAVO_SETUP.ps1`, Task
-Scheduler task definitions, `BRAVO_CONFIGURATOR.ps1`) already
-distinguishes two modes, and migration must preserve that distinction:
+Міграція та активація повинні визначатися в термінах **ефективного
+активного основного шляху конфігурації**, а не припущення, що
+основний файл завжди `<ConfigRoot>\BRAVO.config`. Наявний контракт
+AUTO/EXPLICIT для `-ConfigPath` (`BRAVO_SETUP.ps1`, визначення
+завдань Task Scheduler, `BRAVO_CONFIGURATOR.ps1`) уже розрізняє два
+режими, і міграція повинна зберігати цю відмінність:
 
-**AUTO mode** — the operator did not explicitly supply `-ConfigPath`:
+**Режим AUTO** — оператор явно не вказав `-ConfigPath`:
 
 ```text
 effective primary path = <ConfigRoot>\BRAVO.config
 ```
 
-if a primary override exists at all (it remains optional).
+якщо основне перевизначення взагалі існує (воно залишається
+опціональним).
 
-**EXPLICIT mode** — the operator explicitly supplied
-`-ConfigPath <path>` (for example `C:\BRAVO\CONFIGS\SERVER1.config`):
-the exact resolved path is operator intent and **must remain the
-active primary path across migration**. It must not silently become
-`<RuntimeRoot>\BRAVO.config` or `<ConfigRoot>\BRAVO.config`.
+**Режим EXPLICIT** — оператор явно вказав `-ConfigPath <шлях>`
+(наприклад, `C:\BRAVO\CONFIGS\SERVER1.config`): точний розв'язаний
+шлях є наміром оператора й **повинен залишатися активним основним
+шляхом протягом усієї міграції**. Він не повинен мовчки
+перетворюватися на `<RuntimeRoot>\BRAVO.config` чи
+`<ConfigRoot>\BRAVO.config`.
 
-**Preferred canonical activation model — preserve the path, change the
-format:**
+**Бажана канонічна модель активації — зберегти шлях, змінити
+формат:**
 
 ```text
 legacy data/code at exact effective path
@@ -442,425 +514,595 @@ legacy data/code at exact effective path
 v2 DATA at the SAME exact effective path
 ```
 
-The filename/path does not determine legacy vs v2 — format/schema
-detection does (see "Active configuration-set mode" above), and PR C
-is already defined as a dual-format reader. Activation therefore
-should normally **not** require retargeting scheduled tasks or
-launchers. Guiding principle: **migration changes the format/content
-of the active configuration, not the operator's explicit primary-path
-intent.**
+Назва файлу/шлях не визначає legacy проти v2 — це робить визначення
+формату/схеми (див. «Активний режим набору конфігурації» вище), а
+PR C вже визначено як двоформатний зчитувач. Тому активація зазвичай
+**не повинна** вимагати перенацілення запланованих завдань чи
+лаунчерів. Керівний принцип: **міграція змінює формат/вміст активної
+конфігурації, а не явний намір оператора щодо основного шляху.**
 
-The v2 machine-local override follows the same effective-configuration
-directory as today: for an explicit primary path
-`C:\BRAVO\CONFIGS\SERVER1.config`, the corresponding
-`BRAVO.config.local` (when used) resolves from
-`C:\BRAVO\CONFIGS\BRAVO.config.local`, per the v2 local-filename
-contract — it is not silently relocated to `RuntimeRoot`. For AUTO/
-no-primary mode, the documented `ConfigRoot`-based behavior applies.
-`RuntimeRoot` is not necessarily `ConfigRoot`, and `ConfigRoot` is not
-necessarily the directory implied by the package location; migration
-must preserve the effective configuration location.
+Машинно-локальне перевизначення v2 слідує тому ж ефективному каталогу
+конфігурації, що й сьогодні: для явного основного шляху
+`C:\BRAVO\CONFIGS\SERVER1.config` відповідний `BRAVO.config.local`
+(за використання) розв'язується з
+`C:\BRAVO\CONFIGS\BRAVO.config.local`, згідно з контрактом імені
+локального файлу v2 — він не переноситься мовчки в `RuntimeRoot`. Для
+режиму AUTO/без-основного-файлу застосовується задокументована
+поведінка на основі `ConfigRoot`. `RuntimeRoot` не обов'язково є
+`ConfigRoot`, а `ConfigRoot` не обов'язково є каталогом, що мається
+на увазі місцем розташування пакета; міграція повинна зберігати
+ефективне розташування конфігурації.
 
-After activation, every existing persisted consumer must still resolve
-the active v2 configuration: a scheduled task's exact `-ConfigPath`, a
-manual launcher's exact `-ConfigPath`, and any other persisted
-consumer remain unchanged, because the same effective primary path now
-contains v2 DATA. If a future implementation instead chooses path
-retargeting, that is a different, higher-risk design and MUST
-atomically update every persisted consumer inside the rollback-
-protected activation transaction (see "Migration activation and
-rollback" below) — retargeting is not the preferred/default design.
+Після активації кожен наявний персистентний споживач повинен і надалі
+розв'язувати активну конфігурацію v2: точний `-ConfigPath`
+запланованого завдання, точний `-ConfigPath` ручного лаунчера та
+будь-який інший персистентний споживач залишаються незмінними,
+оскільки той самий ефективний основний шлях тепер містить ДАНІ v2.
+Якщо майбутня реалізація натомість обере перенацілення шляху, це
+інший, ризикованіший дизайн, і вона ПОВИННА атомарно оновити кожного
+персистентного споживача всередині захищеної відкатом транзакції
+активації (див. «Активація міграції та відкат» нижче) — перенацілення
+не є бажаним/дизайном за замовчуванням.
 
-### Updater preservation
+### Збереження при оновленні (updater preservation)
 
-- an in-place update/upgrade of the toolkit must never silently
-  overwrite, discard, or corrupt either v2 override file —
-  `BRAVO.config` (site/deployment override) or `BRAVO.config.local`
-  (machine-local override) — nor, during the transition window, the
-  legacy `BRAVO.local.config`. Both v2 files are user-owned override
-  layers, not package-provided content, and the package must never
-  reset them to shipped defaults on update;
-- a legacy executable `BRAVO.config` must never be silently replaced
-  by a packaged v2 `BRAVO.config` before backup/migration/compatibility
-  handling has safely dealt with it — an update must not overwrite a
-  site's existing configuration file merely because the package ships
-  a new default file;
-- this must be covered by explicit regression cases, not just
-  documented as an expectation, including at minimum:
-  1. a v2 `BRAVO.config` survives an update unchanged;
-  2. a v2 `BRAVO.config.local` survives an update unchanged;
-  3. a legacy `BRAVO.local.config` survives the transition/update
-     unchanged until explicitly migrated;
-  4. a legacy executable `BRAVO.config` is never silently replaced by
-     a package-provided v2 file.
+- оновлення/апгрейд toolkit на місці ніколи не повинне мовчки
+  перезаписувати, знищувати чи пошкоджувати жоден з двох файлів
+  перевизначення v2 — `BRAVO.config` (перевизначення
+  сайту/розгортання) чи `BRAVO.config.local` (машинно-локальне
+  перевизначення) — а також, протягом перехідного вікна, legacy
+  `BRAVO.local.config`. Обидва файли v2 є шарами перевизначення, що
+  належать користувачу, а не вмістом, що постачається пакетом, і
+  пакет ніколи не повинен скидати їх до заводських значень за
+  замовчуванням під час оновлення;
+- виконуваний legacy `BRAVO.config` ніколи не повинен мовчки
+  замінюватися пакетним v2 `BRAVO.config` до того, як резервне
+  копіювання/міграція/обробка сумісності безпечно з ним впораються —
+  оновлення не повинне перезаписувати наявний файл конфігурації сайту
+  лише тому, що пакет постачає новий файл за замовчуванням;
+- це повинно бути покрите явними регресійними випадками, а не лише
+  задокументоване як очікування, включно як мінімум із:
+  1. v2 `BRAVO.config` переживає оновлення без змін;
+  2. v2 `BRAVO.config.local` переживає оновлення без змін;
+  3. legacy `BRAVO.local.config` переживає перехід/оновлення без змін,
+     доки не буде явно мігрований;
+  4. виконуваний legacy `BRAVO.config` ніколи мовчки не замінюється
+     пакетним v2-файлом.
 
-Routine in-place package updates (not a migration activation) never
-change the active configuration-set mode; the backup/rollback
-transaction described in "Migration activation and rollback" below
-applies specifically to migration activation, not to every update.
+Рутинні оновлення пакета на місці (не активація міграції) ніколи не
+змінюють активний режим набору конфігурації; транзакція резервного
+копіювання/відкату, описана в «Активація міграції та відкат» нижче,
+стосується саме активації міграції, а не кожного оновлення.
 
-### Migration activation and rollback (PR D)
+### Активація міграції та відкат (PR D)
 
-Activation promotes a validated staged v2 candidate (see "Migration:
-conversion vs activation" above) into the live configuration set, at
-the effective active primary path (see "Effective active primary
-path" above) — it does not assume the primary is always
-`<ConfigRoot>\BRAVO.config`. It operates on the complete configuration
-set as one transaction, never file-by-file best effort, and must
-survive abrupt interruption (process kill, host crash, reboot, power
-loss), not only caught in-process failures.
+Активація просуває валідованого проміжного кандидата v2 (див.
+«Міграція: конвертація проти активації» вище) у діючий набір
+конфігурації, за ефективним активним основним шляхом (див.
+«Ефективний активний основний шлях» вище) — вона не припускає, що
+основний файл завжди `<ConfigRoot>\BRAVO.config`. Вона оперує повним
+набором конфігурації як однією транзакцією, ніколи файл-за-файлом за
+принципом best effort, і повинна переживати раптове переривання
+(вбивство процесу, аварію хоста, перезавантаження, втрату живлення),
+а не лише перехоплені в процесі збої.
 
-**Activation path guard (runs before anything else):** before
-changing any active file, activation verifies:
+**Синхронізація читання та активації (контракт блокування) — закриває
+вікно TOCTOU.** Між попередньою перевіркою відновлення (recovery
+preflight) та фактичним початком активації існує вікно стану гонки:
+звичайний читач може пройти перевірку наявності незавершеного журналу,
+а потім активація почне просування саме в той момент, коли читач
+зчитує проміжний, наполовину просунутий стан. Сама наявність журналу
+не є достатнім механізмом синхронізації для закриття цього вікна.
+Явний контракт спільного читача / ексклюзивного writer'а обов'язковий:
 
-- the current effective primary path still matches the staged
-  migration target's recorded effective primary path;
-- AUTO/EXPLICIT `-ConfigPath` intent has not changed since staging;
-- the source legacy configuration has not drifted since the candidate
-  was generated (baseline/hash match);
-- the expected local-configuration identity has not changed;
-- the candidate belongs to this exact activation target.
+- **звичайний завантажувач:** перед попередньою перевіркою
+  відновлення та перед читанням/класифікацією активної конфігурації
+  отримує спільну/read-side транзакційну блокування конфігурації
+  (shared/read-side configuration transaction lock). Утримує це
+  блокування безперервно протягом: перевірки стану відновлення,
+  визначення формату, класифікації набору конфігурації, вилучення
+  конфігурації, захоплення вхідних даних для мерджу. Звільняє
+  блокування лише після отримання одного узгодженого незмінного
+  знімку (snapshot) конфігурації;
+- **активація/відновлення:** вимагає ексклюзивної/write-side
+  блокування (exclusive/write-side lock), яка конфліктує з кожним
+  звичайним читачем. Активація не повинна починати просування, доки
+  будь-який уже наявний звичайний читач утримує спільне блокування.
+  Жоден новий звичайний читач не може увійти, доки активація/
+  відновлення володіє ексклюзивним блокуванням;
+- це закриває гонку: попередня перевірка читача → активація
+  починається → читач читає посеред просування;
+- не покладатися лише на наявність журналу як на механізм
+  синхронізації.
 
-Any mismatch **fails closed** — activation does not proceed, and the
-operator must regenerate/revalidate the candidate.
+**Канонічний порядок отримання блокування** (щоб уникнути
+гонок/дедлоків):
 
-**Durable write-ahead activation journal.** Because a caught
-`try`/`catch`/`finally` cannot protect against process termination,
-host crash, reboot, or power loss between file mutations, activation
-uses a durable, write-ahead journal stored outside the files being
-promoted, in a protected runtime/state location (the exact permanent
-path is an implementation detail for the canonical migration-state
-root, not fixed by this document). The journal conceptually records:
-an activation ID; target host/installation identity; AUTO/EXPLICIT
-`-ConfigPath` intent; the exact active primary path; active local-path
-state; backup-set identity; candidate-set identity; the current
-activation phase/state; and timestamps/version/schema as appropriate.
-Exact field names are an implementation detail.
+Звичайне завантаження:
+1. отримати спільне/read блокування;
+2. перевірити журнал міграції/стан відновлення;
+3. якщо потрібне відновлення: звільнити/підвищити відповідно до
+   канонічного шляху відновлення (відновлення отримує ексклюзивне
+   володіння);
+4. інакше прочитати/класифікувати/вилучити узгоджену конфігурацію;
+5. звільнити спільне блокування.
 
-**Required transaction order:**
+Активація/відновлення:
+1. отримати ексклюзивну транзакційну блокування;
+2. перевірити володіння журналом/транзакцією;
+3. виконати транзакцію/відновлення;
+4. звільнити лише після досягнення стабільного узгодженого режиму.
 
-1. validate the current active legacy set;
-2. validate the complete staged v2 candidate;
-3. run the activation path guard above;
-4. create a backup of the complete active set, and verify the backup;
-5. durably create the activation journal — **if journal creation or
-   persistence fails, no active file may change**;
-6. only then begin promoting candidate files, recording a write-ahead
-   phase transition before each destructive step (for example:
-   Prepared, PrimaryPromotionStarted, PrimaryPromoted,
-   LocalPromotionStarted, LocalPromoted,
-   LegacyLocalRetirementStarted, Verifying, Committed — exact phase
-   names are implementation detail, the state-machine semantics are
-   required);
-7. ensure no conflicting legacy/v2 local filenames remain active (see
-   "Active configuration-set mode" above — activation must not leave a
-   forbidden mixed mode in place);
-8. load through the v2 path;
-9. verify effective-configuration equivalence and required invariants,
-   including that persisted consumers (scheduled tasks, launchers)
-   still resolve a valid configuration at the effective primary path;
-10. mark migration adoption confirmed, write the `Committed` journal
-    phase, and only then permit deferred cleanup of old migration
-    artifacts/backups per policy — recovery evidence is not erased
-    prematurely.
+Не вигадувати небезпечне підвищення блокування (lock upgrade), що
+призводить до дедлоку — якщо підвищення не може бути атомарним:
+звільнити спільне блокування, отримати ексклюзивне блокування,
+повторно перевірити журнал/стан з нуля.
 
-**Rollback.** If any step fails — whether caught or discovered on
-recovery — the complete previous configuration set is restored:
-rollback is set-level, restoring one coherent prior mode (for example,
-"legacy primary + legacy local" is restored together if that was the
-pre-migration state), never a partial mixed result. A rollback must
-never leave both `BRAVO.local.config` and `BRAVO.config.local` active
-at once, unless one of them resides only in an explicitly inactive
-backup/staging area.
+**Активація на основі перевірки шляху (виконується перед усім
+іншим):** перед зміною будь-якого активного файлу активація
+перевіряє:
 
-**Crash/reboot recovery is independent of process memory.** Recovery
-must work correctly from a brand-new process and must not depend on
-`catch`/`finally`, in-memory variables, or the original PowerShell
-process still running. Before the ordinary configuration-mode
-classification/merge path consumes active files, a migration recovery
-preflight checks for an incomplete activation journal; if one exists,
-recovery runs first — the normal loader must never simply encounter a
-half-promoted mixed configuration and treat it as an ordinary operator
-error. Policy is **rollback-first**: for any incomplete/uncommitted
-activation, the complete previous active configuration set is restored
-from the verified backup, then the restored set is revalidated as one
-coherent supported mode (see "Active configuration-set mode" above).
-Only after recovery completes may normal loading continue.
+- поточний ефективний основний шлях усе ще відповідає ефективному
+  основному шляху, зафіксованому в цілі проміжної міграції;
+- намір AUTO/EXPLICIT `-ConfigPath` не змінився з моменту
+  стейджування;
+- вихідна legacy-конфігурація не зазнала дрейфу з моменту генерації
+  кандидата (збіг базової лінії/хешу);
+- очікувана ідентичність локальної конфігурації не змінилася;
+- кандидат належить саме цій цілі активації.
 
-**Recovery failure fails closed.** If recovery cannot safely restore
-the prior complete configuration set, it fails closed: it does not
-guess precedence, does not delete the journal or backups, does not
-partially continue, surfaces a specific migration-recovery error, and
-preserves forensic/recovery evidence.
+Будь-яка невідповідність **fail closed** — активація не
+продовжується, і оператор повинен перегенерувати/повторно валідувати
+кандидата.
 
-**Single writer.** Activation and recovery must not run concurrently.
-One installation may have at most one active migration transaction at
-a time, using the repository's canonical machine-wide locking/state
-approach when implemented; if another activation/recovery already owns
-the transaction, a new one fails closed as busy rather than starting a
-second migration.
+**Довговічний write-ahead журнал активації.** Оскільки перехоплений
+`try`/`catch`/`finally` не може захистити від завершення процесу,
+аварії хоста, перезавантаження чи втрати живлення між мутаціями
+файлів, активація використовує довговічний write-ahead журнал, що
+зберігається поза файлами, які просуваються, у захищеному місці
+рантайм/стану (точний постійний шлях є деталлю реалізації канонічного
+кореня стану міграції, не фіксується цим документом). Журнал
+концептуально фіксує: ID активації; ідентичність цільового
+хоста/інсталяції; намір AUTO/EXPLICIT `-ConfigPath`; точний активний
+основний шлях; стан активного локального шляху; ідентичність набору
+резервної копії; ідентичність набору кандидата; поточну фазу/стан
+активації; а також мітки часу/версію/схему за потреби. Точні назви
+полів є деталлю реалізації.
 
-**Recovery is idempotent.** Recovery must be safe to run repeatedly —
-if recovery itself is interrupted, the next recovery invocation must
-still converge safely, and no repeated recovery attempt may corrupt
-the last verified backup.
+**Контекст авторизованої перевірки власника активації (Fix B).**
+Активація вже володіє ексклюзивною транзакційною блокуванням. Журнал
+містить ID активації / ідентичність транзакції. Виклик верифікації
+повинен нести ту саму ідентичність транзакції/здатність (capability),
+що й активна транзакція. Завантажувач перевіряє: ексклюзивне
+блокування належить саме цій транзакції; ID активації збігається з
+власником журналу; фаза журналу явно дозволяє верифікацію власником.
+Лише тоді верифікація, що належить активації, може інспектувати щойно
+просунутий набір v2, не запускаючи rollback-first відновлення проти
+самої себе. Звичайні процеси НЕ ПОВИННІ мати можливість запросити чи
+обійти цей режим просто встановивши звичайний CLI-прапорець/змінну
+середовища — це внутрішня довірена транзакційна можливість (trusted
+transaction capability). Якщо володіння не може бути доведене: FAIL
+CLOSED, без обхідних шляхів. Шлях верифікації власником НЕ ПОВИНЕН
+послаблювати валідацію — він використовує ТОЙ САМИЙ парсер v2,
+валідатор схеми, перевірку типів, класифікацію режиму, семантику
+мерджу, інваріанти безпеки та перевірки ефективної конфігурації, що й
+звичайне продакшн-завантаження. Лише попередня перевірка «неповний
+власний журнал активації означає відкат» є транзакційно-обізнаною
+(transaction-aware). Не створювати другу, слабшу реалізацію
+валідації.
 
-### Regression / Definition-of-Done requirements
+**Необхідний порядок транзакції:**
 
-Before Configuration v2 can be marked complete in `ROADMAP.md`, the
-following must exist and pass:
+1. отримати ексклюзивне володіння транзакцією;
+2. перевірити поточний активний набір legacy;
+3. перевірити повний проміжний кандидат v2;
+4. перевірка на дрейф шляху/наміру/джерела (activation path guard);
+5. створити повну резервну копію активного набору та перевірити
+   резервну копію;
+6. довговічно створити write-ahead журнал;
+7. просунути набір кандидата через write-ahead переходи фаз;
+8. забезпечити узгоджений активний набір v2 без конфліктів;
+9. авторизована власником, продакшн-еквівалентна перевірка (це
+   контекст верифікації Fix B вище);
+10. перевірка ефективної еквівалентності/безпеки/персистентних
+    споживачів;
+11. довговічно записати фазу `Committed`;
+12. усиновлення (adoption) тепер підтверджене фактом `Committed`;
+13. опціональні похідні метадані усиновлення можуть бути
+    записані/узгоджені;
+14. відкладене очищення згідно з політикою зберігання;
+15. звільнити ексклюзивне володіння.
 
-- unknown-key rejection test (new for v2);
-- type-mismatch rejection test (new for v2);
-- array-replace-not-merge test **on the v2 declarative load path**
-  (the underlying semantic already exists and is already tested for
-  today's Foundation merge engine — this item is about re-proving it
-  survives the v2 parser cutover, not inventing it);
-- nullable-value handling test (new for v2);
-- explicit-empty-array-is-a-valid-override test **on the v2
-  declarative load path** (same caveat as array-replace above);
-- security-downgrade rejection test (mirrors the already-implemented
-  P0 Foundation invariant, re-verified against the v2 schema path);
-- legacy-vs-v2 equivalence test on at least one non-trivial control
-  fixture;
-- non-invocation proof: a test demonstrating that a malicious or
-  malformed v2 configuration file cannot cause code execution even if
-  it contains syntactically-plausible PowerShell beyond literal data —
-  i.e. proving property 4 of the safe parser requirement, not just
-  that invalid syntax is rejected;
-- fail-closed-no-fallback proof: a test demonstrating that a file
-  declaring `configSchemaVersion: 2` that fails v2 validation is
-  rejected outright and never silently falls back to the legacy
-  executable loader;
-- active-configuration-set-mode coverage (see "Active
-  configuration-set mode" above), covering all seven supported
-  combinations and all five fail-closed combinations enumerated there;
-- migration staging/activation coverage:
-  - PR B staging leaves every live configuration file byte-for-byte
-    unchanged;
-  - a staged v2 candidate is not discoverable by the legacy production
-    loader;
-  - PR D activation promotes a complete, coherent v2 set;
-  - an activation failure restores the complete previous legacy set;
-  - rollback cannot leave both local filenames active at once;
-  - invalid v2 never falls back to legacy execution, re-verified at
-    the configuration-set level, not just the single-file level;
-  - EXPLICIT external `-ConfigPath` migration preserves the exact
-    path; a scheduled task command line containing
-    `-ConfigPath "<explicit path>"` is unchanged after successful
-    path-preserving activation; a manual launcher using an explicit
-    effective config path remains valid; v2 primary is loaded from
-    that exact explicit path after activation; the v2 local override
-    is resolved beside the effective configuration per the v2
-    local-file contract;
-  - activation rejects a staged candidate when the effective
-    `-ConfigPath` or source baseline changed after staging (the
-    activation path guard above);
-  - AUTO mode remains canonical and unaffected by the EXPLICIT-path
-    guard;
-  - interruption/crash-recovery coverage: abrupt interruption injected
-    (1) after journal creation but before any active-file mutation,
-    (2) after primary promotion but before local promotion, (3) during
-    or after v2 local promotion, (4) before/after legacy local
-    retirement, (5) after all file promotions but before v2
-    verification, (6) after verification but before the `Committed`
-    marker, and (7) while updating the durable journal itself — after
-    a simulated restart/recovery each case must prove: recovery does
-    not depend on old process memory; one coherent supported
-    configuration mode is restored; no mixed legacy/v2 mode becomes
-    visible to normal loading; the explicit effective `-ConfigPath` is
-    preserved; scheduled/persisted consumers still target a valid
-    configuration; backup/journal remain if recovery fails; and
-    successful recovery is idempotent;
-  - recovery idempotency: recovery itself is interrupted, and the next
-    recovery invocation still converges safely without corrupting the
-    last verified backup;
-- updater preservation acceptance (does not require real-server
-  acceptance to be documented as "done" for the code-level regression,
-  but real-server acceptance is required before this is described as
-  production-proven, per repository validation policy).
+**Канонічне авторитетне правило стану підтвердження/усиновлення
+(Fix C).** Довговічний журнал, що досягає фази `Committed`, є
+авторитетним атомарним сигналом усиновлення (adoption) міграції.
+Порядок: успішна верифікація → довговічно зберегти `Committed` →
+похідно виставити/деривувати adoption=confirmed САМЕ З `Committed`.
+Якщо існує окремий індекс/маркер усиновлення для операційного
+пошуку, це похідний стан, а не авторитет, і він може бути
+персистований лише ПІСЛЯ `Committed`; відновлення повинне узгоджувати
+його з авторитетного журналу. Обов'язковий інваріант: якщо журнал !=
+`Committed`, інсталяція НЕ є довговічно усиновленою. Аварія до
+`Committed` ⇒ rollback-first відновлення, legacy відновлюється,
+усиновлення не підтверджене. Аварія після `Committed`, але до
+оновлення похідного маркера ⇒ конфігурація залишається усиновленою,
+похідний маркер відновлюється з `Committed`. Ніякого «розщеплення
+мозку» (split-brain) не допускається.
 
-### Recommended PR split
+**Відкат.** Якщо будь-який крок зазнає невдачі — перехоплений чи
+виявлений під час відновлення — повний попередній набір конфігурації
+відновлюється: відкат є на рівні набору, відновлюючи один узгоджений
+попередній режим (наприклад, «legacy-основний + legacy-локальний»
+відновлюється разом, якщо це був стан до міграції), ніколи частковий
+змішаний результат. Відкат ніколи не повинен залишати одночасно
+активними і `BRAVO.local.config`, і `BRAVO.config.local`, окрім
+випадку, коли один з них перебуває лише в явно неактивній зоні
+резервної копії/стейджування.
 
-Mirrors the P0 Foundation precedent (PR A/B/C) in spirit, but adds a
-dedicated migration PR, separates the safe parser from the loader
-cutover, and splits "v2 becomes available" from "legacy is finally
-removed" into two separately-gated stages — so the highest-risk pieces
-(never invoking untrusted config text, and stranding an unmigrated
-installation) can each be reviewed and tested in isolation before
-anything depends on them.
+**Відновлення після аварії/перезавантаження незалежне від пам'яті
+процесу.** Відновлення повинне коректно працювати з абсолютно нового
+процесу й не повинне залежати від `catch`/`finally`, змінних у
+пам'яті чи того, що оригінальний процес PowerShell усе ще працює.
+Перш ніж звичайний шлях класифікації режиму конфігурації/мерджу
+споживає активні файли, попередня перевірка відновлення міграції
+перевіряє наявність незавершеного журналу активації; якщо такий
+існує, першим запускається відновлення — звичайний завантажувач
+ніколи не повинен просто натрапити на наполовину просунуту змішану
+конфігурацію й трактувати це як звичайну помилку оператора. Політика
+— **rollback-first**: для будь-якої незавершеної/незафіксованої
+активації повний попередній активний набір конфігурації відновлюється
+з перевіреної резервної копії, після чого відновлений набір повторно
+валідується як один узгоджений підтримуваний режим (див. «Активний
+режим набору конфігурації» вище). Лише після завершення відновлення
+може продовжуватися звичайне завантаження.
 
-**Ordering constraint (why migration comes before cutover):** an
-existing installation may still have an executable legacy `BRAVO.config`
-at the moment any of these PRs lands. If the production loader stopped
-accepting the legacy format (final cutover, see PR E below) before a
-supported migration path exists, that installation's legacy
-`BRAVO.config` would fail to load with no available conversion route —
-a merged, released intermediate state that stops working for existing
-deployments. The migration/compatibility work must therefore be
-available *before* the final cutover, not after it.
+**Невдача відновлення fail closed.** Якщо відновлення не може
+безпечно відновити попередній повний набір конфігурації, воно fail
+closed: не вгадує пріоритет, не видаляє журнал чи резервні копії, не
+продовжує частково, показує конкретну помилку відновлення міграції
+та зберігає криміналістичні докази/докази для відновлення.
 
-**Migration availability is not migration completion:** shipping PR B
-makes a migration path *available*; it does not prove any specific
-deployed installation has actually run it. A direct upgrade to a
-release containing PR C or later can still encounter a server whose
-primary configuration file is the legacy executable `BRAVO.config`,
-regardless of how long PR B has existed. The loader must therefore
-continue to accept and correctly load the legacy format itself,
-through explicit format/schema detection, for as long as the migration
-window is open — until the separately-gated final cutover (PR E)
-removes legacy support, not merely because conversion tooling exists
-upstream. Nor does PR B *activate* anything: it produces staged,
-inactive v2 candidates only (see "Migration: conversion vs
-activation" above) — an installation is not migrated merely because a
-candidate has been generated for it; it is migrated only after PR D's
-gated activation succeeds.
+**Єдиний writer (single writer).** Активація та відновлення не
+повинні виконуватися одночасно. Одна інсталяція може мати щонайбільше
+одну активну транзакцію міграції одночасно, використовуючи
+канонічний загальномашинний підхід блокування/стану репозиторію, коли
+той реалізований; якщо інша активація/відновлення вже володіє
+транзакцією, нова fail closed як «зайнято», а не починає другу
+міграцію. Цей контракт єдиного writer'а доповнюється явним контрактом
+блокування читач/writer вище (Fix A): звичайні читачі можуть
+співіснувати між собою через спільне блокування, але жоден читач не
+може співіснувати з ексклюзивним writer'ом активації/відновлення.
 
-**PR A — Safe declarative AST/data parser**
+**Відновлення ідемпотентне.** Відновлення повинне бути безпечним для
+повторного запуску — якщо саме відновлення перерване, наступний
+виклик відновлення повинен усе одно безпечно збігтися, і жодна
+повторна спроба відновлення не може пошкодити останню перевірену
+резервну копію.
 
-- safe non-executing parser;
-- AST/data extraction;
-- fail-closed syntax contract;
-- parser unit tests, including the non-invocation proof above;
-- no production loader cutover yet — existing `BRAVO.config` /
-  `BRAVO.local.config` behavior is unchanged by this PR.
+### Регресійні вимоги / вимоги Definition-of-Done
 
-**PR B — Migration / compatibility preparation (inactive staging only)**
+Перш ніж Configuration v2 можна позначити завершеним у `ROADMAP.md`,
+повинні існувати й проходити такі перевірки:
 
-- migration entrypoint (`BRAVO_CONFIG_MIGRATE.ps1` or the repository's
-  canonical equivalent);
-- legacy executable `BRAVO.config` → v2 DATA-only conversion path,
-  writing to an inactive staging location only — never to the active
-  `BRAVO.config` filename;
-- `BRAVO.local.config` → `BRAVO.config.local` conversion path, writing
-  to an inactive staging location only — never to the active
-  `BRAVO.config.local` filename;
-- dry-run, staged-candidate validation, discard/regenerate;
-- legacy-vs-v2 equivalence tests on control fixtures, run against the
-  staged candidate;
-- exercises the PR A parser against real/representative legacy input
-  without cutting the *production* loader over to it and without
-  activating the staged candidate — the production loader still uses
-  today's executable-`BRAVO.config`/restricted-language-
-  `BRAVO.local.config` path in this PR, unchanged and untouched;
-- **hard invariant: PR B has no activation/promote capability.** It
-  cannot replace, overwrite, or rename staged output into the active
-  `BRAVO.config` / `BRAVO.config.local` filenames, and exposes no
-  command that can make the staged pair live. See "Migration:
-  conversion vs activation" above;
-- because PR B never touches the active configuration set, production
-  backup/rollback is not required merely to produce or discard a
-  staged candidate — that transaction belongs to migration activation
-  (PR D, see "Migration activation and rollback" above);
-- result: by the end of this PR, every installation that will later be
-  cut over already has a supported, tested way to *produce and
-  validate* a v2 migration candidate — entirely inactive — before PR C
-  introduces the v2 load path, and well before PR D's gated activation
-  or PR E's final cutover removes legacy support entirely.
+- тест на відхилення невідомих ключів (новий для v2);
+- тест на відхилення невідповідності типів (новий для v2);
+- тест «заміна масиву, а не мердж» **на декларативному шляху
+  завантаження v2** (базова семантика вже існує й уже протестована
+  для сьогоднішнього мердж-рушія Foundation — цей пункт про повторне
+  доведення, що вона переживає перехід на парсер v2, а не про
+  винайдення її заново);
+- тест обробки значень, що допускають null (новий для v2);
+- тест «явний порожній масив є валідним перевизначенням» **на
+  декларативному шляху завантаження v2** (те саме застереження, що й
+  вище для заміни масивів);
+- тест на відхилення пониження безпеки (віддзеркалює вже реалізований
+  інваріант P0 Foundation, повторно перевірений проти шляху схеми v2);
+- тест еквівалентності legacy-проти-v2 щонайменше на одній
+  нетривіальній контрольній фікстурі;
+- доказ non-invocation: тест, що демонструє, що шкідливий або
+  пошкоджений файл конфігурації v2 не може спричинити виконання коду,
+  навіть якщо він містить синтаксично правдоподібний PowerShell поза
+  межами літеральних даних — тобто доведення властивості 4 вимоги до
+  безпечного парсера, а не лише того, що невалідний синтаксис
+  відхиляється;
+- доказ fail-closed-no-fallback: тест, що демонструє, що файл, який
+  декларує `configSchemaVersion: 2` і не проходить валідацію v2,
+  відхиляється прямо й ніколи мовчки не відкочується до виконуваного
+  legacy-завантажувача;
+- покриття активного режиму набору конфігурації (див. «Активний
+  режим набору конфігурації» вище), що охоплює всі сім підтримуваних
+  комбінацій, три нові комбінації EXPLICIT-з-відсутнім-основним-файлом
+  (Fix D нижче) і всі п'ять fail-closed комбінацій, перелічених там;
+- регресійні випадки для матриці AUTO проти EXPLICIT (Fix D):
+  - AUTO + основний файл відсутній + немає локального => підтримується,
+    лише built-in;
+  - AUTO + основний файл відсутній + є legacy-локальний =>
+    підтримується, лише legacy-local;
+  - AUTO + основний файл відсутній + є v2-локальний => підтримується,
+    лише v2-local;
+  - EXPLICIT + основний файл відсутній + немає локального => fail
+    closed;
+  - EXPLICIT + основний файл відсутній + є legacy-локальний => fail
+    closed;
+  - EXPLICIT + основний файл відсутній + є v2-локальний => fail
+    closed;
+- покриття стейджування/активації міграції:
+  - стейджування PR B залишає кожен живий файл конфігурації побайтово
+    незмінним;
+  - проміжний кандидат v2 не виявляється продакшн-завантажувачем
+    legacy;
+  - активація PR D просуває повний, узгоджений набір v2;
+  - невдача активації відновлює повний попередній набір legacy;
+  - відкат не може залишити активними обидві локальні назви файлів
+    одночасно;
+  - невалідний v2 ніколи не відкочується до legacy-виконання,
+    повторно перевірено на рівні набору конфігурації, а не лише на
+    рівні одного файлу;
+  - міграція з явним зовнішнім `-ConfigPath` (EXPLICIT) зберігає
+    точний шлях; командний рядок запланованого завдання, що містить
+    `-ConfigPath "<explicit path>"`, незмінний після успішної
+    активації, що зберігає шлях; ручний лаунчер, що використовує
+    явний ефективний шлях конфігурації, залишається валідним;
+    основний файл v2 завантажується саме з цього явного шляху після
+    активації; локальне перевизначення v2 розв'язується поряд з
+    ефективною конфігурацією згідно з контрактом локального файлу v2;
+  - активація відхиляє проміжного кандидата, коли ефективний
+    `-ConfigPath` чи базова лінія джерела змінилися після стейджування
+    (activation path guard вище);
+  - режим AUTO залишається канонічним і не порушується захистом
+    EXPLICIT-шляху;
+  - покриття синхронізації читача/writer'а та відновлення TOCTOU
+    (Fix A): звичайний читач, що отримав спільне блокування до старту
+    активації, не бачить наполовину просунутого стану; активація не
+    починає просування, доки не звільниться будь-яке наявне спільне
+    блокування; жоден новий читач не входить, доки триває активація/
+    відновлення;
+  - покриття верифікації власника активації (Fix B): неавторизований
+    виклик без дійсної ідентичності транзакції відхиляється fail
+    closed; авторизована власником верифікація використовує ту саму
+    реалізацію валідації, що й звичайне завантаження, і не запускає
+    rollback-first відновлення проти власної щойно просунутої
+    транзакції;
+  - покриття авторитетного стану `Committed`/усиновлення (Fix C):
+    аварія до `Committed` залишає усиновлення непідтвердженим і
+    відновлює legacy; аварія після `Committed`, але до оновлення
+    похідного маркера, залишає конфігурацію усиновленою й відновлює
+    похідний маркер з журналу;
+  - покриття переривання/відновлення після аварії: раптове
+    переривання, ін'єктоване (1) після створення журналу, але до
+    будь-якої мутації активного файлу, (2) після просування основного
+    файлу, але до просування локального, (3) під час або після
+    просування локального v2, (4) до/після виведення з експлуатації
+    legacy-локального, (5) після всіх просувань файлів, але до
+    верифікації v2, (6) після верифікації, але до маркера `Committed`,
+    і (7) під час оновлення самого довговічного журналу — після
+    симульованого перезапуску/відновлення кожен випадок повинен
+    довести: відновлення не залежить від пам'яті старого процесу;
+    відновлюється один узгоджений підтримуваний режим конфігурації;
+    жоден змішаний режим legacy/v2 не стає видимим для звичайного
+    завантаження; явний ефективний `-ConfigPath` зберігається;
+    заплановані/персистентні споживачі все ще націлені на валідну
+    конфігурацію; резервна копія/журнал залишаються, якщо відновлення
+    зазнає невдачі; а успішне відновлення ідемпотентне;
+  - ідемпотентність відновлення: саме відновлення перерване, і
+    наступний виклик відновлення все одно безпечно збігається без
+    пошкодження останньої перевіреної резервної копії;
+- прийняття збереження при оновленні (не вимагає real-server
+  acceptance для того, щоб бути задокументованим як «done» на рівні
+  кодової регресії, але real-server acceptance вимагається до того,
+  як це буде описано як доведене в продакшні, згідно з політикою
+  валідації репозиторію).
 
-**PR C — v2 loader introduction (dual-format, not a v2-only cutover)**
+### Рекомендований розподіл PR
 
-- production loader gains a non-executing v2 declarative load path
-  (via the PR A parser) *in addition to*, not instead of, the existing
-  legacy load path — this PR introduces v2 support, it does not remove
-  legacy support;
-- explicit, deterministic format/schema detection selects the v2
-  parser for a v2-shaped file and the existing legacy path for an
-  unconverted installation — the loader does not assume every
-  installation has migrated merely because PR B shipped a migration
-  tool;
-- DATA-only `BRAVO.config` (v2 format) and canonical
-  `BRAVO.config.local` become valid, recognized inputs;
+Віддзеркалює прецедент P0 Foundation (PR A/B/C) за духом, але додає
+окремий PR для міграції, відокремлює безпечний парсер від переходу
+завантажувача та розділяє «v2 стає доступним» від «legacy нарешті
+видалено» на два окремо контрольовані етапи — щоб найризикованіші
+частини (ніколи не викликати недовірений текст конфігурації, і
+залишити немігровану інсталяцію без підтримки) можна було переглянути
+й протестувати окремо, перш ніж щось від них залежатиме.
+
+**Обмеження порядку (чому міграція йде перед переходом):** наявна
+інсталяція все ще може мати виконуваний legacy `BRAVO.config` на
+момент злиття будь-якого з цих PR. Якби продакшн-завантажувач
+перестав приймати legacy-формат (остаточний перехід, див. PR E
+нижче) до появи підтримуваного шляху міграції, `BRAVO.config` такої
+інсталяції не зміг би завантажитися без доступного шляху конвертації
+— змерджений, випущений проміжний стан, що перестає працювати для
+наявних розгортань. Тому робота з міграції/сумісності повинна бути
+доступна *до* остаточного переходу, а не після нього.
+
+**Доступність міграції не є завершенням міграції:** випуск PR B
+робить шлях міграції *доступним*; він не доводить, що будь-яка
+конкретна розгорнута інсталяція насправді його запустила. Прямий
+апгрейд до релізу, що містить PR C чи пізніший, усе ще може
+натрапити на сервер, чий основний файл конфігурації — виконуваний
+legacy `BRAVO.config`, незалежно від того, як довго існує PR B. Тому
+завантажувач повинен продовжувати приймати й коректно завантажувати
+legacy-формат сам по собі, через явне визначення формату/схеми, доки
+відкрите вікно міграції — до окремо контрольованого остаточного
+переходу (PR E), що видаляє підтримку legacy, а не просто тому, що
+вище за течією існує інструмент конвертації. PR B також нічого не
+*активує*: він генерує лише проміжні, неактивні кандидати v2 (див.
+«Міграція: конвертація проти активації» вище) — інсталяція не
+вважається мігрованою просто тому, що для неї згенеровано кандидата;
+вона мігрована лише після успіху контрольованої активації PR D.
+
+**PR A — Безпечний декларативний парсер AST/даних + валідатор схеми**
+
+- безпечний non-executing парсер;
+- вилучення AST/даних;
+- fail-closed контракт синтаксису;
+- визначення схеми Config v2, придатне для повторного використання;
+- повторно використовуваний валідатор схеми (той самий, що й у
+  PR B/PR C — див. «Канонічний конвеєр валідації v2» вище), відхилення
+  невідомих ключів, перевірка типів;
+- юніт-тести парсера й валідатора схеми, включно з доказом
+  non-invocation вище;
+- ще без переходу продакшн-завантажувача — наявна поведінка
+  `BRAVO.config` / `BRAVO.local.config` цим PR не змінюється.
+
+**PR B — Підготовка міграції / сумісності (лише неактивне
+стейджування)**
+
+- точка входу міграції (`BRAVO_CONFIG_MIGRATE.ps1` або канонічний
+  еквівалент репозиторію);
+- шлях конвертації виконуваний legacy `BRAVO.config` → DATA-only v2,
+  що записує лише в неактивне місце стейджування — ніколи в активну
+  назву файлу `BRAVO.config`;
+- шлях конвертації `BRAVO.local.config` → `BRAVO.config.local`, що
+  записує лише в неактивне місце стейджування — ніколи в активну
+  назву файлу `BRAVO.config.local`;
+- dry-run, валідація проміжного кандидата (з використанням парсера
+  PR A і того самого валідатора схеми PR A — див. «Канонічний конвеєр
+  валідації v2»), відкидання/перегенерація;
+- тести еквівалентності legacy-проти-v2 на контрольних фікстурах,
+  прогнані проти проміжного кандидата;
+- застосовує парсер PR A та валідатор схеми PR A до реального/
+  репрезентативного legacy-вводу, не переводячи *продакшн*-
+  завантажувач на нього й не активуючи проміжного кандидата —
+  продакшн-завантажувач у цьому PR продовжує використовувати
+  сьогоднішній шлях виконуваний-`BRAVO.config`/restricted-language-
+  `BRAVO.local.config`, незмінений і неторканий;
+- **жорсткий інваріант: PR B не має можливості активації/просування.**
+  Він не може замінити, перезаписати чи перейменувати проміжний вивід
+  в активні назви файлів `BRAVO.config` / `BRAVO.config.local`, і не
+  надає жодної команди, здатної зробити проміжну пару живою. Див.
+  «Міграція: конвертація проти активації» вище;
+- оскільки PR B ніколи не торкається активного набору конфігурації,
+  продакшн-резервне копіювання/відкат не потрібні лише для створення
+  чи відкидання проміжного кандидата — ця транзакція належить
+  активації міграції (PR D, див. «Активація міграції та відкат»
+  вище);
+- результат: наприкінці цього PR кожна інсталяція, яка пізніше буде
+  переведена, вже має підтримуваний, протестований спосіб *створити
+  й валідувати* кандидата міграції v2 — повністю неактивного — до
+  того, як PR C введе шлях завантаження v2, і задовго до того, як
+  контрольована активація PR D чи остаточний перехід PR E повністю
+  видалить підтримку legacy.
+
+**PR C — Введення завантажувача v2 (двоформатний, не перехід лише
+на v2)**
+
+- продакшн-завантажувач отримує non-executing декларативний шлях
+  завантаження v2 (через парсер PR A і той самий валідатор схеми
+  PR A — жодної другої, дубльованої реалізації схеми) *на додаток
+  до*, а не замість наявного шляху завантаження legacy — цей PR
+  вводить підтримку v2, не видаляючи підтримку legacy;
+- явне, детерміноване визначення формату/схеми обирає парсер v2 для
+  файлу у форматі v2 та наявний шлях legacy для немігрованої
+  інсталяції — завантажувач не припускає, що кожна інсталяція
+  мігрувала просто тому, що PR B випустив інструмент міграції;
+- DATA-only `BRAVO.config` (формат v2) та канонічний
+  `BRAVO.config.local` стають валідними, розпізнаваними вхідними
+  даними;
 - `configSchemaVersion = 2`;
-- `DEFAULT < BRAVO.config < BRAVO.config.local` precedence for
-  installations already on v2;
-- schema validation (unknown keys/types fail closed) for v2 input;
-- re-proves array-replace, explicit `@()`, and the `ExcludedDrives`
-  default on the new load path;
-- **fail-closed rule:** a file that declares itself v2
-  (`configSchemaVersion: 2`) but fails v2 validation must be rejected
-  outright — it must never silently fall back to the legacy executable
-  loader. Format selection is explicit and deterministic; a v2 parse
-  failure is never treated as "try legacy instead";
-- legacy executable `BRAVO.config` / restricted-language
-  `BRAVO.local.config` remain supported through the loader's legacy
-  path during the migration window — PR C does not make v2 "the only
-  accepted loader path"; that is a separate, later gate (see PR E).
+- пріоритет `DEFAULT < BRAVO.config < BRAVO.config.local` для
+  інсталяцій, що вже на v2;
+- валідація схеми (невідомі ключі/типи fail closed) для вводу v2, з
+  використанням того самого валідатора схеми, що й у PR A/PR B — не
+  другої реалізації;
+- повторно доводить заміну масивів, явний `@()` та значення за
+  замовчуванням `ExcludedDrives` на новому шляху завантаження;
+- **правило fail-closed:** файл, що декларує себе v2
+  (`configSchemaVersion: 2`), але не проходить валідацію v2, повинен
+  бути відхилений прямо — він ніколи не повинен мовчки відкочуватися
+  до виконуваного legacy-завантажувача. Вибір формату явний і
+  детермінований; невдача парсингу v2 ніколи не трактується як
+  «спробувати legacy натомість»;
+- виконуваний legacy `BRAVO.config` / restricted-language
+  `BRAVO.local.config` залишаються підтримуваними через legacy-шлях
+  завантажувача протягом вікна міграції — PR C не робить v2 «єдиним
+  прийнятим шляхом завантажувача»; це окремий, пізніший контроль
+  (див. PR E).
 
-**PR D — Path-preserving activation/adoption gate + durable crash recovery + updater preservation + docs/DoD prep**
+**PR D — Контроль активації/усиновлення зі збереженням шляху +
+довговічне відновлення після аварії + збереження при оновленні +
+підготовка документації/DoD**
 
-- migration activation logic implementing the atomic promote/verify/
-  rollback transaction (see "Migration activation and rollback"
-  above), including the activation path guard, the durable write-ahead
-  journal, and rollback-first crash/reboot recovery independent of
-  process memory — this is the first PR authorized to move a staged v2
-  candidate into the active configuration set;
-- activation preserves the effective active primary path (AUTO or
-  EXPLICIT `-ConfigPath`, see "Effective active primary path" above)
-  rather than assuming `<ConfigRoot>\BRAVO.config`, so persisted
-  consumers (scheduled tasks, launchers) remain valid without
-  retargeting;
-- updater preservation regression (see "Updater preservation" above —
-  covers `BRAVO.config`, `BRAVO.config.local`, and legacy
-  `BRAVO.local.config`);
-- operator-facing documentation updated to describe v2 as available
-  (not yet as the only supported path);
-- final regression matrix completed, including the non-invocation
-  proof, the fail-closed-no-fallback-on-invalid-v2 case, and the
-  active-configuration-set-mode matrix (see "Active configuration-set
-  mode" above and the regression list above);
-- a documented, testable mechanism for confirming migration adoption —
-  for example a combination of: confirmed conversion state, an updater
-  preflight that safely migrates before activating the new runtime, a
-  fail-safe automatic migration using the non-executing migration
-  parser, or an explicit deployment/migration marker with rollback;
-- real-server acceptance scheduled separately per repository
-  validation policy;
-- `ROADMAP.md` P3.1 remains IN PROGRESS after this PR — dual-format
-  support is complete and adoption-tracking exists, but the legacy
-  executable loader has not yet been removed.
+- логіка активації міграції, що реалізує атомарну транзакцію
+  просування/перевірки/відкату (див. «Активація міграції та відкат»
+  вище), включно з перевіркою шляху активації, довговічним
+  write-ahead журналом, rollback-first відновленням після
+  аварії/перезавантаження, незалежним від пам'яті процесу, явним
+  контрактом блокування читач/writer із закриттям вікна TOCTOU
+  (Fix A), а також авторизованою власником верифікацією активації
+  (Fix B) — це перший PR, авторизований переміщувати проміжного
+  кандидата v2 в активний набір конфігурації;
+- активація зберігає ефективний активний основний шлях (AUTO чи
+  EXPLICIT `-ConfigPath`, див. «Ефективний активний основний шлях»
+  вище), а не припускає `<ConfigRoot>\BRAVO.config`, тож персистентні
+  споживачі (заплановані завдання, лаунчери) залишаються валідними
+  без перенацілення;
+- регресія збереження при оновленні (див. «Збереження при
+  оновленні» вище — охоплює `BRAVO.config`, `BRAVO.config.local` та
+  legacy `BRAVO.local.config`);
+- операторська документація оновлена, щоб описувати v2 як доступний
+  (ще не як єдиний підтримуваний шлях);
+- завершена фінальна регресійна матриця, включно з доказом
+  non-invocation, випадком fail-closed-no-fallback-on-invalid-v2 та
+  матрицею активного режиму набору конфігурації, включно з виміром
+  наміру AUTO проти EXPLICIT (Fix D — див. «Активний режим набору
+  конфігурації» вище та регресійний перелік вище);
+- задокументований, тестований механізм підтвердження усиновлення
+  міграції, авторитетно похідний із фази журналу `Committed` (Fix C
+  — див. «Активація міграції та відкат» вище) — наприклад, комбінація:
+  підтвердженого стану конвертації, preflight-перевірки updater'а, що
+  безпечно мігрує перед активацією нового рантайму, безпечної
+  автоматичної міграції з використанням non-executing парсера
+  міграції, або явного маркера розгортання/міграції з відкатом;
+- real-server acceptance заплановано окремо згідно з політикою
+  валідації репозиторію;
+- `ROADMAP.md` P3.1 залишається IN PROGRESS після цього PR —
+  двоформатна підтримка завершена й механізм відстеження усиновлення
+  існує, але виконуваний legacy-завантажувач ще не видалено.
 
-**PR E — Final legacy-loader removal / v2-only production cutover**
+**PR E — Остаточне видалення legacy-завантажувача / перехід
+продакшну лише на v2**
 
-- production runtime stops accepting the legacy executable
-  `BRAVO.config` / restricted-language `BRAVO.local.config` load path
-  entirely;
-- may land only after PR D proves path-preserving activation, durable
-  crash recovery, explicit `-ConfigPath` preservation, and migration
-  adoption confirmation, all satisfied and regression-tested — simply
-  having the migration executable on disk (PR B) or the dual-format
-  loader (PR C) is not sufficient justification on its own;
-- after this PR, production runtime must never execute `BRAVO.config`
-  or `BRAVO.config.local` as PowerShell code, and no legacy load path
-  remains;
-- `ROADMAP.md` P3.1 only moves to DONE after this PR.
+- продакшн-рантайм повністю перестає приймати шлях завантаження
+  виконуваний legacy `BRAVO.config` / restricted-language
+  `BRAVO.local.config`;
+- може бути злитий лише після того, як PR D доведе активацію зі
+  збереженням шляху, довговічне відновлення після аварії, збереження
+  явного `-ConfigPath` та підтвердження усиновлення міграції, усе
+  задоволено й регресійно протестовано — самого лише наявного на
+  диску інструменту міграції (PR B) чи двоформатного завантажувача
+  (PR C) недостатньо для обґрунтування;
+- після цього PR продакшн-рантайм ніколи не повинен виконувати
+  `BRAVO.config` чи `BRAVO.config.local` як код PowerShell, і жодного
+  legacy-шляху завантаження не залишається;
+- `ROADMAP.md` P3.1 переходить у DONE лише після цього PR.
 
-Do not combine the v2 loader introduction (PR C) with the parser
-foundation (PR A) in one change — that would make the highest-risk
-piece (parser correctness/non-invocation) harder to review in
-isolation from the lower-risk piece (schema/precedence wiring). Do not
-combine PR C with the migration/compatibility work (PR B) either —
-combining them would re-create the same unsafe intermediate state this
-ordering is meant to avoid, by making it impossible to ship the
-migration path as an independently verifiable, already-available step
-before v2 support depends on it. Do not combine the migration/
-adoption-gating work (PR D) with the final legacy-loader removal
-(PR E) either — collapsing them would remove the separately-testable
-adoption gate this split exists to provide, and would make "migration
-tooling exists" indistinguishable from "this installation has
-migrated," which is exactly the conflation this document must avoid.
+Не поєднуйте введення завантажувача v2 (PR C) з основою парсера
+(PR A) в одній зміні — це ускладнило б перегляд найризикованішої
+частини (коректність/non-invocation парсера) окремо від частини з
+нижчим ризиком (схема/підключення пріоритету). Не поєднуйте PR C з
+роботою з міграції/сумісності (PR B) також — їх поєднання відтворило
+б той самий небезпечний проміжний стан, якого цей порядок покликаний
+уникнути, зробивши неможливим постачання шляху міграції як незалежно
+перевірюваного, вже доступного кроку до того, як від нього залежатиме
+підтримка v2. Не поєднуйте роботу з контролю міграції/усиновлення
+(PR D) з остаточним видаленням legacy-завантажувача (PR E) також — їх
+злиття усунуло б окремо тестований контроль усиновлення, для якого
+існує цей поділ, і зробило б «інструмент міграції існує» невідрізненим
+від «ця інсталяція мігрувала», що є саме тим змішуванням, якого цей
+документ повинен уникати.
 
-Each PR should independently pass the narrowest relevant self-test
-subset plus a full `BRAVO_SELF_TEST.ps1` run before merge, and must be
-green on the full required-check set before merge to `developer`/
-`master` — `RELEASE_POLICY.md` (branch-protection section) lists the
-current required checks: "Parser / BOM / JSON", "PSScriptAnalyzer",
-"BRAVO_SELF_TEST.ps1", "Secret scanning (gitleaks)", "GitGuardian
-Security Checks". (Do not cite `.claude/rules/*` here — that directory
-is a local, untracked agent-tooling convention, not a committed
-repository policy a contributor checking out this commit can read.)
+Кожен PR повинен незалежно проходити найвужчу відповідну підмножину
+self-test плюс повний прогін `BRAVO_SELF_TEST.ps1` перед злиттям і
+повинен бути зеленим за повним набором обов'язкових перевірок перед
+злиттям у `developer`/`master` — `RELEASE_POLICY.md` (розділ захисту
+гілок) перелічує поточні обов'язкові перевірки: "Parser / BOM / JSON",
+"PSScriptAnalyzer", "BRAVO_SELF_TEST.ps1", "Secret scanning
+(gitleaks)", "GitGuardian Security Checks". (Не посилайтеся тут на
+`.claude/rules/*` — цей каталог є локальною, незакомміченою
+конвенцією інструментарію агента, а не закомміченою політикою
+репозиторію, яку контриб'ютор, що робить checkout цього коміту, може
+прочитати.)
 
-## Final target contract (for reference — not yet fully implemented)
+## Фінальний цільовий контракт (для довідки — ще не повністю реалізовано)
 
 ```text
 Built-in defaults are complete (part of the package, not a file).
@@ -879,41 +1121,42 @@ Runtime derivation happens after raw merge.
 Secrets remain outside config.
 ```
 
-Of this contract, today the following already hold in production:
+З цього контракту сьогодні в продакшні вже виконується таке:
 
-- built-in defaults are complete;
-- `BRAVO.config` is optional;
-- `DEFAULT < BRAVO.config < BRAVO.local.config` (current file name;
-  the v2 file is `BRAVO.config.local`, not yet shipped);
-- runtime derivation happens after raw merge;
-- secrets remain outside config (Windows Credential Manager);
-- `Limits.ExcludedDrives` default is `@()` — already true today, not
-  a v2-only gap;
-- arrays replace, not merge — already true today in the Foundation
-  merge engine, not a v2-only gap;
-- explicit `@()` is a valid override — already true today, not a
-  v2-only gap.
+- вбудовані значення за замовчуванням повні;
+- `BRAVO.config` опціональний;
+- `DEFAULT < BRAVO.config < BRAVO.local.config` (поточна назва файлу;
+  файл v2 — це `BRAVO.config.local`, ще не випущений);
+- похідні обчислення рантайму виконуються після сирого мерджу;
+- секрети залишаються поза конфігурацією (Windows Credential
+  Manager);
+- значення за замовчуванням `Limits.ExcludedDrives` дорівнює `@()` —
+  уже правда сьогодні, не прогалина, специфічна лише для v2;
+- масиви замінюють, а не мерджуються — уже правда сьогодні в
+  мердж-рушії Foundation, не прогалина, специфічна лише для v2;
+- явний `@()` є валідним перевизначенням — уже правда сьогодні, не
+  прогалина, специфічна лише для v2.
 
-What remains target-only (not yet true in production):
+Що залишається лише цільовим (ще не є правдою в продакшні):
 
-- `BRAVO.config` itself is DATA, not CODE (it is still an executable
-  script today);
-- the runtime never *invokes* configuration files as code — today's
-  `BRAVO.local.config` reader validates-then-invokes, which is
-  narrower than "never invoke";
+- сам `BRAVO.config` є ДАНИМИ, а не КОДОМ (сьогодні це все ще
+  виконуваний скрипт);
+- рантайм ніколи не *викликає* файли конфігурації як код —
+  сьогоднішній читач `BRAVO.local.config` перевіряє-потім-викликає,
+  що вужче за «ніколи не викликати»;
 - `configSchemaVersion = 2`;
-- `BRAVO.config.local` exists as a shipped file name;
-- unknown-key / type validation enforced through the v2 schema;
-- the full v2 Definition-of-Done regression matrix, including the
-  non-invocation proof, run against the v2 load path specifically.
+- `BRAVO.config.local` існує як назва файлу, що постачається;
+- перевірка невідомих ключів / типів, застосована через схему v2;
+- повна регресійна матриця Definition-of-Done для v2, включно з
+  доказом non-invocation, прогнана саме проти шляху завантаження v2.
 
-## See also
+## Див. також
 
-- `docs/design/BRAVO_CONFIGURATION_FOUNDATION_DESIGN.md` — historical
-  architecture gate for the completed P0 Foundation work.
-- `TODO_FEATURES.md`, FEAT-001 — original feature request and detailed
-  backlog notes.
-- `ROADMAP.md`, P3.1 — canonical current priority/status.
-- `CHANGELOG.md`, "Не випущено (developer)" — as-built record of what
-  actually shipped for P0 Foundation, including deviations from the
-  original design.
+- `docs/design/BRAVO_CONFIGURATION_FOUNDATION_DESIGN.md` — історичний
+  архітектурний рубіж для завершеної роботи P0 Foundation.
+- `TODO_FEATURES.md`, FEAT-001 — оригінальний запит на функціонал і
+  детальні нотатки бекложа.
+- `ROADMAP.md`, P3.1 — канонічний поточний пріоритет/статус.
+- `CHANGELOG.md`, "Не випущено (developer)" — запис фактично
+  реалізованого для P0 Foundation, включно з відхиленнями від
+  початкового дизайну.
