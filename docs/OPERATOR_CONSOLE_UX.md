@@ -382,7 +382,7 @@ Tasks Install показує окремо infrastructure stages і резуль�
 
 Завдання:
 
-  BRAVO_ARCHIVE
+  BRAVO_ARCHIV
     Статус:       INSTALLED
     Обліковий:    NT AUTHORITY\SYSTEM
     Наступний:    08.08.2026 02:30
@@ -392,7 +392,7 @@ Tasks Install показує окремо infrastructure stages і резуль�
     Обліковий:    NT AUTHORITY\SYSTEM
     Наступний:    08.08.2026 01:00
 
-  BRAVO_HEALTH
+  BRAVO_ARCHIV_HEALTH
     Статус:       INSTALLED
     Обліковий:    NT AUTHORITY\SYSTEM
     Наступний:    07.08.2026 15:00

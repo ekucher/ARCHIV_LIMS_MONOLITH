@@ -17,7 +17,7 @@
 
 До функціональних областей toolkit належать Archive, Health, Maintenance, DataRestore, BazaSync, Notifications, Credentials, Discovery, ExitCodes, Console, Compatibility, System та інші модулі простору імен `BRAVO.*`.
 
-Завантаження і нормалізація конфігурації (`BRAVO.config`) — свідомий виняток із правила «логіка в `modules/`»: канонічний власник — кореневий `BRAVO_CONFIG_LOADER.ps1`, окремого модуля `BRAVO.Configuration` не існує.
+Канонічні built-in дефолти й deterministic deep merge конфігурації живуть у `modules/BRAVO.Configuration/` (`BRAVO.Configuration.psm1`, `BRAVO.Configuration.Derivation.psm1`); orchestration і snapshot-виконання опційного `BRAVO.config`/`BRAVO.local.config` лишається за кореневим `BRAVO_CONFIG_LOADER.ps1`, який імпортує цей модуль. Детальніше — `docs/design/BRAVO_CONFIGURATION_FOUNDATION_DESIGN.md`.
 
 Назва `Archive` використовується для конкретної функції резервного копіювання і не є назвою всього проєкту.
 

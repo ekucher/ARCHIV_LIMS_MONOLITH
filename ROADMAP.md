@@ -208,6 +208,58 @@ release-manifest.json
 
 Цей пункт може бути реалізований разом із P0.3, якщо storage architecture дозволяє.
 
+### P1.4 — SELF_TEST fail-fast structural validation і timing telemetry
+
+**Статус: DONE** (PR #138, змерджено в `developer` 2026-09-09, squash
+commit `57b16cba77ea4f30fa4464a9be2d8bfa122c132a`).
+
+Реалізовано:
+
+- рання fail-closed structural preflight (runtime manifest integrity,
+  обов'язкові manifest-файли, синтаксис production `*.Runtime.ps1`,
+  критичний JSON) на bootstrap-межі, до імпорту manifest-covered
+  helper-модулів;
+- контрольований (не uncontrolled exception) fail-closed шлях для
+  bootstrap integrity-scan збоїв;
+- Phase 0 short-circuit: структурний провал зупиняє доменні тести й
+  виходить через стандартний report-шлях;
+- diagnostic timing telemetry: total wall-clock, per-suite wall-clock,
+  `Root (inline)` wall-clock, assertion interval telemetry, Top 20
+  найдовших assertion-інтервалів;
+- framework-регресії для bootstrap integrity, tampered manifest-covered
+  helper, invalid bootstrap manifest, Phase 0 short-circuit, fixture
+  setup/cleanup провалів (включно з ACL/access-denied cleanup-станами
+  і TEMP-незалежним fixture setup через `[IO.Path]::GetTempPath()`).
+
+Final validation evidence: `PASS: 1893, FAIL: 0, Exit: 0, Total
+wall-clock: 00:07:57.113`.
+
+**Важливо:** ця telemetry — вимірювання/діагностика, НЕ P1
+performance optimization. `SELF_TEST` не став суттєво швидшим
+внаслідок цього PR; він лише отримав інструменти для вимірювання, де
+саме витрачається час. Проблема довгого `SELF_TEST` (P1.5 нижче)
+залишається відкритою.
+
+### P1.5 — SELF_TEST performance optimization
+
+**Статус: TODO / PLANNED.** Окремо від P1.4 (яка додала лише
+вимірювання, не пришвидшення).
+
+Можливі напрями (жоден ще не реалізований):
+
+- AST/text caching для повторюваних parse-операцій;
+- `-Suite` / `-Affected` — вибіркове виконання підмножини тестів;
+- оптимізація runtime child-process smoke-test фікстур;
+- декомпозиція кореневого `BRAVO_SELF_TEST.ps1` на менші одиниці
+  виконання без втрати hermetic-гарантій;
+- скорочення/видалення непотрібних `Start-Sleep`-очікувань там, де
+  timing telemetry (P1.4) підтверджує, що вони не потрібні;
+- безпечний паралелізм там, де fixture-ізоляція це дозволяє.
+
+Використовувати timing telemetry з P1.4 (per-suite wall-clock, Top 20
+найдовших assertion-інтервалів) як evidence base для пріоритизації
+цієї роботи, а не здогадки.
+
 ## P2 — централізована експлуатація
 
 ### P2.1 — Machine-readable health/status contract
@@ -274,11 +326,35 @@ Telemetry залишається outbound-only і не перетворюєть�
 
 ### P3.1 — Config v2
 
+**Статус: Foundation completed; final declarative Config v2 completion
+pending.**
+
 FEAT-001 із `TODO_FEATURES.md` залишається важливим, але не випереджає production safety та restore verification.
 
 Ціль: package defaults + site-local data-only overrides + deterministic schema validation + legacy migration.
 
-Починати після стабілізації P0/P1, якщо ручний merge `BRAVO.config` продовжує створювати реальний операційний ризик.
+**P0 Configuration Foundation — DONE** (змерджено в `developer`):
+canonical built-in defaults, deterministic deep merge (array replace,
+явний `@()` — валідний override, `Limits.ExcludedDrives` дефолт —
+`@()`), опційний `BRAVO.config`, `-ConfigPath` AUTO/EXPLICIT-контракт,
+derivation після merge, post-merge security-invariant re-validation,
+restricted-language `BRAVO.local.config` (dot-шлях → значення):
+`CheckRestrictedLanguage` з порожнім allow-list відкидає будь-який код
+до виконання, але сам validated `ScriptBlock` усе ще ВИКОНУЄТЬСЯ
+(`& $scriptBlock`) — це не те саме, що non-executing AST-only parser
+(цільовий Config v2 контракт нижче). Precedence сьогодні: `DEFAULT <
+BRAVO.config (опційно) < BRAVO.local.config (опційно)`. Деталі —
+`docs/design/BRAVO_CONFIGURATION_FOUNDATION_DESIGN.md`.
+
+**Config v2 — IN PROGRESS / не завершено.** `BRAVO.config` сам
+залишається виконуваним PowerShell-скриптом (не DATA-only),
+`VERSION.json.configSchemaVersion` = `1`, файл `BRAVO.config.local`
+(цільова v2-назва) у runtime ще не існує. Повний перелік
+залишкових gaps, target architecture, safe declarative parser
+requirement, schema v2, migration і DoD regression matrix —
+`docs/design/BRAVO_CONFIGURATION_V2_COMPLETION.md`.
+
+Починати наступний PR-цикл після стабілізації P0/P1, якщо ручний merge `BRAVO.config` продовжує створювати реальний операційний ризик.
 
 ### P3.2 — Atomic versioned deployment / rollback
 

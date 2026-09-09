@@ -1,6 +1,44 @@
 # BRAVO Configurator — Architecture Freeze (Agent 0)
 
-Статус: **DRAFT — architecture freeze для перегляду перед стартом Agent 1-6.**
+> Статус (оновлено): architecture freeze (§1-9) завершено, і весь описаний
+> цикл реалізовано й змерджено в `developer`: PR #112 (P0 backend), PR #113
+> (P1 UI/Presets/Credentials/Preview), PR #114 (WinForms closure-scope fix),
+> PR #115 (P2-A reliability/UX correctness), PR #116 (P2-B responsive/DPI/
+> accessibility), PR #117 (preset/BAZA-local addendum). `BRAVO_CONFIGURATOR.ps1`
+> і `modules/BRAVO.Configurator/*` існують у `developer` (див. CHANGELOG.md,
+> розділ «Не випущено (developer)», запис про `BRAVO_CONFIGURATOR.ps1`).
+>
+> **IMPLEMENTATION MERGED.** Описаний тут implementation scope (backend,
+> UI, Presets, Credentials, Preview, responsive/DPI-safe WinForms) змерджено
+> в `developer`. Відповідні implementation PR містять зафіксовані
+> automated/headless (`selftest\BRAVO_SELF_TEST.ConfiguratorUI.ps1` та
+> суміжні), launch-smoke та static-analysis (`PSScriptAnalyzer`) перевірки
+> там, де вони були застосовні — це НЕ універсальний claim, що кожен PR
+> #112–#117 окремо пройшов ідентичний набір перевірок; таке per-PR
+> підтвердження не встановлювалось.
+>
+> **MANUAL / INTERACTIVE ACCEPTANCE — НЕ ПІДТВЕРДЖЕНО.** Merge implementation
+> сам по собі НЕ доводить, що пізніші manual/interactive acceptance-кроки
+> виконано. §12.6 нижче явно фіксує **NOT EXECUTED** у сесії PR #116
+> (P2-B): інтерактивний click-through (Tab-навігація, Boolean tri-state
+> через реальний UI, invalid-input-повідомлення, Preview-resize, F1/Ctrl+F
+> наживо), візуальна перевірка кирилиці/clipping/scrollbars, і DPI
+> 100/125/150% матриця. Перевірено (`git log --oneline --merges`,
+> `CHANGELOG.md`, увесь `docs/**`) — жодного пізнішого PR або запису з
+> фактичним evidence цих manual/DPI-кроків не знайдено; їх завершення
+> **не варто вважати доведеним** без окремого owner-підтвердженого
+> acceptance-запису.
+>
+> Розділи нижче (початково §9 "Відкрите питання для власника перед стартом
+> Agent 1-6", і end-of-§12.6 "STOP після звіту, без merge") збережено як
+> historical design-gate record того, що обговорювалось/вирішувалось на
+> кожному етапі; в частині "implementation merged" вони більше не
+> відображають поточний production-стан (backend/UI/Presets/Credentials/
+> Preview вже змерджені), але в частині "manual/DPI acceptance NOT
+> EXECUTED" (§12.6) вони лишаються актуальними — цей пробіл не закрито.
+
+Статус (первинний): **DRAFT — architecture freeze для перегляду перед
+стартом Agent 1-6.**
 Гілка: `feat/bravo-configurator` (первинно базована на `origin/developer` @
 `9d0ece8`; перебазована на `origin/developer` @ `0e63fdc` після інтеграції
 `hotfix/5.2.2` — PR #111, "P0 reconciliation after 5.2.2" нижче, §2).

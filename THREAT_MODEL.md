@@ -80,8 +80,9 @@ version-controlled еталонні SHA-256 усіх семи виконуван
 **Наслідки.** Ті самі, що й 2: довільний код від `SYSTEM`.
 
 **Що реалізовано** (`SECURITY.md` розділ 4.1): `RUNTIME_MANIFEST.json`
-на 54 файли, перевірка `BRAVO_RUNTIME_GUARD.ps1` **до `Import-Module`**,
-код завершення `33`.
+на 121 файл (перелік росте разом із кодовою базою — точне число завжди
+звіряйте з `files` у самому manifest-і), перевірка
+`BRAVO_RUNTIME_GUARD.ps1` **до `Import-Module`**, код завершення `33`.
 
 Завантаження guard-а fail-closed: `Test-Path` підтверджує лише наявність
 файлу, тому dot-source обгорнуто в `try/catch`, а наявність усіх трьох

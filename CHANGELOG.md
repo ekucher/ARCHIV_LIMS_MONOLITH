@@ -2,6 +2,31 @@
 
 ## Не випущено (developer)
 
+- **SELF_TEST: fail-fast structural preflight і diagnostic timing
+  telemetry (PR #138)** — рання fail-closed structural перевірка
+  (runtime manifest integrity, обов'язкові manifest-файли, синтаксис
+  production `*.Runtime.ps1`, критичний JSON) на bootstrap-межі, до
+  імпорту manifest-covered helper-модулів; bootstrap integrity-scan
+  збої тепер контрольований fail-closed шлях замість uncontrolled
+  exception; Phase 0 short-circuit зупиняє доменні тести при провалі
+  структурної перевірки. Додано diagnostic timing telemetry: total
+  wall-clock (заморожується одразу після закриття останнього suite
+  span, до рендерингу звіту), per-suite wall-clock, `Root (inline)`
+  wall-clock, assertion interval telemetry, Top 20 найдовших
+  assertion-інтервалів — вимірювання/діагностика, не оптимізація
+  швидкості; `SELF_TEST` не пришвидшився внаслідок цього PR
+  (P1 SELF_TEST performance optimization лишається окремим відкритим
+  пунктом, `ROADMAP.md` P1.5). Розширено framework-регресії для
+  bootstrap integrity, tampered manifest-covered helper, invalid
+  bootstrap manifest, Phase 0 gate, fixture setup/cleanup провалів
+  (включно з ACL/access-denied cleanup-станами — раніше
+  `[IO.Directory]::Exists`-precheck хибно звітував `Success=$true` на
+  недоступному через ACL каталозі без спроби видалення — і TEMP-
+  незалежним fixture setup через `[IO.Path]::GetTempPath()`
+  всередині guarded `try`). Final validation: `PASS: 1893, FAIL: 0,
+  Exit: 0, Total wall-clock: 00:07:57.113`. Змерджено squash-комітом
+  `57b16cba77ea4f30fa4464a9be2d8bfa122c132a`.
+
 - **Тест-ізоляція VersionState (SELFTEST-SAFETY-0 v1.4)** — сесійний
   кортеж із трьох env-змінних `BRAVO_SELFTEST_SESSION_ID` (GUID) +
   `BRAVO_SELFTEST_ROOT` (абсолютний локальний шлях з basename рівно
