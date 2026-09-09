@@ -1,4 +1,4 @@
-# BRAVO Operator Console UX
+# BRAVO — UX консолі оператора
 
 Цей документ фіксує цільову візуальну мову та operator-facing UX для ручних запусків основних BRAVO-скриптів. Він доповнює `docs/MANUAL_RUN_CONSOLE_UX.md`, який лишається детальним контрактом для `BRAVO_ARCHIV.ps1`.
 
@@ -407,7 +407,7 @@ Tasks Install показує окремо infrastructure stages і резуль�
 ------------------------------------------------------------
 ```
 
-## 10. Implementation direction
+## 10. Напрям реалізації
 
 Ці UX-контракти мають реалізовуватися через спільний console/result layer, а не копіюванням `Write-Host` у кожний script.
 

@@ -1,4 +1,4 @@
-# BRAVO Configurator — Architecture Freeze (Agent 0)
+# BRAVO Configurator — заморозка архітектури (Agent 0)
 
 > Статус (оновлено): architecture freeze (§1-9) завершено, і весь описаний
 > цикл реалізовано й змерджено в `developer`: PR #112 (P0 backend), PR #113
@@ -44,7 +44,7 @@
 `hotfix/5.2.2` — PR #111, "P0 reconciliation after 5.2.2" нижче, §2).
 Не чіпає `master`/RC-гілки; не змінює production runtime.
 
-## 1. Canonical source of truth (verified, не припущення)
+## 1. Канонічне джерело істини (verified, не припущення)
 
 - **`BRAVO.config`** (1288 рядків) — canonical defaults. Виконується як PowerShell
   script з `param(ConfigRoot, RuntimeRoot)`; містить ~50 `$global:*Settings`
@@ -213,7 +213,7 @@ Model → {Schema, Effective, Validation} → Persistence`. UI ніколи не
 `BRAVO.local.config.example`/`BRAVO.config`; не вигадувати нові формулювання,
 що суперечать існуючій документації.
 
-## 5. Model API contract (Agent 2)
+## 5. Контракт Model API (Agent 2)
 
 Одна `Setting` (immutable snapshot + explicit mutation function, без
 прихованого стану):
@@ -235,7 +235,7 @@ Clear-BRAVOConfiguratorOverride -Model -Path        -> Model'  (OverridePresent=
 Update-BRAVOConfiguratorEffective -Model            -> Model'  (перераховує §2 child-процесом; batched, не per-keystroke)
 ```
 
-## 6. Persistence transaction (Agent 3)
+## 6. Persistence-транзакція (Agent 3)
 
 15-крокова pipeline із задачі §5.2: Load → baseline hash → candidate (temp,
 зі збереженням невідомих/newer ключів — §5.1) → parse
@@ -316,14 +316,14 @@ REAL_SERVER-залежна частина `BRAVO_DRY_RUN.ps1` (Scheduled Tasks/�
 config-семантичної валідації; вона й далі відсутня для REAL_SERVER-класу
 перевірок, які ніколи не були частиною Apply-контракту цього backend-а.
 
-## 7. UI navigation map
+## 7. Мапа навігації UI
 
 Приймається без змін навігаційна структура з §6 задачі (10 груп: Загальні /
 Шляхи та дані / Компоненти / Maintenance / Storage / Health / Scheduler /
 Console-Logging / Credentials / Effective configuration) — узгоджується з
 138-key inventory (§1, після P0 reconciliation).
 
-## 8. Test plan (Agent 7)
+## 8. План тестування (Agent 7)
 
 Мінімум із §22 вихідного документа, плюс: **regression test для §2 Effective
 child-process механізму** — canonical loader, викликаний Configurator-ом,

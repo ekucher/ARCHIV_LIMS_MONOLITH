@@ -1,4 +1,4 @@
-# BRAVO Configuration Foundation — architecture gate (P0)
+# BRAVO Configuration Foundation — архітектурний gate (P0)
 
 > Статус (оновлено, атрибуцію звірено з `git show --stat` реальних merge
 > commits #128/#129, а не лише з opening-задуму): PR A = PR #127
