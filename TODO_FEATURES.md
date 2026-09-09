@@ -73,8 +73,9 @@ backlog-нотатки; канонічний поточний пріоритет
       `BRAVO.local.config.example` (інший формат/назва). PLANNED, якщо
       Config v2 обиратиме саме `.psd1`-подання.
 - [x] Deterministic deep merge реалізовано (`Merge-BRAVOConfiguration`).
-      Schema validation (unknown-key/type rejection у v2-сенсі) —
-      **не реалізовано**, PLANNED (`configSchemaVersion` лишається `1`).
+- [ ] Config v2 schema validation (unknown-key rejection, type
+      validation, `configSchemaVersion = 2`) — **не реалізовано**,
+      PLANNED (`configSchemaVersion` лишається `1`).
 - [ ] Config v2 як non-executing data-only формат для `BRAVO.config`
       **не реалізовано** — сам `BRAVO.config` досі виконуваний
       PowerShell-скрипт. `BRAVO.local.config` (окремий, вже наявний
