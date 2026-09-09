@@ -273,9 +273,12 @@ Operator-facing documentation (`README.md`, `BRAVO_SETUP.md`,
 
 - `BRAVO.local.config` is not deleted the moment v2 ships; it remains
   readable/supported for a migration window;
-- a migration procedure (dry-run, backup, rollback — mirroring the
+- a migration procedure (dry-run, staged conversion — mirroring the
   FEAT-001 target model in `TODO_FEATURES.md`) converts an existing
-  `BRAVO.local.config` into the v2 shape;
+  `BRAVO.local.config` into a staged, inactive `BRAVO.config.local`
+  candidate (see "Migration: conversion vs activation" below); backup
+  and rollback apply to the later activation transaction, not to
+  producing the staged candidate itself;
 - legacy and v2 must produce an equivalent effective configuration on
   control fixtures during the transition window.
 
@@ -296,6 +299,50 @@ two paths must stay strictly separated:
   path. A file does not become executable merely because its v2
   parsing failed.
 
+### Active configuration-set mode (format detection contract)
+
+The loader may classify individual files, but before merging or
+invoking any layer it must determine **one coherent active
+configuration mode** for the installation. It must never
+independently choose legacy for one active layer and v2 for another
+and silently merge the mixed result.
+
+**Format detection is always non-executing.** Classifying
+`BRAVO.config` as legacy or v2 must never execute the file to
+discover its format — detection uses static inspection (e.g. an
+explicit `configSchemaVersion` marker found via AST/non-executing
+parse), consistent with the fail-closed rule above: an invalid v2
+file is never silently retried as legacy execution, and a file is
+never executed merely to determine what it is.
+
+**Supported active modes:**
+
+| # | `BRAVO.config` | `BRAVO.local.config` | `BRAVO.config.local` | Result | Precedence |
+|---|---|---|---|---|---|
+| A | absent | absent | absent | SUPPORTED — built-in-only (format-neutral) | `DEFAULT` |
+| B | recognized legacy | absent | absent | SUPPORTED — LEGACY MODE | current legacy precedence, unchanged |
+| C | recognized legacy | present | absent | SUPPORTED — LEGACY MODE | current legacy precedence, unchanged during the migration window |
+| D | absent | present | absent | SUPPORTED — LEGACY MODE (already-supported built-in + local override path) | `DEFAULT < BRAVO.local.config` |
+| E | valid v2 | absent | absent | SUPPORTED — V2 MODE | `DEFAULT < BRAVO.config` |
+| F | valid v2 | absent | valid v2 | SUPPORTED — V2 MODE | `DEFAULT < BRAVO.config < BRAVO.config.local` |
+| G | absent | absent | valid v2 | SUPPORTED — V2 MODE (site-level override remains optional) | `DEFAULT < BRAVO.config.local` |
+
+**Explicitly forbidden mixed modes — fail closed, no implicit precedence:**
+
+| Combination | Result |
+|---|---|
+| legacy `BRAVO.config` + `BRAVO.config.local` | UNSUPPORTED MIXED MODE — FAIL CLOSED. Never execute the legacy primary and then merge a v2 local override. |
+| v2 `BRAVO.config` + `BRAVO.local.config` | UNSUPPORTED MIXED MODE — FAIL CLOSED. Never parse the v2 primary and then invoke a legacy local override. |
+| `BRAVO.local.config` + `BRAVO.config.local` both present | CONFLICT — FAIL CLOSED. There is no implicit "new filename wins", "legacy filename wins", or "newest file wins" rule; the operator/updater must explicitly complete migration or roll back. |
+| `BRAVO.config` claims v2 (`configSchemaVersion: 2`) but fails v2 validation | FAIL CLOSED — never falls back to legacy execution (see "Legacy/v2 security boundary during transition" above). |
+| `BRAVO.config` format is unknown/ambiguous | FAIL CLOSED. |
+
+`BRAVO.local.config` is the legacy-only machine-local filename during
+the transition window; `BRAVO.config.local` is the v2-only
+machine-local filename. If both are present this is a configuration
+**conflict**, not a precedence question — the two filenames are
+format-specific, not synonyms with an implicit tie-break.
+
 ### Schema v2
 
 - explicit `configSchemaVersion: 2` marker, validated on load;
@@ -311,14 +358,47 @@ two paths must stay strictly separated:
 - `Limits.ExcludedDrives` default is `@()` — **already the built-in
   default today**; schema v2 must not regress this.
 
-### Migration
+### Migration: conversion vs activation
+
+Migration has two distinct stages that must not be conflated:
+
+```text
+CONVERSION:
+legacy config -> validated staged v2 candidate
+
+ACTIVATION:
+staged v2 candidate -> active production v2 configuration
+```
+
+**Conversion / staging (available starting PR B):**
 
 - `BRAVO_CONFIG_MIGRATE.ps1` (or the equivalent canonical migration
   entrypoint, per repository entrypoint conventions) converts only
   explicitly-identified site-specific fields;
 - discovered/generated values never become permanent overrides through
   migration;
-- the pre-migration file is preserved as a backup, not deleted.
+- the source legacy file(s) are read but never modified by conversion;
+- the converted candidate is written to an inactive staging
+  location — a pathname the current production loader does not
+  consume — never to the active `BRAVO.config` / `BRAVO.config.local`
+  production filenames;
+- the staged candidate is validated with the PR A non-executing parser
+  and compared against the legacy effective configuration for
+  equivalence before it is treated as a valid candidate;
+- a staged candidate may be discarded and regenerated at any time
+  without affecting the active installation; the pre-migration source
+  file is left untouched, not merely "preserved as a backup";
+- conversion alone never changes what the production loader reads.
+
+**Activation (available starting PR D, explicitly gated — see
+"Migration activation and rollback" below):**
+
+- promotes a validated staged candidate into the active
+  `BRAVO.config` / `BRAVO.config.local` pair;
+- requires the PR C dual-format reader to already be present in the
+  running installation;
+- is a distinct, later, explicitly-gated operation — conversion alone
+  (PR B) grants no ability to activate.
 
 ### Updater preservation
 
@@ -342,6 +422,38 @@ two paths must stay strictly separated:
      unchanged until explicitly migrated;
   4. a legacy executable `BRAVO.config` is never silently replaced by
      a package-provided v2 file.
+
+Routine in-place package updates (not a migration activation) never
+change the active configuration-set mode; the backup/rollback
+transaction described in "Migration activation and rollback" below
+applies specifically to migration activation, not to every update.
+
+### Migration activation and rollback (PR D)
+
+Activation promotes a validated staged v2 candidate (see "Migration:
+conversion vs activation" above) into the live configuration set. It
+operates on the complete configuration set as one transaction, never
+file-by-file best effort:
+
+1. validate the current active legacy set;
+2. validate the complete staged v2 candidate;
+3. create a backup of the complete active set;
+4. promote all required candidate files;
+5. ensure no conflicting legacy/v2 local filenames remain active (see
+   "Active configuration-set mode" above — activation must not leave a
+   forbidden mixed mode in place);
+6. load through the v2 path;
+7. verify effective-configuration equivalence and required invariants;
+8. mark migration adoption confirmed only after successful
+   verification.
+
+If any step fails, the complete previous configuration set is
+restored — rollback is set-level, restoring one coherent prior mode
+(for example, "legacy primary + legacy local" is restored together if
+that was the pre-migration state), never a partial mixed result. A
+rollback must never leave both `BRAVO.local.config` and
+`BRAVO.config.local` active at once, unless one of them resides only
+in an explicitly inactive backup/staging area.
 
 ### Regression / Definition-of-Done requirements
 
@@ -370,6 +482,19 @@ following must exist and pass:
   declaring `configSchemaVersion: 2` that fails v2 validation is
   rejected outright and never silently falls back to the legacy
   executable loader;
+- active-configuration-set-mode coverage (see "Active
+  configuration-set mode" above), covering all seven supported
+  combinations and all five fail-closed combinations enumerated there;
+- migration staging/activation coverage:
+  - PR B staging leaves every live configuration file byte-for-byte
+    unchanged;
+  - a staged v2 candidate is not discoverable by the legacy production
+    loader;
+  - PR D activation promotes a complete, coherent v2 set;
+  - an activation failure restores the complete previous legacy set;
+  - rollback cannot leave both local filenames active at once;
+  - invalid v2 never falls back to legacy execution, re-verified at
+    the configuration-set level, not just the single-file level;
 - updater preservation acceptance (does not require real-server
   acceptance to be documented as "done" for the code-level regression,
   but real-server acceptance is required before this is described as
@@ -405,7 +530,11 @@ continue to accept and correctly load the legacy format itself,
 through explicit format/schema detection, for as long as the migration
 window is open — until the separately-gated final cutover (PR E)
 removes legacy support, not merely because conversion tooling exists
-upstream.
+upstream. Nor does PR B *activate* anything: it produces staged,
+inactive v2 candidates only (see "Migration: conversion vs
+activation" above) — an installation is not migrated merely because a
+candidate has been generated for it; it is migrated only after PR D's
+gated activation succeeds.
 
 **PR A — Safe declarative AST/data parser**
 
@@ -416,22 +545,38 @@ upstream.
 - no production loader cutover yet — existing `BRAVO.config` /
   `BRAVO.local.config` behavior is unchanged by this PR.
 
-**PR B — Migration / compatibility preparation**
+**PR B — Migration / compatibility preparation (inactive staging only)**
 
 - migration entrypoint (`BRAVO_CONFIG_MIGRATE.ps1` or the repository's
   canonical equivalent);
-- legacy executable `BRAVO.config` → v2 DATA-only conversion path;
-- `BRAVO.local.config` → `BRAVO.config.local` conversion path;
-- dry-run, backup, rollback;
-- legacy-vs-v2 equivalence tests on control fixtures;
+- legacy executable `BRAVO.config` → v2 DATA-only conversion path,
+  writing to an inactive staging location only — never to the active
+  `BRAVO.config` filename;
+- `BRAVO.local.config` → `BRAVO.config.local` conversion path, writing
+  to an inactive staging location only — never to the active
+  `BRAVO.config.local` filename;
+- dry-run, staged-candidate validation, discard/regenerate;
+- legacy-vs-v2 equivalence tests on control fixtures, run against the
+  staged candidate;
 - exercises the PR A parser against real/representative legacy input
-  without cutting the *production* loader over to it — the production
-  loader still uses today's executable-`BRAVO.config`/restricted-
-  language-`BRAVO.local.config` path in this PR;
+  without cutting the *production* loader over to it and without
+  activating the staged candidate — the production loader still uses
+  today's executable-`BRAVO.config`/restricted-language-
+  `BRAVO.local.config` path in this PR, unchanged and untouched;
+- **hard invariant: PR B has no activation/promote capability.** It
+  cannot replace, overwrite, or rename staged output into the active
+  `BRAVO.config` / `BRAVO.config.local` filenames, and exposes no
+  command that can make the staged pair live. See "Migration:
+  conversion vs activation" above;
+- because PR B never touches the active configuration set, production
+  backup/rollback is not required merely to produce or discard a
+  staged candidate — that transaction belongs to migration activation
+  (PR D, see "Migration activation and rollback" above);
 - result: by the end of this PR, every installation that will later be
-  cut over already has a supported, tested way to produce a valid v2
-  configuration pair before PR C introduces the v2 load path, and
-  well before PR E's final cutover removes legacy support entirely.
+  cut over already has a supported, tested way to *produce and
+  validate* a v2 migration candidate — entirely inactive — before PR C
+  introduces the v2 load path, and well before PR D's gated activation
+  or PR E's final cutover removes legacy support entirely.
 
 **PR C — v2 loader introduction (dual-format, not a v2-only cutover)**
 
@@ -462,15 +607,21 @@ upstream.
   path during the migration window — PR C does not make v2 "the only
   accepted loader path"; that is a separate, later gate (see PR E).
 
-**PR D — Updater preservation + migration adoption/gating + docs/DoD prep**
+**PR D — Migration activation/adoption gate + updater preservation + docs/DoD prep**
 
+- migration activation logic implementing the atomic promote/verify/
+  rollback transaction (see "Migration activation and rollback"
+  above) — this is the first PR authorized to move a staged v2
+  candidate into the active configuration set;
 - updater preservation regression (see "Updater preservation" above —
   covers `BRAVO.config`, `BRAVO.config.local`, and legacy
   `BRAVO.local.config`);
 - operator-facing documentation updated to describe v2 as available
   (not yet as the only supported path);
 - final regression matrix completed, including the non-invocation
-  proof and the fail-closed-no-fallback-on-invalid-v2 case;
+  proof, the fail-closed-no-fallback-on-invalid-v2 case, and the
+  active-configuration-set-mode matrix (see "Active configuration-set
+  mode" above and the regression list above);
 - a documented, testable mechanism for confirming migration adoption —
   for example a combination of: confirmed conversion state, an updater
   preflight that safely migrates before activating the new runtime, a
