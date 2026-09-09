@@ -339,10 +339,16 @@ canonical built-in defaults, deterministic deep merge (array replace,
 `@()`), опційний `BRAVO.config`, `-ConfigPath` AUTO/EXPLICIT-контракт,
 derivation після merge, post-merge security-invariant re-validation,
 restricted-language `BRAVO.local.config` (dot-шлях → значення):
-`CheckRestrictedLanguage` з порожнім allow-list відкидає будь-який код
-до виконання, але сам validated `ScriptBlock` усе ще ВИКОНУЄТЬСЯ
-(`& $scriptBlock`) — це не те саме, що non-executing AST-only parser
-(цільовий Config v2 контракт нижче). Precedence сьогодні: `DEFAULT <
+`CheckRestrictedLanguage` з порожніми command/variable allow-lists
+блокує виклики cmdlet/функцій і посилання на недозволені змінні до
+виконання, але це НЕ робить граматику суто літеральною — restricted-
+language граматика PowerShell усе ще допускає окремі вирази
+(наприклад, арифметичні/range-вирази), а сам validated `ScriptBlock`
+усе ще ВИКОНУЄТЬСЯ (`& $scriptBlock`), тож будь-який дозволений вираз
+обчислюється, а не лише екстрактується як літерал — це не те саме, що
+non-executing AST-only parser (цільовий Config v2 контракт нижче,
+деталі — `docs/design/BRAVO_CONFIGURATION_V2_COMPLETION.md`).
+Precedence сьогодні: `DEFAULT <
 BRAVO.config (опційно) < BRAVO.local.config (опційно)`. Деталі —
 `docs/design/BRAVO_CONFIGURATION_FOUNDATION_DESIGN.md`.
 

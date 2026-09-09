@@ -393,12 +393,83 @@ staged v2 candidate -> active production v2 configuration
 **Activation (available starting PR D, explicitly gated — see
 "Migration activation and rollback" below):**
 
-- promotes a validated staged candidate into the active
-  `BRAVO.config` / `BRAVO.config.local` pair;
+- promotes a validated staged candidate into the active configuration
+  at the effective active primary path (see "Effective active primary
+  path" below) — not necessarily the fixed `BRAVO.config` /
+  `BRAVO.config.local` filenames;
 - requires the PR C dual-format reader to already be present in the
   running installation;
 - is a distinct, later, explicitly-gated operation — conversion alone
-  (PR B) grants no ability to activate.
+  (PR B) grants no ability to activate;
+- the staged candidate metadata records enough identity to prevent
+  activation against the wrong target, at minimum: AUTO-vs-EXPLICIT
+  `-ConfigPath` intent, the exact resolved effective primary path, the
+  effective configuration directory, the legacy local path if present,
+  the target v2 local path if applicable, a source baseline/hash (or
+  equivalent drift identity), and a candidate identity/hash — exact
+  field names are an implementation detail, not fixed by this
+  document.
+
+### Effective active primary path (AUTO vs EXPLICIT)
+
+Migration and activation must be defined in terms of the **effective
+active primary configuration path**, not an assumption that the
+primary is always `<ConfigRoot>\BRAVO.config`. The existing
+`-ConfigPath` AUTO/EXPLICIT contract (`BRAVO_SETUP.ps1`, Task
+Scheduler task definitions, `BRAVO_CONFIGURATOR.ps1`) already
+distinguishes two modes, and migration must preserve that distinction:
+
+**AUTO mode** — the operator did not explicitly supply `-ConfigPath`:
+
+```text
+effective primary path = <ConfigRoot>\BRAVO.config
+```
+
+if a primary override exists at all (it remains optional).
+
+**EXPLICIT mode** — the operator explicitly supplied
+`-ConfigPath <path>` (for example `C:\BRAVO\CONFIGS\SERVER1.config`):
+the exact resolved path is operator intent and **must remain the
+active primary path across migration**. It must not silently become
+`<RuntimeRoot>\BRAVO.config` or `<ConfigRoot>\BRAVO.config`.
+
+**Preferred canonical activation model — preserve the path, change the
+format:**
+
+```text
+legacy data/code at exact effective path
+    -> migration ->
+v2 DATA at the SAME exact effective path
+```
+
+The filename/path does not determine legacy vs v2 — format/schema
+detection does (see "Active configuration-set mode" above), and PR C
+is already defined as a dual-format reader. Activation therefore
+should normally **not** require retargeting scheduled tasks or
+launchers. Guiding principle: **migration changes the format/content
+of the active configuration, not the operator's explicit primary-path
+intent.**
+
+The v2 machine-local override follows the same effective-configuration
+directory as today: for an explicit primary path
+`C:\BRAVO\CONFIGS\SERVER1.config`, the corresponding
+`BRAVO.config.local` (when used) resolves from
+`C:\BRAVO\CONFIGS\BRAVO.config.local`, per the v2 local-filename
+contract — it is not silently relocated to `RuntimeRoot`. For AUTO/
+no-primary mode, the documented `ConfigRoot`-based behavior applies.
+`RuntimeRoot` is not necessarily `ConfigRoot`, and `ConfigRoot` is not
+necessarily the directory implied by the package location; migration
+must preserve the effective configuration location.
+
+After activation, every existing persisted consumer must still resolve
+the active v2 configuration: a scheduled task's exact `-ConfigPath`, a
+manual launcher's exact `-ConfigPath`, and any other persisted
+consumer remain unchanged, because the same effective primary path now
+contains v2 DATA. If a future implementation instead chooses path
+retargeting, that is a different, higher-risk design and MUST
+atomically update every persisted consumer inside the rollback-
+protected activation transaction (see "Migration activation and
+rollback" below) — retargeting is not the preferred/default design.
 
 ### Updater preservation
 
@@ -431,29 +502,108 @@ applies specifically to migration activation, not to every update.
 ### Migration activation and rollback (PR D)
 
 Activation promotes a validated staged v2 candidate (see "Migration:
-conversion vs activation" above) into the live configuration set. It
-operates on the complete configuration set as one transaction, never
-file-by-file best effort:
+conversion vs activation" above) into the live configuration set, at
+the effective active primary path (see "Effective active primary
+path" above) — it does not assume the primary is always
+`<ConfigRoot>\BRAVO.config`. It operates on the complete configuration
+set as one transaction, never file-by-file best effort, and must
+survive abrupt interruption (process kill, host crash, reboot, power
+loss), not only caught in-process failures.
+
+**Activation path guard (runs before anything else):** before
+changing any active file, activation verifies:
+
+- the current effective primary path still matches the staged
+  migration target's recorded effective primary path;
+- AUTO/EXPLICIT `-ConfigPath` intent has not changed since staging;
+- the source legacy configuration has not drifted since the candidate
+  was generated (baseline/hash match);
+- the expected local-configuration identity has not changed;
+- the candidate belongs to this exact activation target.
+
+Any mismatch **fails closed** — activation does not proceed, and the
+operator must regenerate/revalidate the candidate.
+
+**Durable write-ahead activation journal.** Because a caught
+`try`/`catch`/`finally` cannot protect against process termination,
+host crash, reboot, or power loss between file mutations, activation
+uses a durable, write-ahead journal stored outside the files being
+promoted, in a protected runtime/state location (the exact permanent
+path is an implementation detail for the canonical migration-state
+root, not fixed by this document). The journal conceptually records:
+an activation ID; target host/installation identity; AUTO/EXPLICIT
+`-ConfigPath` intent; the exact active primary path; active local-path
+state; backup-set identity; candidate-set identity; the current
+activation phase/state; and timestamps/version/schema as appropriate.
+Exact field names are an implementation detail.
+
+**Required transaction order:**
 
 1. validate the current active legacy set;
 2. validate the complete staged v2 candidate;
-3. create a backup of the complete active set;
-4. promote all required candidate files;
-5. ensure no conflicting legacy/v2 local filenames remain active (see
+3. run the activation path guard above;
+4. create a backup of the complete active set, and verify the backup;
+5. durably create the activation journal — **if journal creation or
+   persistence fails, no active file may change**;
+6. only then begin promoting candidate files, recording a write-ahead
+   phase transition before each destructive step (for example:
+   Prepared, PrimaryPromotionStarted, PrimaryPromoted,
+   LocalPromotionStarted, LocalPromoted,
+   LegacyLocalRetirementStarted, Verifying, Committed — exact phase
+   names are implementation detail, the state-machine semantics are
+   required);
+7. ensure no conflicting legacy/v2 local filenames remain active (see
    "Active configuration-set mode" above — activation must not leave a
    forbidden mixed mode in place);
-6. load through the v2 path;
-7. verify effective-configuration equivalence and required invariants;
-8. mark migration adoption confirmed only after successful
-   verification.
+8. load through the v2 path;
+9. verify effective-configuration equivalence and required invariants,
+   including that persisted consumers (scheduled tasks, launchers)
+   still resolve a valid configuration at the effective primary path;
+10. mark migration adoption confirmed, write the `Committed` journal
+    phase, and only then permit deferred cleanup of old migration
+    artifacts/backups per policy — recovery evidence is not erased
+    prematurely.
 
-If any step fails, the complete previous configuration set is
-restored — rollback is set-level, restoring one coherent prior mode
-(for example, "legacy primary + legacy local" is restored together if
-that was the pre-migration state), never a partial mixed result. A
-rollback must never leave both `BRAVO.local.config` and
-`BRAVO.config.local` active at once, unless one of them resides only
-in an explicitly inactive backup/staging area.
+**Rollback.** If any step fails — whether caught or discovered on
+recovery — the complete previous configuration set is restored:
+rollback is set-level, restoring one coherent prior mode (for example,
+"legacy primary + legacy local" is restored together if that was the
+pre-migration state), never a partial mixed result. A rollback must
+never leave both `BRAVO.local.config` and `BRAVO.config.local` active
+at once, unless one of them resides only in an explicitly inactive
+backup/staging area.
+
+**Crash/reboot recovery is independent of process memory.** Recovery
+must work correctly from a brand-new process and must not depend on
+`catch`/`finally`, in-memory variables, or the original PowerShell
+process still running. Before the ordinary configuration-mode
+classification/merge path consumes active files, a migration recovery
+preflight checks for an incomplete activation journal; if one exists,
+recovery runs first — the normal loader must never simply encounter a
+half-promoted mixed configuration and treat it as an ordinary operator
+error. Policy is **rollback-first**: for any incomplete/uncommitted
+activation, the complete previous active configuration set is restored
+from the verified backup, then the restored set is revalidated as one
+coherent supported mode (see "Active configuration-set mode" above).
+Only after recovery completes may normal loading continue.
+
+**Recovery failure fails closed.** If recovery cannot safely restore
+the prior complete configuration set, it fails closed: it does not
+guess precedence, does not delete the journal or backups, does not
+partially continue, surfaces a specific migration-recovery error, and
+preserves forensic/recovery evidence.
+
+**Single writer.** Activation and recovery must not run concurrently.
+One installation may have at most one active migration transaction at
+a time, using the repository's canonical machine-wide locking/state
+approach when implemented; if another activation/recovery already owns
+the transaction, a new one fails closed as busy rather than starting a
+second migration.
+
+**Recovery is idempotent.** Recovery must be safe to run repeatedly —
+if recovery itself is interrupted, the next recovery invocation must
+still converge safely, and no repeated recovery attempt may corrupt
+the last verified backup.
 
 ### Regression / Definition-of-Done requirements
 
@@ -495,6 +645,36 @@ following must exist and pass:
   - rollback cannot leave both local filenames active at once;
   - invalid v2 never falls back to legacy execution, re-verified at
     the configuration-set level, not just the single-file level;
+  - EXPLICIT external `-ConfigPath` migration preserves the exact
+    path; a scheduled task command line containing
+    `-ConfigPath "<explicit path>"` is unchanged after successful
+    path-preserving activation; a manual launcher using an explicit
+    effective config path remains valid; v2 primary is loaded from
+    that exact explicit path after activation; the v2 local override
+    is resolved beside the effective configuration per the v2
+    local-file contract;
+  - activation rejects a staged candidate when the effective
+    `-ConfigPath` or source baseline changed after staging (the
+    activation path guard above);
+  - AUTO mode remains canonical and unaffected by the EXPLICIT-path
+    guard;
+  - interruption/crash-recovery coverage: abrupt interruption injected
+    (1) after journal creation but before any active-file mutation,
+    (2) after primary promotion but before local promotion, (3) during
+    or after v2 local promotion, (4) before/after legacy local
+    retirement, (5) after all file promotions but before v2
+    verification, (6) after verification but before the `Committed`
+    marker, and (7) while updating the durable journal itself — after
+    a simulated restart/recovery each case must prove: recovery does
+    not depend on old process memory; one coherent supported
+    configuration mode is restored; no mixed legacy/v2 mode becomes
+    visible to normal loading; the explicit effective `-ConfigPath` is
+    preserved; scheduled/persisted consumers still target a valid
+    configuration; backup/journal remain if recovery fails; and
+    successful recovery is idempotent;
+  - recovery idempotency: recovery itself is interrupted, and the next
+    recovery invocation still converges safely without corrupting the
+    last verified backup;
 - updater preservation acceptance (does not require real-server
   acceptance to be documented as "done" for the code-level regression,
   but real-server acceptance is required before this is described as
@@ -607,12 +787,19 @@ gated activation succeeds.
   path during the migration window — PR C does not make v2 "the only
   accepted loader path"; that is a separate, later gate (see PR E).
 
-**PR D — Migration activation/adoption gate + updater preservation + docs/DoD prep**
+**PR D — Path-preserving activation/adoption gate + durable crash recovery + updater preservation + docs/DoD prep**
 
 - migration activation logic implementing the atomic promote/verify/
   rollback transaction (see "Migration activation and rollback"
-  above) — this is the first PR authorized to move a staged v2
+  above), including the activation path guard, the durable write-ahead
+  journal, and rollback-first crash/reboot recovery independent of
+  process memory — this is the first PR authorized to move a staged v2
   candidate into the active configuration set;
+- activation preserves the effective active primary path (AUTO or
+  EXPLICIT `-ConfigPath`, see "Effective active primary path" above)
+  rather than assuming `<ConfigRoot>\BRAVO.config`, so persisted
+  consumers (scheduled tasks, launchers) remain valid without
+  retargeting;
 - updater preservation regression (see "Updater preservation" above —
   covers `BRAVO.config`, `BRAVO.config.local`, and legacy
   `BRAVO.local.config`);
@@ -638,10 +825,11 @@ gated activation succeeds.
 - production runtime stops accepting the legacy executable
   `BRAVO.config` / restricted-language `BRAVO.local.config` load path
   entirely;
-- may land only after the PR D migration/updater adoption-tracking
-  gate is satisfied and regression-tested — simply having the
-  migration executable on disk (PR B) or the dual-format loader
-  (PR C) is not sufficient justification on its own;
+- may land only after PR D proves path-preserving activation, durable
+  crash recovery, explicit `-ConfigPath` preservation, and migration
+  adoption confirmation, all satisfied and regression-tested — simply
+  having the migration executable on disk (PR B) or the dual-format
+  loader (PR C) is not sufficient justification on its own;
 - after this PR, production runtime must never execute `BRAVO.config`
   or `BRAVO.config.local` as PowerShell code, and no legacy load path
   remains;
