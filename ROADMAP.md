@@ -1,4 +1,4 @@
-# BRAVO-Toolkit Roadmap
+# BRAVO-Toolkit — дорожня карта
 
 Цей документ визначає актуальний порядок розвитку BRAVO-Toolkit. Детальні технічні design notes для окремих великих функцій залишаються в `TODO_FEATURES.md`; `ROADMAP.md` є канонічним джерелом пріоритетів і послідовності реалізації.
 
@@ -13,7 +13,7 @@
 
 ## Актуальні технічні обмеження
 
-### SFTP authentication
+### Автентифікація SFTP
 
 Production SFTP для Hetzner Storage Box залишається password-based. Перехід на public-key authentication не є поточним завданням, оскільки використовуване сховище в цьому deployment-профілі працює з парольною автентифікацією.
 
@@ -27,7 +27,7 @@ Production SFTP для Hetzner Storage Box залишається password-based
 
 Public-key authentication можна переглянути пізніше, якщо зміниться backend або з'явиться сумісний режим без погіршення операційної підтримки.
 
-### Authenticode / signed releases
+### Authenticode / підписані релізи
 
 Authenticode, підписані git tags і криптографічно підписаний release manifest не входять до найближчого плану. До них повертаємось, якщо реалізація не потребує істотних додаткових витрат, окремої складної PKI або значного операційного навантаження.
 
@@ -165,7 +165,7 @@ machine-readable result + notification
 - [x] Failure піднімає WARNING/CRITICAL залежно від причини. *(WARN→WARNING, FAIL→CRITICAL в ALERTS; SUCCESS→GENERAL для scheduled)*
 - [x] Є bounded cleanup тимчасових restore artifacts. *(сироти >7 діб, ≤10 за прогін)*
 
-### P1.2 — Stable release artifact
+### P1.2 — Стабільний release-артефакт
 
 Мета — перестати трактувати довільний checkout/набір файлів як release package.
 
@@ -196,7 +196,7 @@ release-manifest.json
 
 Підпис artifact/manifest є optional future hardening, не blocker для цього етапу.
 
-### P1.3 — Backup lifecycle / retention separation
+### P1.3 — Життєвий цикл backup / розділення retention
 
 Мета — зменшити blast radius credentials, якими користується Archive.
 
@@ -240,7 +240,7 @@ performance optimization. `SELF_TEST` не став суттєво швидши�
 саме витрачається час. Проблема довгого `SELF_TEST` (P1.5 нижче)
 залишається відкритою.
 
-### P1.5 — SELF_TEST performance optimization
+### P1.5 — Оптимізація продуктивності SELF_TEST
 
 **Статус: TODO / PLANNED.** Окремо від P1.4 (яка додала лише
 вимірювання, не пришвидшення).
@@ -262,7 +262,7 @@ performance optimization. `SELF_TEST` не став суттєво швидши�
 
 ## P2 — централізована експлуатація
 
-### P2.1 — Machine-readable health/status contract
+### P2.1 — Машинозчитуваний health/status-контракт
 
 **Статус (2026-08-26, цикл 5.3.0): реалізовано** (гілка
 `feature/status-contract`): модуль `modules/BRAVO.Status/` — канонічний
@@ -305,7 +305,7 @@ Health-файла. Транспорт/моніторинг поверх файл
 - [x] Exit codes лишаються canonical source of failure class. *(status — проєкція exitCode; fail-soft самотести CallSiteIsFailSoft)*
 - [x] JSON можна використовувати Zabbix/telemetry без парсингу console text. *(4 файли в `STATUS\`; сама інтеграція — P2.2)*
 
-### P2.2 — Remote Fleet Telemetry
+### P2.2 — Віддалена телеметрія парку серверів
 
 Продовжити FEAT-003 із `TODO_FEATURES.md`, але після появи стабільного локального machine-readable contract.
 
@@ -362,7 +362,7 @@ requirement, schema v2, migration і DoD regression matrix —
 
 Починати наступний PR-цикл після стабілізації P0/P1, якщо ручний merge `BRAVO.config` продовжує створювати реальний операційний ризик.
 
-### P3.2 — Atomic versioned deployment / rollback
+### P3.2 — Атомарний версійований deployment / rollback
 
 FEAT-002 реалізується після stable release artifact і, бажано, Config v2.
 
@@ -433,7 +433,7 @@ auto-download за розкладом, будь-який silent-режим, пі
 каналу — прийнятно для операції, яку ініціює і спостерігає оператор,
 недостатньо для автономної.
 
-## P4 — optional hardening
+## P4 — опційне посилення захисту
 
 Виконувати лише після основних operational задач або коли з'явиться дешевий/простий шлях реалізації:
 
@@ -448,18 +448,18 @@ auto-download за розкладом, будь-який silent-режим, пі
 ## Рекомендована послідовність
 
 ```text
-1. 5.0.1 hotfix acceptance/stable
-2. master/release governance gate
-3. remote backup history protection
-4. scheduled Restore Drill
-5. stable release ZIP + SHA-256 + manifest
-6. retention authority separation
-7. machine-readable status contract
-8. remote fleet telemetry / Zabbix integration
+1. acceptance/stable для hotfix 5.0.1
+2. gate управління релізами master/release governance
+3. захист історії віддалених резервних копій
+4. плановий Restore Drill
+5. stable release ZIP + SHA-256 + маніфест
+6. розділення повноважень retention
+7. машинозчитуваний контракт статусу
+8. віддалена телеметрія парку серверів / інтеграція Zabbix
 9. Config v2
-10. atomic deployment + rollback
+10. атомарний deployment + rollback
 11. auto-update
-12. optional signing/public-key hardening
+12. опційне підписання / посилення захисту public-key
 ```
 
 ## Що не є поточним пріоритетом

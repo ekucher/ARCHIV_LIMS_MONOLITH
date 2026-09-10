@@ -190,7 +190,7 @@ Model → {Schema, Effective, Validation} → Persistence`. UI ніколи не
 не є новим "Common/Utils" dumping-ground — кожен має один чіткий контракт
 нижче.
 
-## 4. Schema descriptor contract (Agent 1)
+## 4. Контракт schema-дескриптора (Agent 1)
 
 ```powershell
 @{
@@ -343,7 +343,7 @@ PR-ів згідно §20 задачі). **Вирішено: backend споча�
 merged), UI/Presets/Credentials/Preview — окрема ітерація (P1, цей
 розділ).**
 
-## 10. P1 — UI/Presets/Credentials/Preview architecture
+## 10. P1 — архітектура UI/Presets/Credentials/Preview
 
 ### 10.1. Model/UI межа
 
@@ -414,7 +414,7 @@ before/after), Warnings/BlockingErrors (з `Invoke-BRAVOConfiguratorValidation`
 Explicit фільтр `Metadata.Secret=$true` (сьогодні завжди порожній набір,
 але явний, не покладений на випадковість поточного стану схеми).
 
-### 10.5. Canonical candidate validation gate (P1.2)
+### 10.5. Канонічний gate валідації candidate (P1.2)
 
 **Вже закритий за конструкцією, без додаткової роботи** — той самий
 висновок, що §6 "P0.3" вище: `Test-BRAVOConfiguratorCandidateOverrides`
@@ -452,14 +452,14 @@ Serialization-стадія теж повертає структурований 
 завжди отримує предбачуваний `{Applied, Stage, Reasons}`, не try/catch
 навколо непередбачуваного винятку.
 
-## 11. P2-A — Reliability & UX correctness
+## 11. P2-A — коректність reliability та UX
 
 Пост-P1-стабілізаційний цикл (закриття P0/P1 стабілізації, PR #113/#114,
 `developer`@`8bd022a`). Мета — correctness/reliability gaps, знайдені під
 час P1-стабілізації, ДО будь-якого косметичного P2-B redesign (High DPI,
 1024x768, keyboard navigation тощо — окрема майбутня ітерація).
 
-### 11.1. AtomicReplace / PostApplyVerification — hermetic failure-injection
+### 11.1. AtomicReplace / PostApplyVerification — герметичний failure-injection
 
 Обидва `Stage`-и вже мали production-контракт (P1-фікс: fail-closed,
 автоматичний rollback для PostApplyVerification) — бракувало лише
@@ -573,7 +573,7 @@ else:                  NoChanges
 `BRAVO_CONFIGURATOR.ps1` виводить відповідний текст оператору й лишає
 `exit 0` для всіх трьох — це навмисно, не недогляд.
 
-### 11.4. Reset setting / Reset section
+### 11.4. Reset одного налаштування / Reset секції
 
 Reset одного setting уже існував як побічний ефект зняття
 override-checkbox у рядку (`Clear-BRAVOConfiguratorOverride` — §1.3:
@@ -607,7 +607,7 @@ scheduled-завдання з власним LOGS-каталогом). Дода�
 P1-стабілізація вже зафіксувала) до появи canonical UI-рівня
 diagnostic-механізму, придатного для Configurator без цього overhead.
 
-### 11.6. Launch-smoke harness
+### 11.6. Launch-smoke тестова інфраструктура
 
 `ci/acceptance/Test-BRAVOConfiguratorLaunch.ps1` — детермінований,
 НЕ-CI-gate local acceptance-скрипт (поруч з `ci/Test-BRAVO*.ps1` gate-
@@ -630,7 +630,7 @@ Windows CI gate (non-interactive/non-windowing сесія може поводи�
 непередбачувано для реального WinForms `Form`) — лише документований
 local acceptance-крок для реальної десктопної Windows-сесії.
 
-## 12. P2-B — Responsive WinForms UX, DPI, keyboard/context help
+## 12. P2-B — адаптивний WinForms UX, DPI, клавіатура/контекстна довідка
 
 Гілка `feat/bravo-configurator-p2b-ux` від `origin/developer @ db8d955`
 (merge PR #115). Мета — UX/visual hardening `BRAVO.Configurator.UI`
@@ -640,7 +640,7 @@ session-outcome/fail-closed контракту (§§1-11 вище лишають
 `selftest\BRAVO_SELF_TEST.ConfiguratorUI.ps1` — інші `BRAVO.Configurator.*`
 модулі не торкались.
 
-### 12.1. Responsive layout
+### 12.1. Адаптивний layout
 
 Fixed-layout борг (`$form.Width=1150`/`Height=780`, `$rowPanel.Width=700`,
 абсолютні `Point(x,y)` у top/bottom toolbar-ах, `SplitterDistance=220/620`
@@ -694,7 +694,7 @@ respectує практичний мінімум (1000×650 для головно
 DPI-перевірка потребує окремого acceptance-кроку на реальній Windows-
 сесії з іншим масштабуванням.
 
-### 12.3. Keyboard, context help, tooltips, accessibility
+### 12.3. Клавіатура, контекстна довідка, tooltips, доступність
 
 - `Ctrl+F` — фокус пошуку; `F1` — фокус Details, якщо обрано
   налаштування, інакше `Get-BRAVOConfiguratorUIGeneralHelpText`; `F5`/`Esc`
