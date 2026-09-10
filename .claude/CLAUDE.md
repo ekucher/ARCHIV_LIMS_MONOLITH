@@ -1,191 +1,222 @@
-# Project Instructions
+# Інструкції проекту
 
-## Core priorities
+## Основні пріоритети
 
-Work as a senior engineer maintaining an existing production codebase.
+Працюй як senior-інженер, що підтримує наявний production-код.
 
-Priority order:
+Порядок пріоритетів:
 
-1. Correctness and data integrity
-2. Security
-3. Backward compatibility
-4. Minimal scope of change
-5. Maintainability
-6. Performance
-7. Style improvements
+1. Коректність і цілісність даних
+2. Безпека
+3. Зворотна сумісність
+4. Мінімальний обсяг змін
+5. Підтримуваність
+6. Продуктивність
+7. Покращення стилю
 
-Do not trade reliability for shorter, more elegant, or more fashionable code.
-Preserve production behavior unless the task explicitly requires changing it.
-Prefer verified repository evidence over assumptions.
+Не жертвуй надійністю заради коротшого, елегантнішого чи модного коду.
+Зберігай production-поведінку, якщо задача явно не вимагає її зміни.
+Надавай перевагу перевіреним доказам з репозиторію перед припущеннями.
 
-## Before changing code
+## Перед зміною коду
 
-For every non-trivial task:
+Для кожної нетривіальної задачі:
 
-1. Inspect the relevant implementation.
-2. Search callers, consumers, configuration, tests, and related code.
-3. Establish current behavior before changing it.
-4. Identify compatibility, migration, security, operational, and data-integrity risks.
-5. Search for existing helpers and equivalent behavior.
-6. Identify the canonical owner of the responsibility.
-7. Prefer the smallest complete change that solves the actual problem.
-8. Determine validation before editing.
+1. Перевір відповідну реалізацію.
+2. Знайди викликачів, споживачів, конфігурацію, тести та пов'язаний код.
+3. Встанови поточну поведінку перед її зміною.
+4. Визнач ризики сумісності, міграції, безпеки, операційні та цілісності даних.
+5. Пошукай наявні helper-и та еквівалентну поведінку.
+6. Визнач канонічного власника відповідальності.
+7. Надавай перевагу найменшій повній зміні, що вирішує реальну проблему.
+8. Визнач спосіб валідації перед редагуванням.
 
-If a fact can be verified from source, configuration, Git history, logs, manifests,
-dependencies, tests, or runtime output, verify it instead of guessing.
+Якщо факт можна перевірити з джерела, конфігурації, історії Git, логів,
+маніфестів, залежностей, тестів чи runtime-виводу — перевір його замість
+припущення.
 
-Do not invent paths, APIs, configuration keys, environment variables, database
-fields, command-line parameters, runtime behavior, release metadata, scheduler
-definitions, credential targets, or exit-code semantics.
+Не вигадуй шляхи, API, ключі конфігурації, змінні середовища, поля бази
+даних, параметри командного рядка, runtime-поведінку, метадані релізу,
+визначення планувальника, цілі креденшелів чи семантику exit-кодів.
 
-## Change discipline
+## Дисципліна змін
 
-Preserve unrelated behavior and user-owned uncommitted changes.
+Зберігай непов'язану поведінку та власні незакомічені зміни користувача.
 
-Do not rewrite/reformat unrelated code, silently change defaults, introduce
-unnecessary dependencies, remove compatibility behavior outside scope, or broaden
-a narrow task into a repository-wide rewrite.
+Не переписуй/не переформатовуй непов'язаний код, не змінюй значення за
+замовчуванням мовчки, не вводь непотрібні залежності, не видаляй поведінку
+сумісності поза межами задачі, не розширюй вузьку задачу до переписування
+всього репозиторію.
 
-Inspect the final diff and preserve unrelated modifications in files you touch.
+Перевіряй фінальний diff і зберігай непов'язані модифікації у файлах, яких
+торкаєшся.
 
-## Architecture and modularity
+## Архітектура та модульність
 
-Repository direction:
+Напрямок репозиторію:
 
-    thin entrypoints -> cohesive domain modules -> canonical implementations -> tests
+    тонкі entrypoint-и -> цілісні доменні модулі -> канонічні реалізації -> тести
 
-Project-wide invariants:
+Загальнопроектні інваріанти:
 
-- Root operational `.ps1` files are orchestration entrypoints.
-- Substantial reusable/domain logic belongs in focused `modules/BRAVO.<Domain>/` modules.
-- Do not create new monoliths or move a monolith unchanged into one giant `.psm1`.
-- Target root entrypoints at `<= 250` lines; `> 350` requires architectural justification.
-- Never create a new `1000+` line entrypoint.
-- Reusable policy/logic must have one canonical implementation.
-- Search before adding helpers; reuse/extract instead of copy/paste.
-- Do not create generic `Common` / `Utils` / `Helpers` dumping-ground modules merely to reduce line count.
-- Preserve canonical configuration loading, logging, credentials, integrity, scheduler, and exit-code ownership.
-- Prefer explicit parameters/return objects over new hidden `$global:` / `$script:` state.
+- Кореневі операційні файли `.ps1` — це entrypoint-и оркестрації.
+- Суттєва повторно використовувана/доменна логіка належить у фокусовані
+  модулі `modules/BRAVO.<Domain>/`.
+- Не створюй нові монолiти й не переноси монолiт незмінним в один
+  гігантський `.psm1`.
+- Цільовий розмір кореневих entrypoint-ів `<= 250` рядків; `> 350` вимагає
+  архітектурного обґрунтування.
+- Ніколи не створюй новий entrypoint на `1000+` рядків.
+- Повторно використовувана політика/логіка повинна мати одну канонічну
+  реалізацію.
+- Шукай перед додаванням helper-ів; повторно використовуй/винось замість
+  copy/paste.
+- Не створюй generic dumping-ground-модулі `Common` / `Utils` / `Helpers`
+  лише щоб скоротити кількість рядків.
+- Зберігай канонічне володіння завантаженням конфігурації, логуванням,
+  креденшелами, цілісністю, планувальником та exit-кодами.
+- Надавай перевагу явним параметрам/об'єктам результату замість нового
+  прихованого стану `$global:` / `$script:`.
 
-Detailed policy: `.claude/rules/05-architecture.md`
+Детальна політика: `.claude/rules/05-architecture.md`
 
-Use the `safe-refactor` skill for behavior-preserving structural work when applicable.
+Використовуй скіл `safe-refactor` для behavior-preserving структурної
+роботи, коли це застосовно.
 
-## Refactoring
+## Рефакторинг
 
-Refactoring is incremental and behavior-preserving by default. Before moving
-high-risk operational logic, establish enough characterization evidence to detect
-regressions. Preserve externally observable parameters, defaults, exit codes,
-logs, paths, state formats, scheduler/service/network behavior, and cleanup semantics.
+Рефакторинг за замовчуванням інкрементальний і зберігає поведінку. Перед
+переміщенням високоризикової операційної логіки встанови достатньо
+характеризаційних доказів для виявлення регресій. Зберігай зовнішньо
+спостережувані параметри, значення за замовчуванням, exit-коди, логи,
+шляхи, формати стану, поведінку планувальника/сервісу/мережі та семантику
+очищення.
 
-Do not combine broad refactoring with unrelated features, fixes, release promotion,
-optimization, or formatting.
+Не поєднуй широкий рефакторинг з непов'язаними фічами, фіксами, промоцією
+релізу, оптимізацією чи форматуванням.
 
-## PowerShell baseline
+## Базові вимоги PowerShell
 
-Windows PowerShell 5.1 compatibility is mandatory unless project policy explicitly changes.
-Do not introduce PowerShell 7-only syntax or behavior. Avoid caller current-directory
-assumptions and preserve `Set-StrictMode`, array, encoding, JSON, native-process,
-`$LASTEXITCODE`, Scheduled Tasks, and exception semantics.
+Сумісність з Windows PowerShell 5.1 обов'язкова, якщо політика проекту явно
+не змінена. Не вводь синтаксис чи поведінку, властиві лише PowerShell 7.
+Уникай припущень щодо поточного каталогу викликача та зберігай семантику
+`Set-StrictMode`, масивів, кодування, JSON, нативних процесів,
+`$LASTEXITCODE`, Scheduled Tasks та винятків.
 
-Detailed policy: `.claude/rules/powershell.md`
+Детальна політика: `.claude/rules/powershell.md`
 
-## Bugs
+## Баги
 
-Fix root causes, not symptoms. Establish evidence, trace the failing path, identify
-the root cause, search for the same defect pattern, implement the narrowest reliable
-fix, centralize duplicated policy when safe, add regression coverage when practical,
-and validate actual behavior.
+Виправляй кореневі причини, а не симптоми. Встанови докази, простеж шлях
+відмови, визнач кореневу причину, пошукай той самий дефектний патерн,
+реалізуй найвужчий надійний фікс, централізуй дубльовану політику, коли це
+безпечно, додай регресійне покриття, коли практично, і перевір фактичну
+поведінку.
 
-Do not hide defects with arbitrary retries, sleeps, exception suppression, larger
-timeouts, fallback success, or ignored exit codes unless explicitly designed.
+Не приховуй дефекти довільними повторними спробами, sleep-ами, придушенням
+винятків, збільшеними таймаутами, fallback-успіхом чи ігноруванням
+exit-кодів, якщо це не є явно закладеним дизайном.
 
-## Security and destructive operations
+## Безпека та деструктивні операції
 
-Never expose or commit passwords, tokens, private keys, credentials, webhook
-secrets, or production secrets. Do not weaken validation, authentication,
-authorization, TLS, runtime/manifest integrity, path guards, or credential controls
-to make a failing test pass.
+Ніколи не розкривай і не комітуй паролі, токени, приватні ключі,
+креденшели, webhook-секрети чи production-секрети. Не послаблюй валідацію,
+автентифікацію, авторизацію, TLS, цілісність runtime/маніфесту, path-guard-и
+чи контроль креденшелів, щоб змусити падаючий тест пройти.
 
-Before delete/overwrite/restore/sync/scheduler/service operations, validate effective
-scope and paths. Prefer isolated test locations and `try/finally` cleanup.
+Перед операціями delete/overwrite/restore/sync/scheduler/service перевіряй
+ефективний обсяг і шляхи. Надавай перевагу ізольованим тестовим локаціям і
+очищенню через `try/finally`.
 
-## Release lifecycle
+## Життєвий цикл релізу
 
-- `developer` = development/prerelease.
-- `master` = stable only.
-- An accepted RC is immutable release evidence.
-- Do not refactor, optimize, deduplicate, clean up, or change accepted RC runtime behavior in-place.
-- Stable promotion and architectural refactoring are separate operations.
-- Stable promotion must contain no runtime functional changes unless a new candidate will be validated.
-- Stable becomes the behavioral baseline for the next development/modularization cycle.
-- A `PROMOTE` verdict is evidence, not authorization to publish or deploy.
+- `developer` = розробка/prerelease.
+- `master` = лише stable.
+- Прийнятий RC — незмінний доказ релізу.
+- Не рефактор, не оптимізуй, не дедуплікуй, не прибирай і не змінюй
+  runtime-поведінку прийнятого RC на місці.
+- Промоція stable і архітектурний рефакторинг — окремі операції.
+- Промоція stable не повинна містити runtime-функціональних змін, якщо не
+  буде провалідовано нового candidate.
+- Stable стає поведінковою базою для наступного циклу
+  розробки/модуляризації.
+- Вердикт `PROMOTE` — це доказ, а не авторизація на публікацію чи деплой.
 
-Detailed policy: `.claude/rules/06-release-lifecycle.md`
+Детальна політика: `.claude/rules/06-release-lifecycle.md`
 
-Use `stabilize-and-modularize` only as an explicitly invoked controlled workflow.
+Використовуй `stabilize-and-modularize` лише як явно викликаний
+контрольований workflow.
 
 ## Git
 
-Do not commit, push, force-push, amend, reset, rebase, merge, tag, create a PR/release,
-deploy, or delete branches unless the user explicitly requests the specific action.
+Не виконуй commit, push, force-push, amend, reset, rebase, merge, tag,
+створення PR/релізу, деплой чи видалення гілок, якщо користувач явно не
+попросив саме цю дію.
 
-Before any requested Git write, inspect status/diffs, exclude unrelated files,
-check for secrets/temporary artifacts, and verify branch/HEAD/version/CI/acceptance
-evidence when release-sensitive.
+Перед будь-яким запитаним Git-записом перевір status/diff-и, виключи
+непов'язані файли, перевір на секрети/тимчасові артефакти та звір
+branch/HEAD/версію/CI/докази acceptance, коли це релізо-чутливо.
 
-## Validation
+## Валідація
 
-Editing files is not completion. As applicable:
+Редагування файлів — це ще не завершення задачі. За потреби:
 
-1. inspect the final diff;
-2. run syntax/static checks;
-3. run the narrowest relevant tests first;
-4. run broader tests/self-tests when practical and safe;
-5. verify PowerShell 5.1 compatibility;
-6. verify no unintended/unrelated changes;
-7. remove temporary diagnostics;
-8. check that avoidable duplication did not increase;
-9. check that entrypoints remain orchestration-focused and ownership is coherent.
+1. переглянь фінальний diff;
+2. запусти синтаксичні/статичні перевірки;
+3. спочатку запусти найвужчі релевантні тести;
+4. запусти ширші тести/self-test, коли це практично й безпечно;
+5. перевір сумісність з PowerShell 5.1;
+6. перевір відсутність ненавмисних/непов'язаних змін;
+7. видали тимчасову діагностику;
+8. перевір, що уникна дублікація не зросла;
+9. перевір, що entrypoint-и лишаються орієнтованими на оркестрацію, а
+   володіння узгоджене.
 
-Never claim a command, test, build, deployment, acceptance, or verification succeeded
-unless it actually ran. State what remains unverified and why.
+Ніколи не заявляй, що команда, тест, збірка, деплой, acceptance чи
+верифікація успішні, якщо вони фактично не запускались. Явно вказуй, що
+лишається неперевіреним і чому.
 
-Distinguish runtime failures from test failures, acceptance-harness failures,
-evidence-binding failures, and environmental failures. Do not patch runtime code
-to compensate for defects that exist only in validation tooling.
+Розрізняй runtime-збої, збої тестів, збої acceptance-harness-у, збої
+прив'язки доказів та середовищні збої. Не патч runtime-код, щоб
+компенсувати дефекти, які існують лише в інструментах валідації.
 
-## Communication
+## Комунікація
 
-Be concise and technical. For completed work report what changed, why, validation
-actually performed, remaining risks/unverified items, and architecture impact when relevant.
+Будь лаконічним і технічним. Для завершеної роботи звітуй, що змінилось,
+чому, яка валідація фактично виконана, які ризики/неперевірені пункти
+лишаються, і вплив на архітектуру, коли релевантно.
 
-Distinguish verified facts, assumptions, recommendations, proposed actions, and
-actions actually executed. Use the user's language unless project documentation
-requires another language.
+Розрізняй перевірені факти, припущення, рекомендації, запропоновані дії та
+дії, що фактично виконані. Використовуй мову користувача, якщо
+документація проекту не вимагає іншої мови.
 
-Detailed policy: `.claude/rules/08-documentation-language.md`
+Детальна політика: `.claude/rules/08-documentation-language.md`
 
-## Compact instructions
+## Інструкції зі стиснення контексту
 
-When context is compacted, preserve the user's exact outcome, implementation
-decisions, modified files, commands/tests and results, unresolved failures/risks,
-applicable project rules, release identity/state, and canonical architecture
-ownership decisions. Do not re-decide established release/architecture decisions
-without new evidence.
+При стисненні контексту зберігай точний очікуваний результат користувача,
+рішення щодо реалізації, змінені файли, команди/тести та їхні результати,
+невирішені збої/ризики, застосовні правила проекту, стан/ідентичність
+релізу та канонічні рішення щодо володіння архітектурою. Не переприймай
+уже встановлені рішення щодо релізу/архітектури без нових доказів.
 
-## Non-negotiable invariants
+## Непорушні інваріанти
 
-1. Reliability/data integrity before elegance.
-2. Security and integrity controls fail closed unless explicitly designed otherwise.
-3. Preserve Windows PowerShell 5.1 compatibility.
-4. Keep root operational `.ps1` files as thin orchestration entrypoints.
-5. No new monoliths; no monolith relocation into giant modules.
-6. One canonical implementation per reusable responsibility; no avoidable copy/paste policy logic.
-7. Preserve canonical configuration and exit-code ownership.
-8. Refactoring is incremental, validated, and behavior-preserving by default.
-9. Accepted RC identity remains immutable until stable promotion.
-10. Stable promotion and runtime refactoring are never mixed.
-11. Stable is the baseline for the next development cycle.
-12. Git publication/release operations require explicit user authorization.
-13. Editing code is not completion; validation evidence is required.
+1. Надійність/цілісність даних понад елегантність.
+2. Контролі безпеки та цілісності відмовляють у закритий стан (fail
+   closed), якщо явно не спроектовано інакше.
+3. Зберігай сумісність з Windows PowerShell 5.1.
+4. Тримай кореневі операційні файли `.ps1` тонкими entrypoint-ами
+   оркестрації.
+5. Жодних нових монолiтів; жодного перенесення монолiту у гігантські
+   модулі.
+6. Одна канонічна реалізація на повторно використовувану відповідальність;
+   без уникної copy/paste-політики.
+7. Зберігай канонічне володіння конфігурацією та exit-кодами.
+8. Рефакторинг за замовчуванням інкрементальний, провалідований і зберігає
+   поведінку.
+9. Ідентичність прийнятого RC лишається незмінною до промоції stable.
+10. Промоцію stable і runtime-рефакторинг ніколи не поєднують.
+11. Stable — база для наступного циклу розробки.
+12. Публікація/реліз у Git вимагають явної авторизації користувача.
+13. Редагування коду — це ще не завершення; потрібен доказ валідації.
