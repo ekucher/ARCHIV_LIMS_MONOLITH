@@ -65,7 +65,14 @@
 - `BRAVO_TASKS_DIAGNOSE.ps1`
 - `BRAVO_RESTORE_TEST.ps1`
 - `BRAVO_RUNTIME_GUARD.ps1`
-- `BRAVO_RC_ACCEPTANCE.ps1`
+
+Поточна acceptance-реалізація живе під `ci/acceptance/` (наприклад,
+`ci/acceptance/Test-BRAVOConfiguratorLaunch.ps1`,
+`ci/acceptance/Test-BRAVOVSSSingleVolumeAcceptance.ps1`) та в
+акцептанс-runbook-ах під `docs/`; єдиного кореневого acceptance-
+entrypoint-а сьогодні в репозиторії немає. Кореневий
+`BRAVO_RC_ACCEPTANCE.ps1`, згаданий нижче в секції "Acceptance", —
+PLANNED/PROPOSED, не поточна реалізація.
 
 Entrypoint зазвичай повинен містити лише:
 
@@ -220,13 +227,22 @@ Entrypoint-и не повинні ставати контейнерами для
 
 ### Acceptance
 
-    modules/BRAVO.Acceptance/
+    modules/BRAVO.Acceptance/   (PLANNED / PROPOSED — сьогодні відсутній)
 
-Може володіти повторно використовуваними acceptance-специфічними
-helper-ами оркестрації та моделями доказів.
+**PLANNED / PROPOSED, не поточна реалізація.** Ані `modules/BRAVO.Acceptance/`,
+ані кореневий `BRAVO_RC_ACCEPTANCE.ps1` сьогодні не існують у
+репозиторії. Поточна acceptance-реалізація — це скрипти під
+`ci/acceptance/` (`Test-BRAVOConfiguratorLaunch.ps1`,
+`Test-BRAVOVSSSingleVolumeAcceptance.ps1`) разом із документованими
+acceptance-runbook-ами під `docs/` (наприклад,
+`docs/BAZA_SFTP_ACCEPTANCE.md`,
+`docs/BRAVO_DATA_RESTORE_RC2_ACCEPTANCE_RUNBOOK_20260818.md`) — єдиного
+кореневого acceptance-агрегатора немає.
 
-`BRAVO_RC_ACCEPTANCE.ps1` сам повинен лишатися тонким entrypoint-ом
-acceptance.
+Якщо й коли `modules/BRAVO.Acceptance/` і кореневий тонкий entrypoint
+`BRAVO_RC_ACCEPTANCE.ps1` буде реалізовано, модуль може володіти
+повторно використовуваними acceptance-специфічними helper-ами
+оркестрації та моделями доказів, а entrypoint повинен лишатися тонким.
 
 Репозиторій у фактичній реалізації є авторитетним.
 
