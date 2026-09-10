@@ -267,19 +267,20 @@ fail-closed перелік дозволених літералів/data-вузл
 ### Поточне іменування проти цільового — не плутати
 
 ```text
-CURRENT (production today):
+ПОТОЧНИЙ СТАН (продакшн сьогодні):
     BRAVO.local.config
     BRAVO.local.config.example
-    — restricted-language / data-shaped, validated before invoke
-      (CheckRestrictedLanguage then & $scriptBlock — see above),
-      already shipped, already documented in README.md /
+    — restricted-language / data-shaped, валідується перед викликом
+      (CheckRestrictedLanguage, потім & $scriptBlock — див. вище),
+      уже випущено, уже задокументовано в README.md /
       BRAVO_SETUP.md / OPERATIONS.md.
 
-TARGET (Configuration v2, not yet implemented):
+ЦІЛЬОВИЙ СТАН (Configuration v2, ще не реалізовано):
     BRAVO.config.local
-    — does not exist in the runtime yet. Operator-facing documentation
-      must keep instructing operators to use BRAVO.local.config until
-      v2 ships and a migration path is documented.
+    — ще не існує в рантаймі. Операторська документація
+      повинна й надалі інструктувати операторів використовувати
+      BRAVO.local.config, доки v2 не буде випущено і не буде
+      задокументовано шлях міграції.
 ```
 
 Операторська документація (`README.md`, `BRAVO_SETUP.md`,
@@ -509,9 +510,9 @@ effective primary path = <ConfigRoot>\BRAVO.config
 формат:**
 
 ```text
-legacy data/code at exact effective path
-    -> migration ->
-v2 DATA at the SAME exact effective path
+застарілі (legacy) дані/код за точним ефективним шляхом
+    -> міграція ->
+дані v2 за ТИМ САМИМ точним ефективним шляхом
 ```
 
 Назва файлу/шлях не визначає legacy проти v2 — це робить визначення
@@ -1105,20 +1106,20 @@ self-test плюс повний прогін `BRAVO_SELF_TEST.ps1` перед з
 ## Фінальний цільовий контракт (для довідки — ще не повністю реалізовано)
 
 ```text
-Built-in defaults are complete (part of the package, not a file).
-BRAVO.config is an optional site/deployment override.
-BRAVO.config.local is an optional machine-local override.
+Вбудовані значення за замовчуванням є повними (частина пакета, а не файл).
+BRAVO.config — опціональне перевизначення для сайту/розгортання.
+BRAVO.config.local — опціональне машинно-локальне перевизначення.
 DEFAULT < BRAVO.config < BRAVO.config.local
-Configuration files are DATA, not CODE.
-Production runtime never invokes Configuration v2 config files as code.
+Файли конфігурації є ДАНИМИ, а не КОДОМ.
+Продакшн-рантайм ніколи не викликає файли конфігурації Configuration v2 як код.
 configSchemaVersion = 2
 Limits.ExcludedDrives default = @()
-Arrays replace, not merge.
-Explicit @() is a valid override.
-Unknown keys fail validation.
-Invalid types fail validation.
-Runtime derivation happens after raw merge.
-Secrets remain outside config.
+Масиви замінюють, а не мерджуються.
+Явний @() є валідним перевизначенням.
+Невідомі ключі не проходять валідацію.
+Некоректні типи не проходять валідацію.
+Похідні обчислення рантайму відбуваються після сирого мерджу.
+Секрети залишаються поза конфігурацією.
 ```
 
 З цього контракту сьогодні в продакшні вже виконується таке:
