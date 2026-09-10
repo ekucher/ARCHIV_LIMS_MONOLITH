@@ -104,8 +104,9 @@ SFTP/SMB master-child семантики. `Get-BRAVOEffectiveSynchronizationConf
 вимагає canonical resolver. Централізація цієї логіки в новий
 `Get-BRAVOEffective*` API була визнана окремим, ризикованим, cross-cutting
 рефакторингом, який не варто змішувати з фіче-роботою Configurator
-(`06-release-lifecycle.md`, "Do not combine broad refactoring with
-unrelated features").
+(`.claude/CLAUDE.md`, розділ «Рефакторинг»: «Не поєднуй широкий
+рефакторинг з непов'язаними фічами, фіксами, промоцією релізу,
+оптимізацією чи форматуванням»).
 
 ### 2.1. P0 reconciliation after 5.2.2 — resolver тепер існує
 
