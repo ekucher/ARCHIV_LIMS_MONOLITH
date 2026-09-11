@@ -1,12 +1,50 @@
-# BRAVO Configurator — Architecture Freeze (Agent 0)
+# BRAVO Configurator — заморозка архітектури (Agent 0)
 
-Статус: **DRAFT — architecture freeze для перегляду перед стартом Agent 1-6.**
+> Статус (оновлено): architecture freeze (§1-9) завершено, і весь описаний
+> цикл реалізовано й змерджено в `developer`: PR #112 (P0 backend), PR #113
+> (P1 UI/Presets/Credentials/Preview), PR #114 (WinForms closure-scope fix),
+> PR #115 (P2-A reliability/UX correctness), PR #116 (P2-B responsive/DPI/
+> accessibility), PR #117 (preset/BAZA-local addendum). `BRAVO_CONFIGURATOR.ps1`
+> і `modules/BRAVO.Configurator/*` існують у `developer` (див. CHANGELOG.md,
+> розділ «Не випущено (developer)», запис про `BRAVO_CONFIGURATOR.ps1`).
+>
+> **IMPLEMENTATION MERGED.** Описаний тут implementation scope (backend,
+> UI, Presets, Credentials, Preview, responsive/DPI-safe WinForms) змерджено
+> в `developer`. Відповідні implementation PR містять зафіксовані
+> automated/headless (`selftest\BRAVO_SELF_TEST.ConfiguratorUI.ps1` та
+> суміжні), launch-smoke та static-analysis (`PSScriptAnalyzer`) перевірки
+> там, де вони були застосовні — це НЕ універсальний claim, що кожен PR
+> #112–#117 окремо пройшов ідентичний набір перевірок; таке per-PR
+> підтвердження не встановлювалось.
+>
+> **MANUAL / INTERACTIVE ACCEPTANCE — НЕ ПІДТВЕРДЖЕНО.** Merge implementation
+> сам по собі НЕ доводить, що пізніші manual/interactive acceptance-кроки
+> виконано. §12.6 нижче явно фіксує **NOT EXECUTED** у сесії PR #116
+> (P2-B): інтерактивний click-through (Tab-навігація, Boolean tri-state
+> через реальний UI, invalid-input-повідомлення, Preview-resize, F1/Ctrl+F
+> наживо), візуальна перевірка кирилиці/clipping/scrollbars, і DPI
+> 100/125/150% матриця. Перевірено (`git log --oneline --merges`,
+> `CHANGELOG.md`, увесь `docs/**`) — жодного пізнішого PR або запису з
+> фактичним evidence цих manual/DPI-кроків не знайдено; їх завершення
+> **не варто вважати доведеним** без окремого owner-підтвердженого
+> acceptance-запису.
+>
+> Розділи нижче (початково §9 "Відкрите питання для власника перед стартом
+> Agent 1-6", і end-of-§12.6 "STOP після звіту, без merge") збережено як
+> historical design-gate record того, що обговорювалось/вирішувалось на
+> кожному етапі; в частині "implementation merged" вони більше не
+> відображають поточний production-стан (backend/UI/Presets/Credentials/
+> Preview вже змерджені), але в частині "manual/DPI acceptance NOT
+> EXECUTED" (§12.6) вони лишаються актуальними — цей пробіл не закрито.
+
+Статус (первинний): **DRAFT — architecture freeze для перегляду перед
+стартом Agent 1-6.**
 Гілка: `feat/bravo-configurator` (первинно базована на `origin/developer` @
 `9d0ece8`; перебазована на `origin/developer` @ `0e63fdc` після інтеграції
 `hotfix/5.2.2` — PR #111, "P0 reconciliation after 5.2.2" нижче, §2).
 Не чіпає `master`/RC-гілки; не змінює production runtime.
 
-## 1. Canonical source of truth (verified, не припущення)
+## 1. Канонічне джерело істини (verified, не припущення)
 
 - **`BRAVO.config`** (1288 рядків) — canonical defaults. Виконується як PowerShell
   script з `param(ConfigRoot, RuntimeRoot)`; містить ~50 `$global:*Settings`
@@ -66,8 +104,9 @@ SFTP/SMB master-child семантики. `Get-BRAVOEffectiveSynchronizationConf
 вимагає canonical resolver. Централізація цієї логіки в новий
 `Get-BRAVOEffective*` API була визнана окремим, ризикованим, cross-cutting
 рефакторингом, який не варто змішувати з фіче-роботою Configurator
-(`06-release-lifecycle.md`, "Do not combine broad refactoring with
-unrelated features").
+(`.claude/CLAUDE.md`, розділ «Рефакторинг»: «Не поєднуй широкий
+рефакторинг з непов'язаними фічами, фіксами, промоцією релізу,
+оптимізацією чи форматуванням»).
 
 ### 2.1. P0 reconciliation after 5.2.2 — resolver тепер існує
 
@@ -152,7 +191,7 @@ Model → {Schema, Effective, Validation} → Persistence`. UI ніколи не
 не є новим "Common/Utils" dumping-ground — кожен має один чіткий контракт
 нижче.
 
-## 4. Schema descriptor contract (Agent 1)
+## 4. Контракт schema-дескриптора (Agent 1)
 
 ```powershell
 @{
@@ -175,7 +214,7 @@ Model → {Schema, Effective, Validation} → Persistence`. UI ніколи не
 `BRAVO.local.config.example`/`BRAVO.config`; не вигадувати нові формулювання,
 що суперечать існуючій документації.
 
-## 5. Model API contract (Agent 2)
+## 5. Контракт Model API (Agent 2)
 
 Одна `Setting` (immutable snapshot + explicit mutation function, без
 прихованого стану):
@@ -197,7 +236,7 @@ Clear-BRAVOConfiguratorOverride -Model -Path        -> Model'  (OverridePresent=
 Update-BRAVOConfiguratorEffective -Model            -> Model'  (перераховує §2 child-процесом; batched, не per-keystroke)
 ```
 
-## 6. Persistence transaction (Agent 3)
+## 6. Persistence-транзакція (Agent 3)
 
 15-крокова pipeline із задачі §5.2: Load → baseline hash → candidate (temp,
 зі збереженням невідомих/newer ключів — §5.1) → parse
@@ -278,14 +317,14 @@ REAL_SERVER-залежна частина `BRAVO_DRY_RUN.ps1` (Scheduled Tasks/�
 config-семантичної валідації; вона й далі відсутня для REAL_SERVER-класу
 перевірок, які ніколи не були частиною Apply-контракту цього backend-а.
 
-## 7. UI navigation map
+## 7. Мапа навігації UI
 
 Приймається без змін навігаційна структура з §6 задачі (10 груп: Загальні /
 Шляхи та дані / Компоненти / Maintenance / Storage / Health / Scheduler /
 Console-Logging / Credentials / Effective configuration) — узгоджується з
 138-key inventory (§1, після P0 reconciliation).
 
-## 8. Test plan (Agent 7)
+## 8. План тестування (Agent 7)
 
 Мінімум із §22 вихідного документа, плюс: **regression test для §2 Effective
 child-process механізму** — canonical loader, викликаний Configurator-ом,
@@ -305,7 +344,7 @@ PR-ів згідно §20 задачі). **Вирішено: backend споча�
 merged), UI/Presets/Credentials/Preview — окрема ітерація (P1, цей
 розділ).**
 
-## 10. P1 — UI/Presets/Credentials/Preview architecture
+## 10. P1 — архітектура UI/Presets/Credentials/Preview
 
 ### 10.1. Model/UI межа
 
@@ -376,7 +415,7 @@ before/after), Warnings/BlockingErrors (з `Invoke-BRAVOConfiguratorValidation`
 Explicit фільтр `Metadata.Secret=$true` (сьогодні завжди порожній набір,
 але явний, не покладений на випадковість поточного стану схеми).
 
-### 10.5. Canonical candidate validation gate (P1.2)
+### 10.5. Канонічний gate валідації candidate (P1.2)
 
 **Вже закритий за конструкцією, без додаткової роботи** — той самий
 висновок, що §6 "P0.3" вище: `Test-BRAVOConfiguratorCandidateOverrides`
@@ -414,14 +453,14 @@ Serialization-стадія теж повертає структурований 
 завжди отримує предбачуваний `{Applied, Stage, Reasons}`, не try/catch
 навколо непередбачуваного винятку.
 
-## 11. P2-A — Reliability & UX correctness
+## 11. P2-A — коректність reliability та UX
 
 Пост-P1-стабілізаційний цикл (закриття P0/P1 стабілізації, PR #113/#114,
 `developer`@`8bd022a`). Мета — correctness/reliability gaps, знайдені під
 час P1-стабілізації, ДО будь-якого косметичного P2-B redesign (High DPI,
 1024x768, keyboard navigation тощо — окрема майбутня ітерація).
 
-### 11.1. AtomicReplace / PostApplyVerification — hermetic failure-injection
+### 11.1. AtomicReplace / PostApplyVerification — герметичний failure-injection
 
 Обидва `Stage`-и вже мали production-контракт (P1-фікс: fail-closed,
 автоматичний rollback для PostApplyVerification) — бракувало лише
@@ -535,7 +574,7 @@ else:                  NoChanges
 `BRAVO_CONFIGURATOR.ps1` виводить відповідний текст оператору й лишає
 `exit 0` для всіх трьох — це навмисно, не недогляд.
 
-### 11.4. Reset setting / Reset section
+### 11.4. Reset одного налаштування / Reset секції
 
 Reset одного setting уже існував як побічний ефект зняття
 override-checkbox у рядку (`Clear-BRAVOConfiguratorOverride` — §1.3:
@@ -569,7 +608,7 @@ scheduled-завдання з власним LOGS-каталогом). Дода�
 P1-стабілізація вже зафіксувала) до появи canonical UI-рівня
 diagnostic-механізму, придатного для Configurator без цього overhead.
 
-### 11.6. Launch-smoke harness
+### 11.6. Launch-smoke тестова інфраструктура
 
 `ci/acceptance/Test-BRAVOConfiguratorLaunch.ps1` — детермінований,
 НЕ-CI-gate local acceptance-скрипт (поруч з `ci/Test-BRAVO*.ps1` gate-
@@ -592,7 +631,7 @@ Windows CI gate (non-interactive/non-windowing сесія може поводи�
 непередбачувано для реального WinForms `Form`) — лише документований
 local acceptance-крок для реальної десктопної Windows-сесії.
 
-## 12. P2-B — Responsive WinForms UX, DPI, keyboard/context help
+## 12. P2-B — адаптивний WinForms UX, DPI, клавіатура/контекстна довідка
 
 Гілка `feat/bravo-configurator-p2b-ux` від `origin/developer @ db8d955`
 (merge PR #115). Мета — UX/visual hardening `BRAVO.Configurator.UI`
@@ -602,7 +641,7 @@ session-outcome/fail-closed контракту (§§1-11 вище лишають
 `selftest\BRAVO_SELF_TEST.ConfiguratorUI.ps1` — інші `BRAVO.Configurator.*`
 модулі не торкались.
 
-### 12.1. Responsive layout
+### 12.1. Адаптивний layout
 
 Fixed-layout борг (`$form.Width=1150`/`Height=780`, `$rowPanel.Width=700`,
 абсолютні `Point(x,y)` у top/bottom toolbar-ах, `SplitterDistance=220/620`
@@ -656,7 +695,7 @@ respectує практичний мінімум (1000×650 для головно
 DPI-перевірка потребує окремого acceptance-кроку на реальній Windows-
 сесії з іншим масштабуванням.
 
-### 12.3. Keyboard, context help, tooltips, accessibility
+### 12.3. Клавіатура, контекстна довідка, tooltips, доступність
 
 - `Ctrl+F` — фокус пошуку; `F1` — фокус Details, якщо обрано
   налаштування, інакше `Get-BRAVOConfiguratorUIGeneralHelpText`; `F5`/`Esc`

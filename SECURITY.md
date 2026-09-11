@@ -305,8 +305,10 @@ production-запуск не блокується. Якщо файл був пі
 
 `Tools/` захищає `TOOLS_MANIFEST.json`, але підмінити можна й сам код:
 `BRAVO_ARCHIV.ps1`, будь-який модуль, `VERSION.json`. Цей шар закриває
-`RUNTIME_MANIFEST.json` — еталонні SHA-256 **54 файлів** комплекту
-(`.ps1`, `.psm1`, `.psd1`, `VERSION.json`, `TOOLS_MANIFEST.json`).
+`RUNTIME_MANIFEST.json` — еталонні SHA-256 **121 файлу** комплекту
+(`.ps1`, `.psm1`, `.psd1`, `VERSION.json`, `TOOLS_MANIFEST.json`; перелік
+росте разом із кодовою базою — точне число завжди звіряйте з `files` у
+самому manifest-і).
 
 **Перевірка виконується ДО `Import-Module`** — інакше довелося б
 виконати саме той код, який ще не перевірено. Тому вона живе в окремому

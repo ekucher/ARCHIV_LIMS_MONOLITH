@@ -1,18 +1,32 @@
-# BRAVO Configuration Foundation — architecture gate (P0)
+# BRAVO Configuration Foundation — архітектурний gate (P0)
 
-> Статус (оновлено): PR A (canonical defaults + merge engine) — змерджено.
-> PR B (`BRAVO_CONFIG_LOADER.ps1` snapshot-виконання, `-ConfigPath`
-> explicit/auto-intent, security invariant re-validation, Configurator
-> `DefaultValue` adapter) — реалізовано на гілці `feature/config-foundation-
-> derivation`. PR C (прибирання дублюючого derivation/two-phase-override
-> коду з `BRAVO.config`, AUTO/EXPLICIT-контракт для Task Scheduler/
-> `BRAVO_SETUP.ps1`/Configurator, security-blind-spot fix для
-> `BRAVO.local.config`, install/update preservation) — реалізовано на
-> `feature/config-foundation-pr-c` (стек: `developer` ← PR A/B ← ця гілка).
-> Розділи нижче лишаються як історичний запис прийнятого architecture-
-> рішення (7 питань gate, source matrix, обґрунтування розбиття на
-> PR A/B/C) — не переписані заднім числом під фактичну реалізацію; де
-> реалізація відрізнялась від плану, це задокументовано в CHANGELOG.md.
+> Статус (оновлено, атрибуцію звірено з `git show --stat` реальних merge
+> commits #128/#129, а не лише з opening-задуму): PR A = PR #127
+> `feature/config-foundation` (canonical defaults + merge engine) —
+> merged. PR B = PR #128 `feature/config-foundation-derivation`
+> (виключно екстракція derivation-логіки з `BRAVO.config` у канонічний
+> `modules/BRAVO.Configuration.Derivation.psm1`/
+> `Resolve-BRAVOConfigurationDerivation`; підготовчий крок — у цьому PR
+> `BRAVO.config` лишається обов'язковим, `BRAVO_CONFIG_LOADER.ps1` НЕ
+> змінюється) — merged. PR C = PR #129 `feature/config-foundation-pr-c`
+> (тут, а не в PR B: опційний `BRAVO.config`, snapshot-виконання через
+> `BRAVO_CONFIG_LOADER.ps1`, `-ConfigPath` explicit/auto-intent-контракт
+> для Task Scheduler/`BRAVO_SETUP.ps1`/Configurator, post-merge
+> security-invariant re-validation, Configurator `DefaultValue` adapter,
+> прибирання дублюючого derivation/two-phase-override коду з
+> `BRAVO.config`, security-blind-spot fix для `BRAVO.local.config`,
+> install/update preservation) — merged. Усі три в `developer` (див.
+> CHANGELOG.md, розділ «Не випущено (developer)», запис «P0
+> Configuration Foundation»).
+> **P0 Configuration Foundation вважається завершеним.** Розділи нижче
+> лишаються як історичний запис прийнятого architecture-рішення
+> (7 питань gate, source matrix, обґрунтування розбиття на PR A/B/C) —
+> не переписані заднім числом під фактичну реалізацію; де реалізація
+> відрізнялась від плану, це задокументовано в CHANGELOG.md. Наступний
+> етап (фінальний DATA-only формат `BRAVO.config`, `configSchemaVersion`
+> 2, безпечний non-executing parser для основного файла) НЕ входить у
+> цей gate і НЕ завершений — статус і Definition of Done дивіться в
+> `docs/design/BRAVO_CONFIGURATION_V2_COMPLETION.md`.
 
 ## 0. Контекст
 

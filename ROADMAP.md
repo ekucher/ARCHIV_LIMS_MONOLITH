@@ -1,4 +1,4 @@
-# BRAVO-Toolkit Roadmap
+# BRAVO-Toolkit — дорожня карта
 
 Цей документ визначає актуальний порядок розвитку BRAVO-Toolkit. Детальні технічні design notes для окремих великих функцій залишаються в `TODO_FEATURES.md`; `ROADMAP.md` є канонічним джерелом пріоритетів і послідовності реалізації.
 
@@ -13,7 +13,7 @@
 
 ## Актуальні технічні обмеження
 
-### SFTP authentication
+### Автентифікація SFTP
 
 Production SFTP для Hetzner Storage Box залишається password-based. Перехід на public-key authentication не є поточним завданням, оскільки використовуване сховище в цьому deployment-профілі працює з парольною автентифікацією.
 
@@ -27,7 +27,7 @@ Production SFTP для Hetzner Storage Box залишається password-based
 
 Public-key authentication можна переглянути пізніше, якщо зміниться backend або з'явиться сумісний режим без погіршення операційної підтримки.
 
-### Authenticode / signed releases
+### Authenticode / підписані релізи
 
 Authenticode, підписані git tags і криптографічно підписаний release manifest не входять до найближчого плану. До них повертаємось, якщо реалізація не потребує істотних додаткових витрат, окремої складної PKI або значного операційного навантаження.
 
@@ -165,7 +165,7 @@ machine-readable result + notification
 - [x] Failure піднімає WARNING/CRITICAL залежно від причини. *(WARN→WARNING, FAIL→CRITICAL в ALERTS; SUCCESS→GENERAL для scheduled)*
 - [x] Є bounded cleanup тимчасових restore artifacts. *(сироти >7 діб, ≤10 за прогін)*
 
-### P1.2 — Stable release artifact
+### P1.2 — Стабільний release-артефакт
 
 Мета — перестати трактувати довільний checkout/набір файлів як release package.
 
@@ -196,7 +196,7 @@ release-manifest.json
 
 Підпис artifact/manifest є optional future hardening, не blocker для цього етапу.
 
-### P1.3 — Backup lifecycle / retention separation
+### P1.3 — Життєвий цикл backup / розділення retention
 
 Мета — зменшити blast radius credentials, якими користується Archive.
 
@@ -208,9 +208,61 @@ release-manifest.json
 
 Цей пункт може бути реалізований разом із P0.3, якщо storage architecture дозволяє.
 
+### P1.4 — SELF_TEST fail-fast structural validation і timing telemetry
+
+**Статус: DONE** (PR #138, змерджено в `developer` 2026-09-09, squash
+commit `57b16cba77ea4f30fa4464a9be2d8bfa122c132a`).
+
+Реалізовано:
+
+- рання fail-closed structural preflight (runtime manifest integrity,
+  обов'язкові manifest-файли, синтаксис production `*.Runtime.ps1`,
+  критичний JSON) на bootstrap-межі, до імпорту manifest-covered
+  helper-модулів;
+- контрольований (не uncontrolled exception) fail-closed шлях для
+  bootstrap integrity-scan збоїв;
+- Phase 0 short-circuit: структурний провал зупиняє доменні тести й
+  виходить через стандартний report-шлях;
+- diagnostic timing telemetry: total wall-clock, per-suite wall-clock,
+  `Root (inline)` wall-clock, assertion interval telemetry, Top 20
+  найдовших assertion-інтервалів;
+- framework-регресії для bootstrap integrity, tampered manifest-covered
+  helper, invalid bootstrap manifest, Phase 0 short-circuit, fixture
+  setup/cleanup провалів (включно з ACL/access-denied cleanup-станами
+  і TEMP-незалежним fixture setup через `[IO.Path]::GetTempPath()`).
+
+Final validation evidence: `PASS: 1893, FAIL: 0, Exit: 0, Total
+wall-clock: 00:07:57.113`.
+
+**Важливо:** ця telemetry — вимірювання/діагностика, НЕ P1
+performance optimization. `SELF_TEST` не став суттєво швидшим
+внаслідок цього PR; він лише отримав інструменти для вимірювання, де
+саме витрачається час. Проблема довгого `SELF_TEST` (P1.5 нижче)
+залишається відкритою.
+
+### P1.5 — Оптимізація продуктивності SELF_TEST
+
+**Статус: TODO / PLANNED.** Окремо від P1.4 (яка додала лише
+вимірювання, не пришвидшення).
+
+Можливі напрями (жоден ще не реалізований):
+
+- AST/text caching для повторюваних parse-операцій;
+- `-Suite` / `-Affected` — вибіркове виконання підмножини тестів;
+- оптимізація runtime child-process smoke-test фікстур;
+- декомпозиція кореневого `BRAVO_SELF_TEST.ps1` на менші одиниці
+  виконання без втрати hermetic-гарантій;
+- скорочення/видалення непотрібних `Start-Sleep`-очікувань там, де
+  timing telemetry (P1.4) підтверджує, що вони не потрібні;
+- безпечний паралелізм там, де fixture-ізоляція це дозволяє.
+
+Використовувати timing telemetry з P1.4 (per-suite wall-clock, Top 20
+найдовших assertion-інтервалів) як evidence base для пріоритизації
+цієї роботи, а не здогадки.
+
 ## P2 — централізована експлуатація
 
-### P2.1 — Machine-readable health/status contract
+### P2.1 — Машинозчитуваний health/status-контракт
 
 **Статус (2026-08-26, цикл 5.3.0): реалізовано** (гілка
 `feature/status-contract`): модуль `modules/BRAVO.Status/` — канонічний
@@ -253,7 +305,7 @@ Health-файла. Транспорт/моніторинг поверх файл
 - [x] Exit codes лишаються canonical source of failure class. *(status — проєкція exitCode; fail-soft самотести CallSiteIsFailSoft)*
 - [x] JSON можна використовувати Zabbix/telemetry без парсингу console text. *(4 файли в `STATUS\`; сама інтеграція — P2.2)*
 
-### P2.2 — Remote Fleet Telemetry
+### P2.2 — Віддалена телеметрія парку серверів
 
 Продовжити FEAT-003 із `TODO_FEATURES.md`, але після появи стабільного локального machine-readable contract.
 
@@ -274,13 +326,43 @@ Telemetry залишається outbound-only і не перетворюєть�
 
 ### P3.1 — Config v2
 
+**Статус: Foundation completed; final declarative Config v2 completion
+pending.**
+
 FEAT-001 із `TODO_FEATURES.md` залишається важливим, але не випереджає production safety та restore verification.
 
 Ціль: package defaults + site-local data-only overrides + deterministic schema validation + legacy migration.
 
-Починати після стабілізації P0/P1, якщо ручний merge `BRAVO.config` продовжує створювати реальний операційний ризик.
+**P0 Configuration Foundation — DONE** (змерджено в `developer`):
+canonical built-in defaults, deterministic deep merge (array replace,
+явний `@()` — валідний override, `Limits.ExcludedDrives` дефолт —
+`@()`), опційний `BRAVO.config`, `-ConfigPath` AUTO/EXPLICIT-контракт,
+derivation після merge, post-merge security-invariant re-validation,
+restricted-language `BRAVO.local.config` (dot-шлях → значення):
+`CheckRestrictedLanguage` з порожніми command/variable allow-lists
+блокує виклики cmdlet/функцій і посилання на недозволені змінні до
+виконання, але це НЕ робить граматику суто літеральною — restricted-
+language граматика PowerShell усе ще допускає окремі вирази
+(наприклад, арифметичні/range-вирази), а сам validated `ScriptBlock`
+усе ще ВИКОНУЄТЬСЯ (`& $scriptBlock`), тож будь-який дозволений вираз
+обчислюється, а не лише екстрактується як літерал — це не те саме, що
+non-executing AST-only parser (цільовий Config v2 контракт нижче,
+деталі — `docs/design/BRAVO_CONFIGURATION_V2_COMPLETION.md`).
+Precedence сьогодні: `DEFAULT <
+BRAVO.config (опційно) < BRAVO.local.config (опційно)`. Деталі —
+`docs/design/BRAVO_CONFIGURATION_FOUNDATION_DESIGN.md`.
 
-### P3.2 — Atomic versioned deployment / rollback
+**Config v2 — IN PROGRESS / не завершено.** `BRAVO.config` сам
+залишається виконуваним PowerShell-скриптом (не DATA-only),
+`VERSION.json.configSchemaVersion` = `1`, файл `BRAVO.config.local`
+(цільова v2-назва) у runtime ще не існує. Повний перелік
+залишкових gaps, target architecture, safe declarative parser
+requirement, schema v2, migration і DoD regression matrix —
+`docs/design/BRAVO_CONFIGURATION_V2_COMPLETION.md`.
+
+Починати наступний PR-цикл після стабілізації P0/P1, якщо ручний merge `BRAVO.config` продовжує створювати реальний операційний ризик.
+
+### P3.2 — Атомарний версійований deployment / rollback
 
 FEAT-002 реалізується після stable release artifact і, бажано, Config v2.
 
@@ -351,7 +433,7 @@ auto-download за розкладом, будь-який silent-режим, пі
 каналу — прийнятно для операції, яку ініціює і спостерігає оператор,
 недостатньо для автономної.
 
-## P4 — optional hardening
+## P4 — опційне посилення захисту
 
 Виконувати лише після основних operational задач або коли з'явиться дешевий/простий шлях реалізації:
 
@@ -366,18 +448,18 @@ auto-download за розкладом, будь-який silent-режим, пі
 ## Рекомендована послідовність
 
 ```text
-1. 5.0.1 hotfix acceptance/stable
-2. master/release governance gate
-3. remote backup history protection
-4. scheduled Restore Drill
-5. stable release ZIP + SHA-256 + manifest
-6. retention authority separation
-7. machine-readable status contract
-8. remote fleet telemetry / Zabbix integration
+1. acceptance/stable для hotfix 5.0.1
+2. gate управління релізами master/release governance
+3. захист історії віддалених резервних копій
+4. плановий Restore Drill
+5. stable release ZIP + SHA-256 + маніфест
+6. розділення повноважень retention
+7. машинозчитуваний контракт статусу
+8. віддалена телеметрія парку серверів / інтеграція Zabbix
 9. Config v2
-10. atomic deployment + rollback
+10. атомарний deployment + rollback
 11. auto-update
-12. optional signing/public-key hardening
+12. опційне підписання / посилення захисту public-key
 ```
 
 ## Що не є поточним пріоритетом
