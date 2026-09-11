@@ -318,7 +318,7 @@ try {
                 "SYSTEM dry-run не запускається з профілю користувача: $scriptRoot. " +
                 "Заплановані завдання виконуються від NT AUTHORITY\SYSTEM, а каталог " +
                 "профілю не є для нього захищеним розташуванням. Перенесіть комплект " +
-                "у локальний захищений каталог — наприклад C:\BRAVO, C:\ProgramData\BRAVO " +
+                "у локальний захищений каталог — наприклад C:\Program Files\BRAVO-Toolkit, C:\ProgramData\BRAVO " +
                 "або D:\BRAVO_RUNTIME (ACL: SYSTEM/Administrators — FullControl, " +
                 "Users — ReadAndExecute). Корені даних (LIMSRoot/SystemLogRoot/BackupRoot) " +
                 "переносити не потрібно: вони задаються в BRAVO.config незалежно."

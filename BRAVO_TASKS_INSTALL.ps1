@@ -78,7 +78,7 @@ function Set-BRAVOProtectedRuntimeAcl {
         throw (
             "SYSTEM-завдання не можна встановлювати з профілю користувача: " +
             "$resolvedRoot. Перенесіть runtime до захищеного каталогу, " +
-            "наприклад C:\BRAVO."
+            "наприклад C:\Program Files\BRAVO-Toolkit."
         )
     }
     $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
@@ -806,7 +806,7 @@ try {
             $unsafeRuntimeMessage = (
                 "SYSTEM runtime розташований у профілі користувача: " +
                 "$runtimeRoot. Фактична інсталяція буде відхилена; " +
-                "перенесіть комплект до C:\BRAVO."
+                "перенесіть комплект до C:\Program Files\BRAVO-Toolkit."
             )
             if ($ValidateOnly) {
                 Write-Warning $unsafeRuntimeMessage

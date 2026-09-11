@@ -247,7 +247,7 @@ function Test-BravoDataRootValue {
         throw "pathSettings.$Name порожній після розкриття змінних середовища (вихідне значення: '$Value')."
     }
     if ($normalized -notmatch '^([A-Za-z]:[\\/]|\\\\[^\\/]+[\\/])') {
-        throw "pathSettings.$Name повинен бути абсолютним шляхом ('D:\LIMS-NEW' або '\\server\share\...'), а не '$Value'."
+        throw "pathSettings.$Name повинен бути абсолютним шляхом ('C:\LIMS' або '\\server\share\...'), а не '$Value'."
     }
 }
 
@@ -917,7 +917,7 @@ function Import-BravoConfiguration {
         # Каталог самого комплекту (де лежать modules\, Tools\, VERSION.json,
         # RUNTIME_MANIFEST.json). За замовчуванням збігається з ConfigRoot —
         # так було й до появи цього параметра. Але -ConfigPath може вказувати
-        # на конфігурацію в іншому каталозі (C:\BRAVO\CONFIGS\SERVER1.config),
+        # на конфігурацію в іншому каталозі (C:\Program Files\BRAVO-Toolkit\CONFIGS\SERVER1.config),
         # і тоді modules\ треба шукати не поруч із нею, а поруч зі скриптами.
         [string]$RuntimeRoot,
 

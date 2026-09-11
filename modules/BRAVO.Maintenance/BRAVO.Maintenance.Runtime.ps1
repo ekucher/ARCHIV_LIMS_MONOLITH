@@ -158,7 +158,7 @@ try {
     $ConfigPath = [System.IO.Path]::GetFullPath($ConfigPath)
     $configRoot = Split-Path -Path $ConfigPath -Parent
     # Завантажувач і modules\ беруться з КОМПЛЕКТУ, а не з каталогу
-    # конфігурації: -ConfigPath може вказувати на C:\BRAVO\CONFIGS\SERVER1.config,
+    # конфігурації: -ConfigPath може вказувати на C:\Program Files\BRAVO-Toolkit\CONFIGS\SERVER1.config,
     # де немає ні BRAVO_CONFIG_LOADER.ps1, ні modules\.
     $configurationLoaderPath = Join-Path $bravoScriptDirectory 'BRAVO_CONFIG_LOADER.ps1'
     if (-not (Test-Path -LiteralPath $configurationLoaderPath -PathType Leaf)) {

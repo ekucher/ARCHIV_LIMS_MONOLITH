@@ -654,7 +654,7 @@ effective primary path = <ConfigRoot>\BRAVO.config
 опціональним).
 
 **Режим EXPLICIT** — оператор явно вказав `-ConfigPath <шлях>`
-(наприклад, `C:\BRAVO\CONFIGS\SERVER1.config`): точний розв'язаний
+(наприклад, `C:\Program Files\BRAVO-Toolkit\CONFIGS\SERVER1.config`): точний розв'язаний
 шлях є наміром оператора й **повинен залишатися активним основним
 шляхом протягом усієї міграції**. Він не повинен мовчки
 перетворюватися на `<RuntimeRoot>\BRAVO.config` чи
@@ -678,9 +678,9 @@ PR C вже визначено як двоформатний зчитувач. �
 
 Машинно-локальне перевизначення v2 слідує тому ж ефективному каталогу
 конфігурації, що й сьогодні: для явного основного шляху
-`C:\BRAVO\CONFIGS\SERVER1.config` відповідний `BRAVO.config.local`
+`C:\Program Files\BRAVO-Toolkit\CONFIGS\SERVER1.config` відповідний `BRAVO.config.local`
 (за використання) розв'язується з
-`C:\BRAVO\CONFIGS\BRAVO.config.local`, згідно з контрактом імені
+`C:\Program Files\BRAVO-Toolkit\CONFIGS\BRAVO.config.local`, згідно з контрактом імені
 локального файлу v2 — він не переноситься мовчки в `RuntimeRoot`. Для
 режиму AUTO/без-основного-файлу застосовується задокументована
 поведінка на основі `ConfigRoot`. `RuntimeRoot` не обов'язково є

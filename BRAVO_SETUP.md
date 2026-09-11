@@ -65,7 +65,7 @@ shutdown та інші production-операції у цьому сценарі�
 
 Не встановлюйте SYSTEM-завдання зі `Desktop`, `Documents`, `Downloads` або
 іншого каталогу профілю користувача. Робочий комплект (`RuntimeRoot`) потрібно
-розміщувати, наприклад, у `C:\BRAVO`; `LIMSRoot`, `ArchiveRoot` і `BackupRoot`
+розміщувати, наприклад, у `C:\Program Files\BRAVO-Toolkit`; `LIMSRoot`, `ArchiveRoot` і `BackupRoot`
 задаються окремими абсолютними шляхами в effective `BRAVO.config`.
 
 Під час інсталяції Планувальника `BRAVO_TASKS_INSTALL.ps1` відмовляється

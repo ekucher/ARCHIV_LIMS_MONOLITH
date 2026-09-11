@@ -15,7 +15,7 @@
 
 > **Важливо:** production-комплект для завдань від `SYSTEM` не можна запускати з
 > `Desktop`, `Documents`, `Downloads` або іншого каталогу профілю користувача.
-> Рекомендоване розташування RuntimeRoot — `C:\BRAVO`; його назва не
+> Рекомендоване розташування RuntimeRoot — `C:\Program Files\BRAVO-Toolkit`; його назва не
 > пов'язана з `ArchiveRoot` або каталогом інсталяції LIMS.
 
 ## Швидкий вибір команди
@@ -169,7 +169,7 @@ Health при цьому не просто попереджає: він проп
 Приклад розгортання на різних дисках:
 
 ```text
-C:\BRAVO\                          RuntimeRoot — комплект
+C:\Program Files\BRAVO-Toolkit\    RuntimeRoot — комплект
 ├── BRAVO_ARCHIV.ps1, BRAVO_MAINTENANCE.ps1, BRAVO_HEALTH.ps1
 ├── BRAVO_SETUP.ps1, BRAVO_DRY_RUN.ps1, BRAVO_SELF_TEST.ps1
 ├── BRAVO_CREDENTIALS_SETUP.ps1, BRAVO_TASKS_INSTALL.ps1,
@@ -185,12 +185,12 @@ C:\BRAVO\                          RuntimeRoot — комплект
 └── LOGS\                          логи самих скриптів (Archive/Maintenance/Health)
     └── HELPERS\                    транскрипти допоміжних скриптів
 
-D:\LIMS-NEW\                       LIMSRoot — інсталяція LIMS ("" = AUTO зі служби)
+C:\LIMS\                           LIMSRoot — інсталяція LIMS ("" = AUTO зі служби)
 ├── bravo.exe
 ├── Model\
 └── bravoexch\
 
-D:\LIMS-NEW\ARCHIV\LOGS\           SystemLogRoot — системні журнали ("" = AUTO)
+C:\LIMS\ARCHIV\LOGS\               SystemLogRoot — системні журнали ("" = AUTO)
 ├── Trace\
 ├── exchangAPI\
 └── BravoWeb\                      Apache\, Application\ (розділ 12)
@@ -226,7 +226,7 @@ $global:pathSettings = @{
 
 ```powershell
 $global:pathSettings = @{
-    LIMSRoot      = "D:\LIMS-NEW"   # або "" — AUTO зі встановленої служби BRAVO
+    LIMSRoot      = "C:\LIMS"   # або "" — AUTO зі встановленої служби BRAVO
     SystemLogRoot = ""              # "" -> <EffectiveLIMSRoot>\ARCHIV\LOGS
     BackupRoot    = "E:\BRAVO_BACKUPS"
 }
@@ -547,13 +547,13 @@ Credential Manager є прив'язаним до облікового запис
 
 ### Крок 1. Розмістити файли
 
-Скопіюйте комплект у `C:\BRAVO`, додайте інструменти у `Tools` і
+Скопіюйте комплект у `C:\Program Files\BRAVO-Toolkit`, додайте інструменти у `Tools` і
 перевірте наявність джерельних каталогів.
 
 ### Крок 2. Виконати локальні тести
 
 ```powershell
-cd /d C:\BRAVO
+cd /d "C:\Program Files\BRAVO-Toolkit"
 .\BRAVO_SELF_TEST.ps1
 ```
 
