@@ -1005,7 +1005,7 @@ $maintenanceScriptText = [IO.File]::ReadAllText(
                 -NssmParameters $NssmParameters
         } -Arguments @(
             [pscustomobject]@{ PathName = '"C:\nssm\nssm.exe"' },
-            @{ Application = "D:\LIMS-NEW\exchangAPI.exe"; AppDirectory = "D:\LIMS-NEW\" }
+            @{ Application = "C:\LIMS\exchangAPI.exe"; AppDirectory = "C:\LIMS\" }
         )
         $test22ServiceResult = Invoke-BRAVORotationHelper -Body {
             param($ServiceInstance, $NssmParameters)
@@ -1015,7 +1015,7 @@ $maintenanceScriptText = [IO.File]::ReadAllText(
                 -ServiceInstance $ServiceInstance `
                 -NssmParameters $NssmParameters
         } -Arguments @(
-            [pscustomobject]@{ PathName = '"D:\LIMS-NEW\exchangAPI.exe" -k runservice' },
+            [pscustomobject]@{ PathName = '"C:\LIMS\exchangAPI.exe" -k runservice' },
             @{}
         )
         $test22FallbackResult = Invoke-BRAVORotationHelper -Body {
@@ -1028,8 +1028,8 @@ $maintenanceScriptText = [IO.File]::ReadAllText(
         } -Arguments @([pscustomobject]@{ PathName = "" }, @{})
         Test-BRAVOCondition `
             -Condition (
-                [string]$test22NssmResult.Directory -eq "D:\LIMS-NEW" -and
-                [string]$test22ServiceResult.Directory -eq "D:\LIMS-NEW" -and
+                [string]$test22NssmResult.Directory -eq "C:\LIMS" -and
+                [string]$test22ServiceResult.Directory -eq "C:\LIMS" -and
                 [string]$test22FallbackResult.Directory -eq "D:\LIMS-FALLBACK" -and
                 ([string]$test22FallbackResult.Reason).Contains("fallback")
             ) `

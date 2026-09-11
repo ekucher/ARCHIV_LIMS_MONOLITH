@@ -4946,7 +4946,7 @@ if ($r.StateUpdated -and -not [IO.File]::Exists($PassedPath)) { exit 0 } else { 
         -Name 'Discovery/EmptyCanonicalBravoExchDirectoryRemainsEnabled' `
         -Failure 'canonical BEXCH directory can be an idle queue tree with no files; config must accept the existing directory without a content heuristic'
     # CODE IS NOT DATA: -ConfigRoot береться з фактичного шляху конфігурації
-    # (вона може лежати в окремому каталозі, наприклад C:\BRAVO\CONFIGS), а
+    # (вона може лежати в окремому каталозі, наприклад C:\Program Files\BRAVO-Toolkit\CONFIGS), а
     # -RuntimeRoot — це завжди каталог самого комплекту, звідки беруться
     # modules\, Tools\ і VERSION.json.
     $loaderCallPattern = 'Import-BravoConfiguration\s+`?\s*' +
@@ -7635,7 +7635,7 @@ if ($r.StateUpdated -and -not [IO.File]::Exists($PassedPath)) { exit 0 } else { 
     # зламаний через неіснуючу службу).
     $rootReadinessSystemLogRootAlone = Get-BRAVOTaskRootReadinessResults `
         -BackupRootSource 'ExplicitConfig' -BackupRootValue 'E:\Backup' -BackupRootReason 'ok' `
-        -LimsRootSource 'ServiceDiscovery' -LimsRootValue 'D:\LIMS-NEW' -LimsRootReason 'ok' `
+        -LimsRootSource 'ServiceDiscovery' -LimsRootValue 'C:\LIMS' -LimsRootReason 'ok' `
         -SystemLogRootSource 'Error' -SystemLogRootValue '' -SystemLogRootReason 'імітована помилка' `
         -MaintenanceTaskEnabled $true -RecoveryTaskEnabled $false
     $systemLogRootAloneRow = @($rootReadinessSystemLogRootAlone | Where-Object { $_.Label -like 'SystemLogRoot*' })
@@ -9904,18 +9904,18 @@ if ($r.StateUpdated -and -not [IO.File]::Exists($PassedPath)) { exit 0 } else { 
         '[model]',
         ';MODEL=G:\LIMS\LIMS_v020924\Poltava_fito\lims',
         'MODEL=D:\LIMS-OLD\Model\lims',
-        'MODEL=D:\LIMS-NEW\Model\lims',
+        'MODEL=C:\LIMS\Model\lims',
         ';MODEL=D:\LIMS\Model\lims',
-        'BLOG=D:\LIMS-NEW\BLOG\',
-        'BEXCH=D:\LIMS-NEW\bravoexch',
+        'BLOG=C:\LIMS\BLOG\',
+        'BEXCH=C:\LIMS\bravoexch',
         'BLOGMAX=1000'
     )
     $parsedIni = ConvertFrom-BRAVOIniFile -Content $sampleIniContent
     Test-BRAVOCondition `
         -Condition (
-            $parsedIni['model']['MODEL'] -eq 'D:\LIMS-NEW\Model\lims' -and
-            $parsedIni['model']['BLOG'] -eq 'D:\LIMS-NEW\BLOG\' -and
-            $parsedIni['model']['BEXCH'] -eq 'D:\LIMS-NEW\bravoexch' -and
+            $parsedIni['model']['MODEL'] -eq 'C:\LIMS\Model\lims' -and
+            $parsedIni['model']['BLOG'] -eq 'C:\LIMS\BLOG\' -and
+            $parsedIni['model']['BEXCH'] -eq 'C:\LIMS\bravoexch' -and
             $parsedIni['system']['DBMEMLIMIT'] -eq '0' -and
             -not $parsedIni['model'].ContainsKey('')
         ) `
@@ -10031,7 +10031,7 @@ if ($r.StateUpdated -and -not [IO.File]::Exists($PassedPath)) { exit 0 } else { 
         # Реальний випадок (звіт користувача, реальна dev-машина): служби
         # BRAVO немає взагалі, але системний bravo.ini є — і MODEL/BLOG у
         # ньому вказують на зовсім інший диск/каталог, ніж LimsRoot
-        # ("D:\LIMS-NEW\..." проти "C:\Users\...\Documents"). BRAVO_ROOT
+        # ("C:\LIMS\..." проти "C:\Users\...\Documents"). BRAVO_ROOT
         # тоді лишається невизначеним, але BAZA_APP усе одно має братись
         # поруч із реальним MODEL/BLOG із canonical bravo.ini.
         $iniOnlyInstallRoot = Join-Path $discoveryTestRoot "IniOnlyInstall"
@@ -11630,8 +11630,8 @@ if ($r.StateUpdated -and -not [IO.File]::Exists($PassedPath)) { exit 0 } else { 
         -Failure "BRAVO.config має передавати -BravoDisplayName=@(`"BRAVO Service`", `"BRAVO Server`") у Resolve-BRAVOEffectiveLimsRoot і Resolve-BRAVOInstallationDiscovery (обидва call-сайти, як масив — не [string]-cast), обчислювати BackupRoot через Resolve-BRAVOEffectiveBackupRoot і НЕ перевизначати pathSettings.BackupRoot мовчки з Discovery.BACKUP_ROOT"
 
     # CODE IS NOT DATA. Виробничі корені даних НЕ виводяться з розташування
-    # комплекту: для комплекту в C:\BRAVO старі формули дали б LIMSRoot="C:\"
-    # і ArchiveRoot="C:\BRAVO", тобто журнали писалися б у каталог з
+    # комплекту: для комплекту в C:\Program Files\BRAVO-Toolkit старі формули дали б LIMSRoot="C:\"
+    # і ArchiveRoot="C:\Program Files\BRAVO-Toolkit", тобто журнали писалися б у каталог з
     # виконуваним кодом. Тепер усі три корені — валідне "" (all-AUTO від
     # служби BRAVO) або явний абсолютний шлях; ЖОДНОГО виведення з ConfigRoot.
     $configLoaderTextForRoots = [IO.File]::ReadAllText(
@@ -12794,7 +12794,7 @@ function Get-BRAVOMaintenanceSummaryResult {
     # dev.14 (round 4): повний підсумок разом із footer (Write-BRAVOFinalSummaryFooter) —
     # "Журнал:" (не "Детальний журнал:"), шлях наступним рядком, закриваючий
     # '='*60 (не '-'*60 Write-BRAVOResultFooter).
-    $summaryTestLogPath = 'C:\BRAVO\LOGS\BRAVO_MAINTENANCE_20260809_221003_PID1234.log'
+    $summaryTestLogPath = 'C:\Program Files\BRAVO-Toolkit\LOGS\BRAVO_MAINTENANCE_20260809_221003_PID1234.log'
     foreach ($summaryCase in @(
         @{ Status = 'УСПІШНО'; Color = 'Green'; TestName = 'Maintenance/SuccessSummaryRender' },
         @{ Status = 'ЧАСТКОВО'; Color = 'Yellow'; TestName = 'Maintenance/WarningSummaryRender' },
@@ -14532,7 +14532,7 @@ function Get-BRAVOMaintenanceSummaryResult {
         & $dataRootModule {
             param($Settings)
             Assert-BravoDataRootsAreIndependent -PathSettings $Settings
-        } @{ LIMSRoot = 'D:\LIMS-NEW'; SystemLogRoot = 'E:\BRAVO_LOGS'; BackupRoot = 'F:\BRAVO_BACKUPS' }
+        } @{ LIMSRoot = 'C:\LIMS'; SystemLogRoot = 'E:\BRAVO_LOGS'; BackupRoot = 'F:\BRAVO_BACKUPS' }
     } catch { $relocatableValid = $false }
     $allAutoValid = $true
     try {
@@ -14850,7 +14850,7 @@ function Get-BRAVOMaintenanceSummaryResult {
     # --- Sync/01: BAZA_APP only -> BAZASync потрібне, лише /baza_app ---
     $syncAppOnly = Get-BRAVOEffectiveSynchronizationConfiguration `
         -Synchronization @{ BAZA_APP_SFTP = $true; BAZA_APP_LOCAL = $false; BAZA_WWW_SFTP = $false; BAZA_WWW_LOCAL = $false } `
-        -BazaAppSource 'D:\LIMS-NEW\BAZA' -BazaWWWSource '' -BazaWWWDetection $null -SftpDirectories $syncSftpDirs
+        -BazaAppSource 'C:\LIMS\BAZA' -BazaWWWSource '' -BazaWWWDetection $null -SftpDirectories $syncSftpDirs
     $syncAppComp = @($syncAppOnly.Components | Where-Object { $_.Name -eq 'BAZA_APP' })[0]
     $syncWwwCompA = @($syncAppOnly.Components | Where-Object { $_.Name -eq 'BAZA_WWW' })[0]
     Test-BRAVOCondition `
@@ -14902,7 +14902,7 @@ function Get-BRAVOMaintenanceSummaryResult {
     # --- Sync/05: ВИМКНЕНИЙ компонент із порожнім джерелом -> не блокує ---
     $syncDisabledMissing = Get-BRAVOEffectiveSynchronizationConfiguration `
         -Synchronization @{ BAZA_APP_SFTP = $true; BAZA_APP_LOCAL = $false; BAZA_WWW_SFTP = $false; BAZA_WWW_LOCAL = $false } `
-        -BazaAppSource 'D:\LIMS-NEW\BAZA' -BazaWWWSource '' -BazaWWWDetection ([pscustomobject]@{ Success = $false; Reason = 'вимкнено' }) -SftpDirectories $syncSftpDirs
+        -BazaAppSource 'C:\LIMS\BAZA' -BazaWWWSource '' -BazaWWWDetection ([pscustomobject]@{ Success = $false; Reason = 'вимкнено' }) -SftpDirectories $syncSftpDirs
     $syncDisabledComp = @($syncDisabledMissing.Components | Where-Object { $_.Name -eq 'BAZA_WWW' })[0]
     Test-BRAVOCondition `
         -Condition (-not $syncDisabledComp.AnyEnabled) `
@@ -14912,7 +14912,7 @@ function Get-BRAVOMaintenanceSummaryResult {
     # --- Sync/06: глобальний вимикач SFTP (5.2.2) гасить обидва напрямки ---
     $syncGlobalOff = Get-BRAVOEffectiveSynchronizationConfiguration `
         -Synchronization @{ BAZA_APP_SFTP = $true; BAZA_APP_LOCAL = $false; BAZA_WWW_SFTP = $true; BAZA_WWW_LOCAL = $true } `
-        -BazaAppSource 'D:\LIMS-NEW\BAZA' -BazaWWWSource 'C:\Br-a-vo.web\www\BAZA' -BazaWWWDetection ([pscustomobject]@{ Success = $true; Reason = $null }) -SftpDirectories $syncSftpDirs `
+        -BazaAppSource 'C:\LIMS\BAZA' -BazaWWWSource 'C:\Br-a-vo.web\www\BAZA' -BazaWWWDetection ([pscustomobject]@{ Success = $true; Reason = $null }) -SftpDirectories $syncSftpDirs `
         -GlobalSftpEnabled $false
     $syncGlobalOffWww = @($syncGlobalOff.Components | Where-Object { $_.Name -eq 'BAZA_WWW' })[0]
     Test-BRAVOCondition `
@@ -14928,7 +14928,7 @@ function Get-BRAVOMaintenanceSummaryResult {
     # --- Sync/07: default GlobalSftpEnabled зберігає поведінку 5.2.1 ---
     $syncGlobalDefault = Get-BRAVOEffectiveSynchronizationConfiguration `
         -Synchronization @{ BAZA_APP_SFTP = $true; BAZA_APP_LOCAL = $false; BAZA_WWW_SFTP = $false; BAZA_WWW_LOCAL = $false } `
-        -BazaAppSource 'D:\LIMS-NEW\BAZA' -BazaWWWSource '' -BazaWWWDetection $null -SftpDirectories $syncSftpDirs
+        -BazaAppSource 'C:\LIMS\BAZA' -BazaWWWSource '' -BazaWWWDetection $null -SftpDirectories $syncSftpDirs
     Test-BRAVOCondition `
         -Condition (
             $syncGlobalDefault.ScheduledSftpSyncRequired -and

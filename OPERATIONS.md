@@ -212,10 +212,10 @@ Get-Process -Id <pid> -ErrorAction SilentlyContinue | Select-Object Id, ProcessN
 **Діагностика.** Спершу зафіксуйте докази:
 
 ```powershell
-Get-ChildItem "C:\BRAVO\Tools" -File |
+Get-ChildItem "C:\Program Files\BRAVO-Toolkit\Tools" -File |
     Get-FileHash -Algorithm SHA256 |
     Select-Object Hash, Path | Format-Table -AutoSize
-Get-ChildItem "C:\BRAVO\Tools" -File |
+Get-ChildItem "C:\Program Files\BRAVO-Toolkit\Tools" -File |
     Select-Object Name, Length, CreationTime, LastWriteTime
 ```
 
@@ -261,7 +261,7 @@ Get-ChildItem "C:\BRAVO\Tools" -File |
 
 ```powershell
 # Guard друкує повний перелік розбіжностей і не вимагає модулів
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\BRAVO\BRAVO_RUNTIME_GUARD.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\BRAVO-Toolkit\BRAVO_RUNTIME_GUARD.ps1"
 ```
 
 Звірте `VERSION.json.sourceCommit` на сервері з тим, що ви розгортали.
@@ -297,9 +297,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\BRAVO\BRAVO_RUNTIME_
 доки не переконаєтесь, що воно нікому не потрібне:
 
 ```powershell
-Get-ChildItem C:\BRAVO\Tools\*.ps1 | Select-Object Name, Length, LastWriteTime
-Move-Item C:\BRAVO\Tools\<файл>.ps1 C:\Temp\ -Force
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\BRAVO\BRAVO_RUNTIME_GUARD.ps1"
+Get-ChildItem "C:\Program Files\BRAVO-Toolkit\Tools\*.ps1" | Select-Object Name, Length, LastWriteTime
+Move-Item "C:\Program Files\BRAVO-Toolkit\Tools\<файл>.ps1" C:\Temp\ -Force
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\BRAVO-Toolkit\BRAVO_RUNTIME_GUARD.ps1"
 ```
 
 **Профілактика.** Розгортайте атомарною заміною каталогу, не
@@ -330,10 +330,10 @@ Get-ExecutionPolicy -List
 **Виправлення — ручний запуск.** Так само, як це робить планувальник:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\BRAVO\BRAVO_ARCHIV.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\BRAVO-Toolkit\BRAVO_ARCHIV.ps1"
 ```
 
-Прямий виклик `C:\BRAVO\BRAVO_ARCHIV.ps1` під `AllSigned` не
+Прямий виклик `C:\Program Files\BRAVO-Toolkit\BRAVO_ARCHIV.ps1` під `AllSigned` не
 працюватиме й не має працювати.
 
 **Чого не робити.** Не знижуйте `ExecutionPolicy` машини до
@@ -375,7 +375,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\BRAVO\BRAVO_ARCHIV.p
 значення. Далі — хто і коли редагував конфігурацію:
 
 ```powershell
-Get-Item "C:\BRAVO\BRAVO.config" | Select-Object LastWriteTime, Length
+Get-Item "C:\Program Files\BRAVO-Toolkit\BRAVO.config" | Select-Object LastWriteTime, Length
 git -C <робоча копія> diff -- BRAVO.config   # якщо конфігурація версіонується
 ```
 
@@ -414,7 +414,7 @@ git -C <робоча копія> diff -- BRAVO.config   # якщо конфіг�
 
 ```powershell
 Get-Content "C:\ProgramData\BRAVO\State\BRAVO_VERSION_STATE.json" | ConvertFrom-Json
-Get-Content "C:\BRAVO\VERSION.json" | ConvertFrom-Json |
+Get-Content "C:\Program Files\BRAVO-Toolkit\VERSION.json" | ConvertFrom-Json |
     Select-Object packageVersion, buildId, sourceCommit
 ```
 
@@ -644,7 +644,7 @@ final backup і не позначайте неперевірений файл я
 **Діагностика.**
 
 ```powershell
-& "C:\BRAVO\Tools\7za.exe" t "<шлях до тимчасового архіву>"
+& "C:\Program Files\BRAVO-Toolkit\Tools\7za.exe" t "<шлях до тимчасового архіву>"
 Get-Volume | Select-Object DriveLetter, HealthStatus, SizeRemaining
 Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='disk','Ntfs'} -MaxEvents 50
 ```

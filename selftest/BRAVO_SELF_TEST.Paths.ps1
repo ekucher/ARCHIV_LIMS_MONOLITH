@@ -35,7 +35,7 @@ $maintenanceScriptText = [IO.File]::ReadAllText(
         )
     )
 
-    $svcCanonical = @([pscustomobject]@{ Name='BRAVO'; DisplayName='BRAVO Service'; State='Stopped'; StartMode='Disabled'; PathName='"D:\LIMS-NEW\bravo.exe" -service' })
+    $svcCanonical = @([pscustomobject]@{ Name='BRAVO'; DisplayName='BRAVO Service'; State='Stopped'; StartMode='Disabled'; PathName='"C:\LIMS\bravo.exe" -service' })
     $svcAmbiguous = @(
         [pscustomobject]@{ Name='BRAVO'; DisplayName='BRAVO Service'; State='Running'; StartMode='Auto'; PathName='"D:\LIMS\bravo.exe"' },
         [pscustomobject]@{ Name='BRAVO'; DisplayName='BRAVO Service'; State='Stopped'; StartMode='Manual'; PathName='"E:\LIMS\bravo.exe"' })
@@ -43,7 +43,7 @@ $maintenanceScriptText = [IO.File]::ReadAllText(
     # --- Paths/01: AUTO LIMSRoot зі служби (Disabled допустимо) ---
     $autoLims = Resolve-BRAVOEffectiveLimsRoot -ConfiguredPath '' -Services $svcCanonical
     Test-BRAVOCondition `
-        -Condition ([string]$autoLims.Source -eq 'ServiceDiscovery' -and [string]$autoLims.EffectivePath -eq 'D:\LIMS-NEW') `
+        -Condition ([string]$autoLims.Source -eq 'ServiceDiscovery' -and [string]$autoLims.EffectivePath -eq 'C:\LIMS') `
         -Name "Paths/01-AutoLimsRootFromService" `
         -Failure "LIMSRoot='' має визначатись як каталог bravo.exe встановленої служби (Disabled — теж валідна identity)"
 
@@ -80,14 +80,14 @@ $maintenanceScriptText = [IO.File]::ReadAllText(
         -Failure "кілька служб BRAVO з різними виконуваними файлами при LIMSRoot='' мають давати помилку (fail-closed), а не first-match"
 
     # --- Paths/05: AUTO SystemLogRoot = <LIMSRoot>\ARCHIV\LOGS ---
-    $autoSysLog = Resolve-BRAVOEffectiveSystemLogRoot -ConfiguredPath '' -EffectiveLimsRoot 'D:\LIMS-NEW'
+    $autoSysLog = Resolve-BRAVOEffectiveSystemLogRoot -ConfiguredPath '' -EffectiveLimsRoot 'C:\LIMS'
     Test-BRAVOCondition `
-        -Condition ([string]$autoSysLog.Source -eq 'AutoFromLIMSRoot' -and [string]$autoSysLog.EffectivePath -eq 'D:\LIMS-NEW\ARCHIV\LOGS') `
+        -Condition ([string]$autoSysLog.Source -eq 'AutoFromLIMSRoot' -and [string]$autoSysLog.EffectivePath -eq 'C:\LIMS\ARCHIV\LOGS') `
         -Name "Paths/05-AutoSystemLogRootFromLims" `
         -Failure "SystemLogRoot='' має давати <EffectiveLIMSRoot>\ARCHIV\LOGS"
 
     # --- Paths/06: explicit SystemLogRoot використовується точно ---
-    $explicitSysLog = Resolve-BRAVOEffectiveSystemLogRoot -ConfiguredPath 'E:\BRAVO_SYSTEM_LOGS' -EffectiveLimsRoot 'D:\LIMS-NEW'
+    $explicitSysLog = Resolve-BRAVOEffectiveSystemLogRoot -ConfiguredPath 'E:\BRAVO_SYSTEM_LOGS' -EffectiveLimsRoot 'C:\LIMS'
     Test-BRAVOCondition `
         -Condition ([string]$explicitSysLog.Source -eq 'ExplicitConfig' -and [string]$explicitSysLog.EffectivePath -eq 'E:\BRAVO_SYSTEM_LOGS') `
         -Name "Paths/06-ExplicitSystemLogRootExact" `
@@ -152,14 +152,14 @@ $maintenanceScriptText = [IO.File]::ReadAllText(
         -Failure "локальні призначення backup: BackupRoot\{MODEL,BLOG,BRAVOEXCH,BAZA_APP,BAZA_WWW}; BAZA_APP не має зватись просто BAZA"
 
     # --- Paths/12: AUTO BackupRoot = <EffectiveLIMSRoot>\ARCHIV ---
-    $autoBackup = Resolve-BRAVOEffectiveBackupRoot -ConfiguredPath '' -EffectiveLimsRoot 'D:\LIMS-NEW'
+    $autoBackup = Resolve-BRAVOEffectiveBackupRoot -ConfiguredPath '' -EffectiveLimsRoot 'C:\LIMS'
     Test-BRAVOCondition `
-        -Condition ([string]$autoBackup.Source -eq 'AutoFromLIMSRoot' -and [string]$autoBackup.EffectivePath -eq 'D:\LIMS-NEW\ARCHIV') `
+        -Condition ([string]$autoBackup.Source -eq 'AutoFromLIMSRoot' -and [string]$autoBackup.EffectivePath -eq 'C:\LIMS\ARCHIV') `
         -Name "Paths/12-AutoBackupRootFromLims" `
         -Failure "BackupRoot='' має давати <EffectiveLIMSRoot>\ARCHIV із Source=AutoFromLIMSRoot"
 
     # --- Paths/13: explicit BackupRoot використовується точно ---
-    $explicitBackup = Resolve-BRAVOEffectiveBackupRoot -ConfiguredPath 'E:\BACKUPS' -EffectiveLimsRoot 'D:\LIMS-NEW'
+    $explicitBackup = Resolve-BRAVOEffectiveBackupRoot -ConfiguredPath 'E:\BACKUPS' -EffectiveLimsRoot 'C:\LIMS'
     Test-BRAVOCondition `
         -Condition ([string]$explicitBackup.Source -eq 'ExplicitConfig' -and [string]$explicitBackup.EffectivePath -eq 'E:\BACKUPS') `
         -Name "Paths/13-ExplicitBackupRootExact" `
@@ -167,21 +167,21 @@ $maintenanceScriptText = [IO.File]::ReadAllText(
 
     # --- Paths/14: all-AUTO ланцюжок від синтетичної служби BRAVO ---
     # LIMSRoot=""/SystemLogRoot=""/BackupRoot="" + служба з bravo.exe у
-    # D:\LIMS-NEW мають дати повний детермінований розклад коренів.
+    # C:\LIMS мають дати повний детермінований розклад коренів.
     $chainLims = Resolve-BRAVOEffectiveLimsRoot -ConfiguredPath '' -Services $svcCanonical
     $chainSysLog = Resolve-BRAVOEffectiveSystemLogRoot -ConfiguredPath '' -EffectiveLimsRoot ([string]$chainLims.EffectivePath)
     $chainBackup = Resolve-BRAVOEffectiveBackupRoot -ConfiguredPath '' -EffectiveLimsRoot ([string]$chainLims.EffectivePath)
     Test-BRAVOCondition `
         -Condition (
-            [string]$chainLims.EffectivePath -eq 'D:\LIMS-NEW' -and
-            [string]$chainSysLog.EffectivePath -eq 'D:\LIMS-NEW\ARCHIV\LOGS' -and
-            [string]$chainBackup.EffectivePath -eq 'D:\LIMS-NEW\ARCHIV' -and
+            [string]$chainLims.EffectivePath -eq 'C:\LIMS' -and
+            [string]$chainSysLog.EffectivePath -eq 'C:\LIMS\ARCHIV\LOGS' -and
+            [string]$chainBackup.EffectivePath -eq 'C:\LIMS\ARCHIV' -and
             [string]$chainLims.Source -eq 'ServiceDiscovery' -and
             [string]$chainSysLog.Source -eq 'AutoFromLIMSRoot' -and
             [string]$chainBackup.Source -eq 'AutoFromLIMSRoot'
         ) `
         -Name "Paths/14-AllAutoLayoutFromService" `
-        -Failure "all-AUTO (усі три '') зі службою bravo.exe у D:\LIMS-NEW має дати LIMS=D:\LIMS-NEW, SystemLog=...\ARCHIV\LOGS, Backup=...\ARCHIV"
+        -Failure "all-AUTO (усі три '') зі службою bravo.exe у C:\LIMS має дати LIMS=C:\LIMS, SystemLog=...\ARCHIV\LOGS, Backup=...\ARCHIV"
 
     # --- Paths/15: композиція шляху на відсутньому диску не кидає виняток ---
     # Резолвери мають будувати шлях через [IO.Path]::Combine, тому навіть корінь
